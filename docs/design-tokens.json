@@ -1,0 +1,122 @@
+{
+  "$schema": "https://json.schemastore.org/design-tokens",
+  "name": "Nova AI Design Tokens",
+  "version": "2.5.0",
+  "modes": ["developer", "cyber"],
+  "color": {
+    "developer": {
+      "background": {
+        "deep": { "value": "#02060d", "type": "color", "description": "Base dark space background" },
+        "center": { "value": "#06121f", "type": "color", "description": "Radial gradient center tone" }
+      },
+      "surface": {
+        "glass": { "value": "rgba(3, 14, 24, 0.75)", "type": "color", "description": "Backdrop blur panel surface" },
+        "card": { "value": "rgba(0, 12, 24, 0.60)", "type": "color", "description": "Note & timer card container" },
+        "input": { "value": "#020a12", "type": "color", "description": "Form input and select fields" }
+      },
+      "brand": {
+        "primary": { "value": "#37d6ff", "type": "color", "description": "Holographic cyan brand and action glow" },
+        "secondary": { "value": "#7a5cff", "type": "color", "description": "Deep purple gradient accent" }
+      },
+      "state": {
+        "success": { "value": "#4dffb0", "type": "color", "description": "Neon green for listening, success & timers" },
+        "warning": { "value": "#ffd24d", "type": "color", "description": "Amber yellow for thinking & standby" },
+        "danger": { "value": "#ff5d73", "type": "color", "description": "Red alert for errors and blocked actions" }
+      },
+      "text": {
+        "bright": { "value": "#ffffff", "type": "color", "description": "Primary titles and focused inputs" },
+        "standard": { "value": "#d8f3ff", "type": "color", "description": "Default body and conversational text" },
+        "secondary": { "value": "#cfe9f5", "type": "color", "description": "Descriptions and card details" },
+        "muted": { "value": "#7fa6b8", "type": "color", "description": "Labels, hints and inactive status" }
+      },
+      "border": {
+        "subtle": { "value": "rgba(55, 214, 255, 0.15)", "type": "color", "description": "Dividers and card borders" },
+        "active": { "value": "rgba(55, 214, 255, 0.40)", "type": "color", "description": "Hovered borders and active outlines" }
+      }
+    },
+    "cyber": {
+      "background": {
+        "deep": { "value": "#050102", "type": "color", "description": "WormGPT terminal black base" },
+        "center": { "value": "#1b0204", "type": "color", "description": "Dark crimson radial center" }
+      },
+      "surface": {
+        "panel": { "value": "rgba(14, 1, 3, 0.96)", "type": "color", "description": "Deep crimson modal panel" },
+        "input": { "value": "#0d0102", "type": "color", "description": "Terminal input background" }
+      },
+      "brand": {
+        "primary": { "value": "#ff1a1a", "type": "color", "description": "Cyber crimson neon primary accent" },
+        "secondary": { "value": "#990000", "type": "color", "description": "Deep dark red gradient stop" }
+      },
+      "text": {
+        "bright": { "value": "#ffffff", "type": "color", "description": "High contrast titles" },
+        "standard": { "value": "#ffd6d6", "type": "color", "description": "Cyber body text" },
+        "muted": { "value": "#d1777e", "type": "color", "description": "Muted cyber labels and status" }
+      },
+      "border": {
+        "active": { "value": "rgba(229, 9, 20, 0.45)", "type": "color", "description": "Cyber red button and input borders" }
+      }
+    }
+  },
+  "typography": {
+    "fontFamily": {
+      "sans": { "value": "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif", "type": "fontFamily" },
+      "mono": { "value": "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace", "type": "fontFamily" }
+    },
+    "fontSize": {
+      "2xs": { "value": "10px", "type": "dimension" },
+      "xs-tight": { "value": "11px", "type": "dimension" },
+      "xs": { "value": "12px", "type": "dimension" },
+      "sm": { "value": "14px", "type": "dimension" },
+      "base": { "value": "16px", "type": "dimension" },
+      "lg": { "value": "18px", "type": "dimension" },
+      "xl": { "value": "20px", "type": "dimension" }
+    },
+    "fontWeight": {
+      "regular": { "value": 400, "type": "fontWeight" },
+      "semibold": { "value": 600, "type": "fontWeight" },
+      "bold": { "value": 700, "type": "fontWeight" }
+    },
+    "letterSpacing": {
+      "normal": { "value": "0em", "type": "dimension" },
+      "wider": { "value": "0.05em", "type": "dimension" },
+      "widest": { "value": "0.1em", "type": "dimension" },
+      "status": { "value": "0.25em", "type": "dimension" },
+      "brand": { "value": "0.3em", "type": "dimension" }
+    }
+  },
+  "spacing": {
+    "0.5": { "value": "2px", "type": "dimension" },
+    "1": { "value": "4px", "type": "dimension" },
+    "2": { "value": "8px", "type": "dimension" },
+    "2.5": { "value": "10px", "type": "dimension" },
+    "3": { "value": "12px", "type": "dimension" },
+    "3.5": { "value": "14px", "type": "dimension" },
+    "4": { "value": "16px", "type": "dimension" },
+    "6": { "value": "24px", "type": "dimension" },
+    "8": { "value": "32px", "type": "dimension" }
+  },
+  "borderRadius": {
+    "none": { "value": "0px", "type": "dimension" },
+    "sm": { "value": "2px", "type": "dimension" },
+    "md": { "value": "4px", "type": "dimension" },
+    "lg": { "value": "8px", "type": "dimension" },
+    "xl": { "value": "12px", "type": "dimension" },
+    "2xl": { "value": "16px", "type": "dimension" },
+    "full": { "value": "9999px", "type": "dimension" }
+  },
+  "elevation": {
+    "glowCyanSubtle": { "value": "0 0 15px rgba(55, 214, 255, 0.30)", "type": "shadow" },
+    "glowCyanPrimary": { "value": "0 0 20px rgba(55, 214, 255, 0.40)", "type": "shadow" },
+    "glowCyberRed": { "value": "0 0 15px rgba(229, 9, 20, 0.40)", "type": "shadow" },
+    "panelModal": { "value": "0 0 45px rgba(0, 0, 0, 0.85)", "type": "shadow" }
+  },
+  "blur": {
+    "sm": { "value": "4px", "type": "dimension" },
+    "md": { "value": "8px", "type": "dimension" },
+    "lg": { "value": "16px", "type": "dimension" }
+  },
+  "animation": {
+    "durationDefault": { "value": "300ms", "type": "duration" },
+    "timingDefault": { "value": "ease", "type": "cubicBezier" }
+  }
+}
