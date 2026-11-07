@@ -1,0 +1,408 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nova AI</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='45' fill='%2302060d' stroke='%2337d6ff' stroke-width='6'/%3E%3Ccircle cx='50' cy='50' r='20' fill='%2337d6ff'/%3E%3C/svg%3E">
+<script src="tailwind.js"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          cyan: '#37d6ff',
+          neon: '#4dffb0',
+          purple: '#7a5cff',
+          dim: '#7fa6b8',
+          darkbg: '#02060d',
+          glass: 'rgba(3,14,24,0.75)',
+        },
+        keyframes: {
+          hudIn: {
+            '0%': { opacity: '0', transform: 'translateY(8px)' },
+            '100%': { opacity: '1', transform: 'translateY(0)' },
+          },
+          toastIn: {
+            '0%': { opacity: '0', transform: 'translateX(30px)' },
+            '100%': { opacity: '1', transform: 'translateX(0)' },
+          },
+          agentPulse: {
+            '0%, 100%': { opacity: '1', transform: 'scale(1)' },
+            '50%': { opacity: '0.35', transform: 'scale(1.5)' },
+          }
+        },
+        animation: {
+          hudIn: 'hudIn 0.25s ease forwards',
+          toastIn: 'toastIn 0.3s ease forwards',
+          agentPulse: 'agentPulse 1s infinite',
+        }
+      }
+    }
+  }
+</script>
+<style type="text/tailwindcss">
+  @layer base {
+    * {
+      box-sizing: border-box;
+    }
+    html, body {
+      @apply m-0 h-full overflow-hidden text-[#d8f3ff] font-sans select-none bg-[radial-gradient(ellipse_at_center,#06121f_0%,#02060d_70%)];
+    }
+    input, select, textarea {
+      @apply bg-[#020a12] border border-[#37d6ff]/30 text-white rounded p-2 text-xs outline-none focus:border-[#37d6ff] transition-all;
+    }
+    label {
+      @apply block text-[11px] tracking-wider text-[#7fa6b8] uppercase mb-1 font-semibold;
+    }
+    h2 {
+      @apply text-base font-bold tracking-[0.25em] text-[#37d6ff] uppercase mb-3 flex items-center gap-2;
+    }
+    h3 {
+      @apply text-sm font-semibold tracking-wider text-[#37d6ff] uppercase my-3;
+    }
+  }
+
+  @layer components {
+    .btn {
+      @apply bg-[#37d6ff]/10 border border-[#37d6ff]/40 text-[#37d6ff] px-4 py-2 rounded text-xs font-semibold tracking-wider uppercase hover:bg-[#37d6ff]/25 hover:shadow-[0_0_15px_rgba(55,214,255,0.3)] transition-all cursor-pointer backdrop-blur-md;
+    }
+    .btn-primary {
+      @apply bg-gradient-to-r from-[#37d6ff] to-[#7a5cff] text-[#00131c] font-bold tracking-wider text-xs uppercase px-6 py-2.5 rounded shadow-[0_0_20px_rgba(55,214,255,0.4)] hover:brightness-110 transition-all cursor-pointer;
+    }
+    .hint {
+      @apply text-xs text-[#7fa6b8] leading-relaxed my-2;
+    }
+    .row {
+      @apply flex items-center gap-2 py-2 border-b border-[#37d6ff]/10 text-xs text-[#cfe9f5];
+    }
+    .note-card {
+      @apply bg-[#000c18]/60 border border-[#37d6ff]/20 p-3.5 rounded mb-2 backdrop-blur-sm hover:border-[#37d6ff]/40 transition-all;
+    }
+    .note-header {
+      @apply flex items-center justify-between mb-1.5;
+    }
+    .note-title {
+      @apply font-semibold text-white text-sm;
+    }
+    .note-cat {
+      @apply text-[10px] tracking-widest uppercase text-[#37d6ff] bg-[#37d6ff]/10 px-2 py-0.5 rounded font-mono;
+    }
+    .note-body {
+      @apply text-xs leading-relaxed text-[#cfe9f5] whitespace-pre-wrap font-sans;
+    }
+    .timer-card {
+      @apply flex items-center justify-between bg-[#000c18]/60 border border-[#37d6ff]/20 p-2.5 rounded mb-2 backdrop-blur-sm;
+    }
+    .timer-time {
+      @apply font-mono text-sm text-[#4dffb0];
+    }
+    .browser-status-bar {
+      @apply flex items-center justify-between gap-3 my-3 bg-[#37d6ff]/5 border border-[#37d6ff]/25 p-3 rounded backdrop-blur-sm text-xs;
+    }
+    .browser-tab-row {
+      @apply bg-[#000a14]/60 border border-[#37d6ff]/15 p-2.5 rounded mb-1.5 flex items-center justify-between gap-3 text-xs hover:border-[#37d6ff]/30 transition-all;
+    }
+    .char {
+      @apply p-2.5 border border-[#37d6ff]/20 rounded mb-2 cursor-pointer transition-all hover:bg-[#37d6ff]/10;
+    }
+    .char.on {
+      @apply border-[#37d6ff] bg-[#37d6ff]/15 shadow-[0_0_15px_rgba(55,214,255,0.2)];
+    }
+    .char small {
+      @apply block text-[#7fa6b8] text-xs mt-0.5;
+    }
+    .skills-grid {
+      @apply grid grid-cols-1 md:grid-cols-2 gap-3.5 mt-3;
+    }
+    .skill-cat {
+      @apply bg-[#37d6ff]/5 border border-[#37d6ff]/20 p-3.5 rounded flex flex-col gap-2;
+    }
+    .skill-cat.full-width {
+      @apply col-span-full;
+    }
+    .skill-cat h3 {
+      @apply m-0 mb-1.5 text-xs tracking-widest text-[#37d6ff] uppercase flex items-center gap-2 font-bold;
+    }
+    .skill-items {
+      @apply flex flex-col gap-2;
+    }
+    .skill-item {
+      @apply text-xs leading-relaxed text-[#cfe9f5] py-1.5 border-b border-[#37d6ff]/10 last:border-b-0;
+    }
+    .skill-item b {
+      @apply text-white block mb-0.5 font-semibold;
+    }
+    .skill-item code {
+      @apply bg-[#37d6ff]/10 text-[#4dffb0] px-1.5 py-0.5 rounded text-[11px] inline-block mt-1 font-mono;
+    }
+    .workspace-bar {
+      @apply flex items-center gap-3 my-3 bg-[#37d6ff]/5 border border-[#37d6ff]/25 p-3 rounded backdrop-blur-sm text-xs;
+    }
+    .workspace-path {
+      @apply flex-1 font-mono text-xs text-[#4dffb0] truncate;
+    }
+    .qrwrap {
+      @apply flex justify-center my-3;
+    }
+    #qr {
+      @apply w-[220px] h-[220px] bg-white border-4 border-white rounded shadow-lg;
+    }
+  }
+
+  body.mini-mode {
+    background: #02060d !important;
+  }
+  body.mini-mode #nodes,
+  body.mini-mode #world,
+  body.mini-mode #actionHud,
+  body.mini-mode header .brand,
+  body.mini-mode header #langWrap,
+  body.mini-mode header #clock {
+    display: none !important;
+  }
+  body.mini-mode header {
+    padding: 8px 14px !important;
+    background: rgba(0, 10, 20, 0.9) !important;
+    border-bottom: 1px solid rgba(55,214,255,0.2) !important;
+  }
+  body.mini-mode footer {
+    bottom: 8px !important;
+    gap: 6px !important;
+    padding: 0 8px !important;
+  }
+  body.mini-mode #textform input {
+    width: 140px !important;
+  }
+  body.mini-mode #subtitle {
+    bottom: 56px !important;
+    font-size: 13px !important;
+    min-height: 32px !important;
+  }
+
+  /* Smooth 300ms transitions for sidebar, right-side, banner, and chat */
+  #nodes, #world, #agentBadge, #subtitle, #textform input {
+    transition: opacity 0.3s ease, transform 0.3s ease, width 0.3s ease, background 0.3s ease, border-color 0.3s ease, color 0.3s ease, box-shadow 0.3s ease;
+  }
+
+  /* ---------- Cyber Mode (Red WormGPT Terminal Theme) ---------- */
+  body.cyber-mode {
+    background: radial-gradient(ellipse at center, #1b0204 0%, #050102 70%) !important;
+    color: #ffd6d6 !important;
+  }
+  body.cyber-mode header {
+    border-bottom: 1px solid rgba(229, 9, 20, 0.3) !important;
+    background: rgba(10, 0, 2, 0.75) !important;
+  }
+  body.cyber-mode .brand {
+    color: #ff1a1a !important;
+    text-shadow: 0 0 16px rgba(255, 26, 26, 0.8) !important;
+  }
+  body.cyber-mode .btn {
+    border-color: rgba(229, 9, 20, 0.45) !important;
+    color: #ff2a2a !important;
+    background: rgba(229, 9, 20, 0.08) !important;
+  }
+  body.cyber-mode .btn:hover {
+    background: rgba(229, 9, 20, 0.22) !important;
+    box-shadow: 0 0 15px rgba(229, 9, 20, 0.4) !important;
+  }
+  body.cyber-mode .btn-primary {
+    background: linear-gradient(to right, #ff1a1a, #990000) !important;
+    color: #ffffff !important;
+    box-shadow: 0 0 20px rgba(229, 9, 20, 0.5) !important;
+  }
+  body.cyber-mode input,
+  body.cyber-mode textarea,
+  body.cyber-mode select {
+    border-color: rgba(229, 9, 20, 0.4) !important;
+    background: #0d0102 !important;
+    color: #ffffff !important;
+  }
+  body.cyber-mode input:focus,
+  body.cyber-mode textarea:focus,
+  body.cyber-mode select:focus {
+    border-color: #ff1a1a !important;
+    box-shadow: 0 0 12px rgba(255, 26, 26, 0.4) !important;
+  }
+  body.cyber-mode #textform {
+    border-color: rgba(229, 9, 20, 0.45) !important;
+    box-shadow: 0 0 16px rgba(229, 9, 20, 0.25) !important;
+  }
+  body.cyber-mode #textform button {
+    background: rgba(229, 9, 20, 0.15) !important;
+    border-color: rgba(229, 9, 20, 0.4) !important;
+    color: #ff3333 !important;
+  }
+  body.cyber-mode #textform button:hover {
+    background: rgba(229, 9, 20, 0.3) !important;
+  }
+  body.cyber-mode #panel {
+    background: rgba(14, 1, 3, 0.96) !important;
+    border-color: rgba(229, 9, 20, 0.5) !important;
+    box-shadow: 0 0 45px rgba(229, 9, 20, 0.35) !important;
+  }
+  body.cyber-mode #panel h2,
+  body.cyber-mode #panel h3 {
+    color: #ff1a1a !important;
+  }
+  body.cyber-mode #panel #close {
+    color: #ff1a1a !important;
+  }
+  body.cyber-mode #status {
+    color: #d1777e !important;
+  }
+  body.cyber-mode #clock {
+    color: #d1777e !important;
+  }
+  body.cyber-mode #langWrap {
+    border-color: rgba(229, 9, 20, 0.35) !important;
+    background: rgba(229, 9, 20, 0.08) !important;
+  }
+  body.cyber-mode #langWrap select {
+    color: #ff4d4d !important;
+  }
+  body.cyber-mode #actionHud {
+    border-color: rgba(229, 9, 20, 0.4) !important;
+  }
+
+  /* In Cyber Mode, HIDE: left sidebar (#nodes), right-side buttons (#world), and banner (#agentBadge) */
+  body.cyber-mode #nodes {
+    opacity: 0 !important;
+    pointer-events: none !important;
+    transform: translate(-50px, -50%) !important;
+  }
+  body.cyber-mode #world {
+    opacity: 0 !important;
+    pointer-events: none !important;
+    transform: translateX(50px) !important;
+  }
+  body.cyber-mode #agentBadge {
+    opacity: 0 !important;
+    pointer-events: none !important;
+    transform: scale(0.85) !important;
+  }
+
+  /* Chat area expands smoothly into the freed space */
+  body.cyber-mode #subtitle {
+    width: min(980px, 92vw) !important;
+  }
+  body.cyber-mode #textform input {
+    width: min(520px, 55vw) !important;
+  }
+
+</style>
+</head>
+<body class="m-0 h-full overflow-hidden text-[#d8f3ff] font-sans select-none bg-[radial-gradient(ellipse_at_center,#06121f_0%,#02060d_70%)]">
+<canvas id="core" class="fixed inset-0 w-full h-full pointer-events-none z-0"></canvas>
+
+<header class="fixed top-0 left-0 right-0 flex items-center gap-5 px-6 py-4 z-20 backdrop-blur-md bg-black/30 border-b border-[#37d6ff]/10">
+  <div class="brand text-base font-bold tracking-[0.35em] text-[#37d6ff] drop-shadow-[0_0_14px_rgba(55,214,255,0.8)]">NOVA<span class="text-white ml-1 opacity-70 font-light">AI</span></div>
+  <div id="status" class="text-xs tracking-[0.25em] text-[#7fa6b8] flex-1 font-semibold uppercase transition-colors duration-200">OFFLINE</div>
+  <div id="agentBadge" class="flex items-center gap-2 text-[11px] tracking-[0.18em] px-3 py-1.5 rounded border border-[#7fa6b8]/35 text-[#7fa6b8] cursor-pointer select-none max-w-[46vw] backdrop-blur-md bg-[#030e18]/60 hover:border-[#37d6ff]/60 transition-all" title="Click for agent activity log">
+    <i class="dot w-2 h-2 rounded-full bg-[#7fa6b8] shrink-0"></i><span id="agentText" class="truncate">AGENT IDLE</span><b id="agentTimer" class="font-semibold tabular-nums text-white shrink-0"></b>
+  </div>
+  <div id="langWrap" class="flex items-center gap-1.5 bg-[#37d6ff]/10 border border-[#37d6ff]/30 px-2.5 py-1 rounded backdrop-blur-md" title="Select Voice Recognition & Speech Language">
+    <span class="lang-icon text-xs">🌐</span>
+    <select id="quickLang" class="bg-transparent border-0 text-[#37d6ff] text-xs outline-none cursor-pointer font-medium">
+      <option value="en-US" class="bg-[#030e18] text-[#d8f3ff]">English (US)</option>
+      <option value="bn-BD" class="bg-[#030e18] text-[#d8f3ff]">বাংলা / Bengali</option>
+      <option value="hi-IN" class="bg-[#030e18] text-[#d8f3ff]">हिंदी / Hindi</option>
+      <option value="ur-PK" class="bg-[#030e18] text-[#d8f3ff]">اردو / Urdu</option>
+      <option value="es-ES" class="bg-[#030e18] text-[#d8f3ff]">Español / Spanish</option>
+      <option value="fr-FR" class="bg-[#030e18] text-[#d8f3ff]">Français / French</option>
+      <option value="de-DE" class="bg-[#030e18] text-[#d8f3ff]">Deutsch / German</option>
+      <option value="ar-SA" class="bg-[#030e18] text-[#d8f3ff]">العربية / Arabic</option>
+      <option value="zh-CN" class="bg-[#030e18] text-[#d8f3ff]">中文 / Chinese</option>
+      <option value="ja-JP" class="bg-[#030e18] text-[#d8f3ff]">日本語 / Japanese</option>
+      <option value="ru-RU" class="bg-[#030e18] text-[#d8f3ff]">Русский / Russian</option>
+      <option value="pt-BR" class="bg-[#030e18] text-[#d8f3ff]">Português / Portuguese</option>
+      <option value="tr-TR" class="bg-[#030e18] text-[#d8f3ff]">Türkçe / Turkish</option>
+    </select>
+  </div>
+  <button id="btnModeToggle" class="btn text-xs px-2.5 py-1 tracking-wider uppercase backdrop-blur-md" title="Toggle between Developer Mode and Cyber Mode">Cyber Mode</button>
+  <button id="btnMiniMode" class="btn text-xs px-2.5 py-1 tracking-wider uppercase backdrop-blur-md" title="Toggle Compact Desktop Mini HUD Overlay">🗖 Mini HUD</button>
+  <div id="clock" class="text-xs text-[#7fa6b8] tabular-nums font-mono"></div>
+</header>
+
+<nav id="nodes" class="fixed left-6 top-1/2 -translate-y-1/2 flex flex-col gap-2.5 z-20 max-lg:top-auto max-lg:bottom-[150px] max-lg:translate-y-0 max-lg:flex-row max-lg:flex-wrap max-lg:left-2 max-lg:right-2 max-lg:justify-center">
+  <button data-panel="browser" class="bg-[#37d6ff]/5 border border-[#37d6ff]/35 text-[#37d6ff] px-4 py-2 rounded-sm tracking-[0.2em] text-[11px] uppercase cursor-pointer transition-all duration-200 hover:bg-[#37d6ff]/20 hover:shadow-[0_0_18px_rgba(55,214,255,0.4)] backdrop-blur-md">Nova Browser</button>
+  <button data-panel="brain" class="bg-[#37d6ff]/5 border border-[#37d6ff]/35 text-[#37d6ff] px-4 py-2 rounded-sm tracking-[0.2em] text-[11px] uppercase cursor-pointer transition-all duration-200 hover:bg-[#37d6ff]/20 hover:shadow-[0_0_18px_rgba(55,214,255,0.4)] backdrop-blur-md">Second Brain</button>
+  <button data-panel="schedule" class="bg-[#37d6ff]/5 border border-[#37d6ff]/35 text-[#37d6ff] px-4 py-2 rounded-sm tracking-[0.2em] text-[11px] uppercase cursor-pointer transition-all duration-200 hover:bg-[#37d6ff]/20 hover:shadow-[0_0_18px_rgba(55,214,255,0.4)] backdrop-blur-md">Schedule</button>
+  <button data-panel="automations" class="bg-[#37d6ff]/5 border border-[#37d6ff]/35 text-[#37d6ff] px-4 py-2 rounded-sm tracking-[0.2em] text-[11px] uppercase cursor-pointer transition-all duration-200 hover:bg-[#37d6ff]/20 hover:shadow-[0_0_18px_rgba(55,214,255,0.4)] backdrop-blur-md">Automations</button>
+  <button data-panel="skills" class="bg-[#37d6ff]/5 border border-[#37d6ff]/35 text-[#37d6ff] px-4 py-2 rounded-sm tracking-[0.2em] text-[11px] uppercase cursor-pointer transition-all duration-200 hover:bg-[#37d6ff]/20 hover:shadow-[0_0_18px_rgba(55,214,255,0.4)] backdrop-blur-md">Skills</button>
+  <button data-panel="workspace" class="bg-[#37d6ff]/5 border border-[#37d6ff]/35 text-[#37d6ff] px-4 py-2 rounded-sm tracking-[0.2em] text-[11px] uppercase cursor-pointer transition-all duration-200 hover:bg-[#37d6ff]/20 hover:shadow-[0_0_18px_rgba(55,214,255,0.4)] backdrop-blur-md">Workspace</button>
+  <button data-panel="memory" class="bg-[#37d6ff]/5 border border-[#37d6ff]/35 text-[#37d6ff] px-4 py-2 rounded-sm tracking-[0.2em] text-[11px] uppercase cursor-pointer transition-all duration-200 hover:bg-[#37d6ff]/20 hover:shadow-[0_0_18px_rgba(55,214,255,0.4)] backdrop-blur-md">Memory</button>
+  <button data-panel="characters" class="bg-[#37d6ff]/5 border border-[#37d6ff]/35 text-[#37d6ff] px-4 py-2 rounded-sm tracking-[0.2em] text-[11px] uppercase cursor-pointer transition-all duration-200 hover:bg-[#37d6ff]/20 hover:shadow-[0_0_18px_rgba(55,214,255,0.4)] backdrop-blur-md">Character</button>
+  <button data-panel="mobile" class="bg-[#37d6ff]/5 border border-[#37d6ff]/35 text-[#37d6ff] px-4 py-2 rounded-sm tracking-[0.2em] text-[11px] uppercase cursor-pointer transition-all duration-200 hover:bg-[#37d6ff]/20 hover:shadow-[0_0_18px_rgba(55,214,255,0.4)] backdrop-blur-md">Mobile</button>
+<button data-panel="doctor" class="bg-[#37d6ff]/5 border border-[#37d6ff]/35 text-[#37d6ff] px-4 py-2 rounded-sm tracking-[0.2em] text-[11px] uppercase cursor-pointer transition-all duration-200 hover:bg-[#37d6ff]/20 hover:shadow-[0_0_18px_rgba(55,214,255,0.4)] backdrop-blur-md">Doctor</button>
+  <button data-panel="usage" class="bg-[#37d6ff]/5 border border-[#37d6ff]/35 text-[#37d6ff] px-4 py-2 rounded-sm tracking-[0.2em] text-[11px] uppercase cursor-pointer transition-all duration-200 hover:bg-[#37d6ff]/20 hover:shadow-[0_0_18px_rgba(55,214,255,0.4)] backdrop-blur-md">Usage</button>
+  <button data-panel="github" class="bg-[#37d6ff]/5 border border-[#37d6ff]/35 text-[#37d6ff] px-4 py-2 rounded-sm tracking-[0.2em] text-[11px] uppercase cursor-pointer transition-all duration-200 hover:bg-[#37d6ff]/20 hover:shadow-[0_0_18px_rgba(55,214,255,0.4)] backdrop-blur-md">GitHub Tools</button>
+  <button data-panel="audit" class="bg-[#37d6ff]/5 border border-[#37d6ff]/35 text-[#37d6ff] px-4 py-2 rounded-sm tracking-[0.2em] text-[11px] uppercase cursor-pointer transition-all duration-200 hover:bg-[#37d6ff]/20 hover:shadow-[0_0_18px_rgba(55,214,255,0.4)] backdrop-blur-md">Audit Log</button>
+  <button data-panel="settings" class="bg-[#37d6ff]/5 border border-[#37d6ff]/35 text-[#37d6ff] px-4 py-2 rounded-sm tracking-[0.2em] text-[11px] uppercase cursor-pointer transition-all duration-200 hover:bg-[#37d6ff]/20 hover:shadow-[0_0_18px_rgba(55,214,255,0.4)] backdrop-blur-md">Settings</button>
+</nav>
+
+<aside id="world" class="fixed right-5 top-[70px] w-[270px] z-20 bg-[#030e18]/60 border border-[#37d6ff]/20 p-3 backdrop-blur-md rounded shadow-lg max-lg:hidden">
+  <canvas id="globe" width="220" height="220" class="block mx-auto"></canvas>
+  <h4 class="my-2 text-[11px] tracking-[0.25em] text-[#37d6ff] uppercase font-bold">World headlines</h4>
+  <ul id="news" class="list-none m-0 p-0 max-h-[34vh] overflow-y-auto text-xs leading-relaxed space-y-1.5 pr-1"><li>Loading…</li></ul>
+</aside>
+
+<div id="agentDetail" class="hidden fixed top-[58px] left-1/2 -translate-x-1/2 w-[min(520px,92vw)] z-30 bg-[#030e18]/95 border border-[#37d6ff]/40 shadow-[0_0_30px_rgba(55,214,255,0.2)] p-4 text-xs leading-relaxed max-h-[60vh] overflow-y-auto backdrop-blur-xl rounded"></div>
+<div id="actionHud" class="hidden fixed left-1/2 bottom-[156px] -translate-x-1/2 w-[min(720px,90vw)] z-30 flex flex-col gap-2 pointer-events-auto"></div>
+<div id="subtitle" class="fixed left-1/2 bottom-[92px] -translate-x-1/2 w-[min(760px,86vw)] text-center text-lg leading-relaxed min-h-[56px] text-white drop-shadow-[0_0_12px_rgba(0,0,0,0.9)] z-20 pointer-events-none"></div>
+
+<div id="toastContainer" class="fixed top-[70px] right-6 z-[98] flex flex-col gap-2.5 pointer-events-none"></div>
+
+<div id="confirmModal" class="hidden fixed inset-0 bg-[#02060d]/80 backdrop-blur-md z-[100] flex justify-center items-center">
+  <div class="w-[min(480px,92vw)] bg-[#031220]/95 border border-[#ff3b69]/50 rounded-lg shadow-[0_0_50px_rgba(255,59,105,0.25)] p-5 flex flex-col gap-3">
+    <div class="flex items-center gap-2.5 text-[#ff3b69] font-bold text-sm tracking-wide">
+      <span class="text-lg">⚠️</span>
+      <span>ACTION CONFIRMATION REQUIRED</span>
+    </div>
+    <p id="confirmPrompt" class="text-xs text-[#cfe9f5] leading-relaxed">A high-impact action requires your confirmation.</p>
+    <div id="confirmPreview" class="bg-[#000a14]/90 border border-white/10 rounded p-2.5 text-[11px] font-mono text-[#a0c0d0] max-h-64 overflow-y-auto whitespace-pre-wrap break-all"></div>
+    <div class="flex justify-end gap-2.5 mt-2">
+      <button id="confirmDenyBtn" class="btn text-xs px-4 py-2 border border-white/20 hover:border-white/40 text-white rounded cursor-pointer">Deny (Esc)</button>
+      <button id="confirmAllowBtn" class="btn-primary text-xs px-4 py-2 bg-[#ff3b69] border-[#ff3b69] hover:bg-[#ff557f] text-white rounded cursor-pointer">Allow (Enter)</button>
+    </div>
+  </div>
+</div>
+
+<div id="spotlightModal" class="hidden fixed inset-0 bg-[#02060d]/80 backdrop-blur-md z-[99] flex justify-center items-start pt-[14vh]">
+  <div class="spotlight-box w-[min(580px,92vw)] bg-[#031220]/95 border border-[#37d6ff]/50 rounded-lg shadow-[0_0_50px_rgba(55,214,255,0.3)] overflow-hidden">
+    <div class="spotlight-top flex items-center px-4 py-3.5 gap-3 border-b border-[#37d6ff]/20">
+      <span class="spotlight-icon text-lg text-[#37d6ff]">⚡</span>
+      <input id="spotlightInput" placeholder="Quick command or ask Nova... (Esc to close)" autocomplete="off" class="flex-1 bg-transparent border-0 outline-none text-base text-white placeholder-[#7fa6b8]">
+    </div>
+    <div id="spotlightSuggestions" class="flex flex-col">
+      <div class="spot-item p-3.5 px-4 border-b border-[#37d6ff]/10 cursor-pointer text-xs text-[#cfe9f5] hover:bg-[#37d6ff]/15 hover:text-white transition-colors" data-act="vision">👁️ Analyze current screen</div>
+      <div class="spot-item p-3.5 px-4 border-b border-[#37d6ff]/10 cursor-pointer text-xs text-[#cfe9f5] hover:bg-[#37d6ff]/15 hover:text-white transition-colors" data-act="plan">📋 Autonomous Plan Mode (multi-step tasks)</div>
+      <div class="spot-item p-3.5 px-4 border-b border-[#37d6ff]/10 cursor-pointer text-xs text-[#cfe9f5] hover:bg-[#37d6ff]/15 hover:text-white transition-colors" data-act="doctor">🩺 System Doctor Diagnostics</div>
+      <div class="spot-item p-3.5 px-4 border-b border-[#37d6ff]/10 cursor-pointer text-xs text-[#cfe9f5] hover:bg-[#37d6ff]/15 hover:text-white transition-colors" data-act="usage">📊 Token & Budget Metrics</div>
+      <div class="spot-item p-3.5 px-4 border-b border-[#37d6ff]/10 cursor-pointer text-xs text-[#cfe9f5] hover:bg-[#37d6ff]/15 hover:text-white transition-colors" data-act="briefing">☀️ Morning daily briefing</div>
+      <div class="spot-item p-3.5 px-4 border-b border-[#37d6ff]/10 cursor-pointer text-xs text-[#cfe9f5] hover:bg-[#37d6ff]/15 hover:text-white transition-colors" data-act="stats">⚡ System & hardware specs</div>
+      <div class="spot-item p-3.5 px-4 border-b border-[#37d6ff]/10 cursor-pointer text-xs text-[#cfe9f5] hover:bg-[#37d6ff]/15 hover:text-white transition-colors" data-act="browser">🌐 Open Nova Browser</div>
+    </div>
+  </div>
+</div>
+
+<footer class="fixed bottom-5 left-0 right-0 flex justify-center items-center gap-3 z-20 px-4">
+  <button id="start" class="btn-primary">Start AI</button>
+  <button id="mute" class="btn" title="Mute microphone">Mic on</button>
+  <button id="btnVision" class="btn font-semibold" title="Analyze desktop screen with Vision AI">👁️ Screen</button>
+  <form id="textform" class="flex items-center backdrop-blur-md rounded overflow-hidden">
+    <input id="text" autocomplete="off" placeholder="…or type to Nova (Ctrl+Space for Quick Summon)" class="w-[min(340px,40vw)] bg-[#000a14]/80 border border-[#37d6ff]/30 text-white text-xs px-3 py-2.5 outline-none placeholder-[#7fa6b8]/60 focus:border-[#37d6ff] rounded-r-none">
+    <button class="bg-[#37d6ff]/15 border border-l-0 border-[#37d6ff]/30 text-[#37d6ff] text-xs px-4 py-2.5 uppercase tracking-wider font-semibold hover:bg-[#37d6ff]/30 transition-all cursor-pointer rounded-l-none">Send</button>
+  </form>
+</footer>
+
+<section id="panel" class="hidden fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[min(780px,94vw)] max-h-[82vh] overflow-y-auto bg-[#030e18]/95 border border-[#37d6ff]/45 shadow-[0_0_40px_rgba(55,214,255,0.25)] backdrop-blur-xl p-6 z-50 rounded">
+  <button id="close" class="absolute right-4 top-3 bg-transparent border-0 text-[#37d6ff] text-2xl font-bold cursor-pointer hover:text-white transition-colors">×</button>
+  <div id="panel-body"></div>
+</section>
+
+<script src="qr.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

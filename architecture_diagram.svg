@@ -1,0 +1,372 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1120" width="100%" height="100%" style="background-color: #030a14; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+  <defs>
+    <!-- Gradients -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#030a14" />
+      <stop offset="50%" stop-color="#061224" />
+      <stop offset="100%" stop-color="#02070e" />
+    </linearGradient>
+
+    <linearGradient id="cyanGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#00d2ff" />
+      <stop offset="100%" stop-color="#3a7bd5" />
+    </linearGradient>
+
+    <linearGradient id="cardGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#0b1e36" stop-opacity="0.9" />
+      <stop offset="100%" stop-color="#061324" stop-opacity="0.9" />
+    </linearGradient>
+
+    <linearGradient id="secCardGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#2a0d18" stop-opacity="0.8" />
+      <stop offset="100%" stop-color="#14060c" stop-opacity="0.8" />
+    </linearGradient>
+
+    <!-- Glowing Filters -->
+    <filter id="glowCyan" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="6" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+
+    <filter id="glowGreen" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="6" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+
+    <!-- Arrow Markers -->
+    <marker id="arrowCyan" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+      <path d="M 0 0 L 8 4 L 0 8 z" fill="#37d6ff" />
+    </marker>
+    <marker id="arrowGreen" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+      <path d="M 0 0 L 8 4 L 0 8 z" fill="#2ed573" />
+    </marker>
+    <marker id="arrowOrange" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+      <path d="M 0 0 L 8 4 L 0 8 z" fill="#ffa502" />
+    </marker>
+  </defs>
+
+  <!-- Background Base -->
+  <rect width="1600" height="1120" fill="url(#bgGrad)" />
+
+  <!-- Subtle Blueprint Grid Lines -->
+  <g stroke="rgba(55, 214, 255, 0.04)" stroke-width="1">
+    <path d="M 0 100 H 1600 M 0 200 H 1600 M 0 300 H 1600 M 0 400 H 1600 M 0 500 H 1600 M 0 600 H 1600 M 0 700 H 1600 M 0 800 H 1600 M 0 900 H 1600 M 0 1000 H 1600" />
+    <path d="M 100 0 V 1120 M 200 0 V 1120 M 300 0 V 1120 M 400 0 V 1120 M 500 0 V 1120 M 600 0 V 1120 M 700 0 V 1120 M 800 0 V 1120 M 900 0 V 1120 M 1000 0 V 1120 M 1100 0 V 1120 M 1200 0 V 1120 M 1300 0 V 1120 M 1400 0 V 1120 M 1500 0 V 1120" />
+  </g>
+
+  <!-- ==================== HEADER ==================== -->
+  <g transform="translate(60, 40)">
+    <text x="0" y="32" fill="#37d6ff" font-size="28" font-weight="900" letter-spacing="2">NOVA AI :: SYSTEM ARCHITECTURE SCHEMATIC</text>
+    <text x="0" y="58" fill="#7fa6b8" font-size="14" letter-spacing="1">Voice-First Desktop AI Agent • PocketPaw 7-Layer Security Stack • Pure Python Stdlib (Zero-Pip)</text>
+    
+    <!-- Status Pill -->
+    <rect x="1260" y="10" width="220" height="38" rx="19" fill="rgba(46, 213, 115, 0.12)" stroke="#2ed573" stroke-width="1.5" />
+    <circle cx="1285" cy="29" r="6" fill="#2ed573" filter="url(#glowGreen)" />
+    <text x="1302" y="34" fill="#2ed573" font-size="13" font-weight="bold">SYSTEM STATUS: READY</text>
+  </g>
+
+  <!-- ==================== LAYER 1: CLIENT INGRESS ==================== -->
+  <g transform="translate(60, 130)">
+    <!-- Container Outline -->
+    <rect width="1480" height="110" rx="8" fill="url(#cardGrad)" stroke="#37d6ff" stroke-width="1.2" stroke-opacity="0.3" />
+    <text x="20" y="26" fill="#37d6ff" font-size="12" font-weight="bold" letter-spacing="1.5">1. CLIENT &amp; REMOTE INGRESS LAYER</text>
+
+    <!-- Channels -->
+    <!-- Web HUD -->
+    <g transform="translate(20, 42)">
+      <rect width="265" height="52" rx="6" fill="#041122" stroke="#37d6ff" stroke-width="1" />
+      <text x="16" y="24" fill="#ffffff" font-size="13" font-weight="bold">🎙️ Desktop Web HUD</text>
+      <text x="16" y="42" fill="#7fa6b8" font-size="11">Chrome/Edge Web Speech API</text>
+    </g>
+
+    <!-- Mobile Remote -->
+    <g transform="translate(315, 42)">
+      <rect width="265" height="52" rx="6" fill="#041122" stroke="#37d6ff" stroke-width="1" />
+      <text x="16" y="24" fill="#ffffff" font-size="13" font-weight="bold">📱 Mobile LAN Remote</text>
+      <text x="16" y="42" fill="#7fa6b8" font-size="11">QR-Paired remote.html (:8766)</text>
+    </g>
+
+    <!-- Telegram Gateway -->
+    <g transform="translate(610, 42)">
+      <rect width="265" height="52" rx="6" fill="#041122" stroke="#37d6ff" stroke-width="1" />
+      <text x="16" y="24" fill="#ffffff" font-size="13" font-weight="bold">✈️ Telegram Gateway</text>
+      <text x="16" y="42" fill="#7fa6b8" font-size="11">telegram_gateway.py (Silent Turns)</text>
+    </g>
+
+    <!-- Discord Gateway -->
+    <g transform="translate(905, 42)">
+      <rect width="265" height="52" rx="6" fill="#041122" stroke="#37d6ff" stroke-width="1" />
+      <text x="16" y="24" fill="#ffffff" font-size="13" font-weight="bold">💬 Discord Gateway</text>
+      <text x="16" y="42" fill="#7fa6b8" font-size="11">discord_gateway.py (REST Polling)</text>
+    </g>
+
+    <!-- Spotlight Summon -->
+    <g transform="translate(1200, 42)">
+      <rect width="260" height="52" rx="6" fill="#041122" stroke="#37d6ff" stroke-width="1" />
+      <text x="16" y="24" fill="#ffffff" font-size="13" font-weight="bold">⚡ Quick Summon</text>
+      <text x="16" y="42" fill="#7fa6b8" font-size="11">Ctrl+Space Global Spotlight</text>
+    </g>
+  </g>
+
+  <!-- Connectors from Layer 1 to Layer 2 -->
+  <path d="M 800 240 V 275" stroke="#37d6ff" stroke-width="2" marker-end="url(#arrowCyan)" />
+
+  <!-- ==================== LAYER 2: CORE GATEWAY & SERVER ==================== -->
+  <g transform="translate(60, 280)">
+    <rect width="1480" height="90" rx="8" fill="url(#cardGrad)" stroke="#37d6ff" stroke-width="1.2" stroke-opacity="0.4" />
+    <text x="20" y="24" fill="#37d6ff" font-size="12" font-weight="bold" letter-spacing="1.5">2. CORE SERVER RUNTIME (server.py - Pure Python Stdlib)</text>
+
+    <!-- HTTPServer -->
+    <g transform="translate(20, 36)">
+      <rect width="330" height="42" rx="5" fill="#03162b" stroke="#37d6ff" stroke-width="1" />
+      <text x="14" y="26" fill="#ffffff" font-size="12" font-weight="bold">🌐 ThreadingHTTPServer</text>
+      <text x="180" y="26" fill="#7fa6b8" font-size="11">Port 8765 / 8766</text>
+    </g>
+
+    <!-- CSRF & Rebinding -->
+    <g transform="translate(375, 36)">
+      <rect width="330" height="42" rx="5" fill="#03162b" stroke="#37d6ff" stroke-width="1" />
+      <text x="14" y="26" fill="#2ed573" font-size="12" font-weight="bold">🛡️ CSRF &amp; Origin Guard</text>
+      <text x="180" y="26" fill="#7fa6b8" font-size="11">Sec-Fetch-Site Filter</text>
+    </g>
+
+    <!-- Windows DPAPI -->
+    <g transform="translate(730, 36)">
+      <rect width="345" height="42" rx="5" fill="#03162b" stroke="#37d6ff" stroke-width="1" />
+      <text x="14" y="26" fill="#37d6ff" font-size="12" font-weight="bold">🔐 Windows DPAPI Vault</text>
+      <text x="185" y="26" fill="#7fa6b8" font-size="11">crypt32.dll CryptProtect</text>
+    </g>
+
+    <!-- SSE Streaming -->
+    <g transform="translate(1100, 36)">
+      <rect width="360" height="42" rx="5" fill="#03162b" stroke="#37d6ff" stroke-width="1" />
+      <text x="14" y="26" fill="#ffffff" font-size="12" font-weight="bold">⚡ SSE Real-Time Stream</text>
+      <text x="195" y="26" fill="#7fa6b8" font-size="11">filter_stream_tags Buffer</text>
+    </g>
+  </g>
+
+  <!-- Connectors from Layer 2 to Split Layer (Security & Router) -->
+  <path d="M 400 370 V 405" stroke="#37d6ff" stroke-width="2" marker-end="url(#arrowCyan)" />
+  <path d="M 1150 370 V 405" stroke="#37d6ff" stroke-width="2" marker-end="url(#arrowCyan)" />
+
+  <!-- ==================== LAYER 3: 7-LAYER DEFENSE & SAFETY ==================== -->
+  <g transform="translate(60, 410)">
+    <rect width="700" height="230" rx="8" fill="url(#secCardGrad)" stroke="#ff4757" stroke-width="1.2" stroke-opacity="0.5" />
+    <text x="20" y="26" fill="#ff4757" font-size="12" font-weight="bold" letter-spacing="1.5">3. 7-LAYER DEFENSE-IN-DEPTH SECURITY STACK</text>
+
+    <!-- Guardian Dual-Review -->
+    <g transform="translate(20, 42)">
+      <rect width="660" height="48" rx="6" fill="#1b0810" stroke="#ff4757" stroke-width="1" />
+      <text x="16" y="24" fill="#ffffff" font-size="13" font-weight="bold">👁️ Guardian AI Dual-Review (guardian_agent.py)</text>
+      <text x="16" y="40" fill="#ffa502" font-size="11">Regex heuristic rails + Fast Secondary LLM ([SAFE] vs [DANGEROUS])</text>
+    </g>
+
+    <!-- Human Confirmation Gate -->
+    <g transform="translate(20, 100)">
+      <rect width="320" height="54" rx="6" fill="#1b0810" stroke="#ff4757" stroke-width="1" />
+      <text x="14" y="24" fill="#ffffff" font-size="12" font-weight="bold">⚠️ Action Confirmation Gate</text>
+      <text x="14" y="42" fill="#7fa6b8" font-size="11">PENDING_ACTIONS + 5-min TTL</text>
+    </g>
+
+    <!-- Workspace Boundary Jail -->
+    <g transform="translate(360, 100)">
+      <rect width="320" height="54" rx="6" fill="#1b0810" stroke="#ff4757" stroke-width="1" />
+      <text x="14" y="24" fill="#ffffff" font-size="12" font-weight="bold">🧱 Workspace Sandbox Jail</text>
+      <text x="14" y="42" fill="#7fa6b8" font-size="11">Blocks .. traversal &amp; CON/PRN</text>
+    </g>
+
+    <!-- Usage & Budget Tracker -->
+    <g transform="translate(20, 164)">
+      <rect width="320" height="52" rx="6" fill="#1b0810" stroke="#2ed573" stroke-width="1" />
+      <text x="14" y="22" fill="#2ed573" font-size="12" font-weight="bold">📊 Token &amp; Budget Controller</text>
+      <text x="14" y="38" fill="#7fa6b8" font-size="11">Monthly USD caps &amp; auto-pause</text>
+    </g>
+
+    <!-- Append-Only Audit Trail -->
+    <g transform="translate(360, 164)">
+      <rect width="320" height="52" rx="6" fill="#1b0810" stroke="#37d6ff" stroke-width="1" />
+      <text x="14" y="22" fill="#37d6ff" font-size="12" font-weight="bold">📜 Append-Only Audit Trail</text>
+      <text x="14" y="38" fill="#7fa6b8" font-size="11">data/audit.jsonl + Secret Masking</text>
+    </g>
+  </g>
+
+  <!-- ==================== LAYER 4: AGENT ORCHESTRATION & ROUTER ==================== -->
+  <g transform="translate(800, 410)">
+    <rect width="740" height="230" rx="8" fill="url(#cardGrad)" stroke="#37d6ff" stroke-width="1.2" stroke-opacity="0.4" />
+    <text x="20" y="26" fill="#37d6ff" font-size="12" font-weight="bold" letter-spacing="1.5">4. AGENT ORCHESTRATION &amp; MULTI-MODEL ROUTER</text>
+
+    <!-- Plan Mode -->
+    <g transform="translate(20, 42)">
+      <rect width="700" height="48" rx="6" fill="#041224" stroke="#37d6ff" stroke-width="1" />
+      <text x="16" y="24" fill="#ffffff" font-size="13" font-weight="bold">📋 Autonomous Plan Mode Coordinator (plan_mode.py)</text>
+      <text x="16" y="40" fill="#2ed573" font-size="11">Decomposes tasks into sequential steps [[PLAN: ...]] with abort-on-failure</text>
+    </g>
+
+    <!-- Multi-Model Failover Router -->
+    <g transform="translate(20, 100)">
+      <rect width="700" height="60" rx="6" fill="#041224" stroke="#37d6ff" stroke-width="1" />
+      <text x="16" y="24" fill="#ffffff" font-size="13" font-weight="bold">🔄 Multi-Model Fallback Router (call_llm_with_fallback)</text>
+      <text x="16" y="46" fill="#7fa6b8" font-size="11">Automatic failover across providers on HTTP 429 rate limit, 5xx server error, or timeout</text>
+    </g>
+
+    <!-- Models Grid -->
+    <g transform="translate(20, 170)">
+      <rect width="165" height="46" rx="5" fill="#08203d" stroke="#37d6ff" stroke-width="0.8" />
+      <text x="12" y="22" fill="#ffffff" font-size="11" font-weight="bold">Anthropic Claude</text>
+      <text x="12" y="36" fill="#7fa6b8" font-size="10">Sonnet 3.5 / Haiku / Opus</text>
+
+      <rect x="178" y="0" width="165" height="46" rx="5" fill="#08203d" stroke="#37d6ff" stroke-width="0.8" />
+      <text x="190" y="22" fill="#ffffff" font-size="11" font-weight="bold">Google Gemini</text>
+      <text x="190" y="36" fill="#7fa6b8" font-size="10">2.5 Pro / Flash / 3.x</text>
+
+      <rect x="356" y="0" width="165" height="46" rx="5" fill="#08203d" stroke="#37d6ff" stroke-width="0.8" />
+      <text x="368" y="22" fill="#ffffff" font-size="11" font-weight="bold">OpenAI / Groq</text>
+      <text x="368" y="36" fill="#7fa6b8" font-size="10">GPT-4o / GPT-4.1 / o3</text>
+
+      <rect x="534" y="0" width="165" height="46" rx="5" fill="#08203d" stroke="#2ed573" stroke-width="0.8" />
+      <text x="546" y="22" fill="#2ed573" font-size="11" font-weight="bold">Local Ollama</text>
+      <text x="546" y="36" fill="#7fa6b8" font-size="10">Llama3.2 / Offline Free</text>
+    </g>
+  </g>
+
+  <!-- Bidirectional Safety Review Arrow -->
+  <path d="M 800 525 H 765" stroke="#ffa502" stroke-width="2" marker-end="url(#arrowOrange)" />
+  <text x="740" y="515" fill="#ffa502" font-size="10" font-weight="bold" text-anchor="middle">Pre-Execution Safety Gating</text>
+
+  <!-- Connectors from Layer 3 & 4 to Layer 5 (Tools) -->
+  <path d="M 400 640 V 675" stroke="#2ed573" stroke-width="2" marker-end="url(#arrowGreen)" />
+  <path d="M 1150 640 V 675" stroke="#37d6ff" stroke-width="2" marker-end="url(#arrowCyan)" />
+
+  <!-- ==================== LAYER 5: NATIVE EXECUTION ENGINES ==================== -->
+  <g transform="translate(60, 680)">
+    <rect width="1480" height="210" rx="8" fill="url(#cardGrad)" stroke="#37d6ff" stroke-width="1.2" stroke-opacity="0.4" />
+    <text x="20" y="26" fill="#37d6ff" font-size="12" font-weight="bold" letter-spacing="1.5">5. NATIVE TOOL EXECUTION SUBSYSTEMS (Zero Third-Party Pip Dependencies)</text>
+
+    <!-- Tools Grid Row 1 -->
+    <!-- Nova Browser -->
+    <g transform="translate(20, 42)">
+      <rect width="345" height="68" rx="6" fill="#03162b" stroke="#37d6ff" stroke-width="1" />
+      <text x="14" y="24" fill="#ffffff" font-size="12" font-weight="bold">🌐 Nova Browser (nova_browser.py)</text>
+      <text x="14" y="42" fill="#7fa6b8" font-size="10">Chrome/Edge DevTools Protocol (CDP WebSocket)</text>
+      <text x="14" y="56" fill="#37d6ff" font-size="10">Persistent Profiles (YouTube, WhatsApp, Telegram)</text>
+    </g>
+
+    <!-- Memory Engine -->
+    <g transform="translate(385, 42)">
+      <rect width="345" height="68" rx="6" fill="#03162b" stroke="#37d6ff" stroke-width="1" />
+      <text x="14" y="24" fill="#ffffff" font-size="12" font-weight="bold">🧠 Second Brain Engine (memory_engine.py)</text>
+      <text x="14" y="42" fill="#7fa6b8" font-size="10">SQLite FTS5 Full-Text Search Facts &amp; Notes</text>
+      <text x="14" y="56" fill="#37d6ff" font-size="10">Conversation turn memory &amp; session recall</text>
+    </g>
+
+    <!-- Scheduler Engine -->
+    <g transform="translate(750, 42)">
+      <rect width="345" height="68" rx="6" fill="#03162b" stroke="#37d6ff" stroke-width="1" />
+      <text x="14" y="24" fill="#ffffff" font-size="12" font-weight="bold">⏰ Scheduler &amp; Automations (scheduler_engine.py)</text>
+      <text x="14" y="42" fill="#7fa6b8" font-size="10">Natural language timers, reminders &amp; alarms</text>
+      <text x="14" y="56" fill="#37d6ff" font-size="10">Recurring background cron jobs</text>
+    </g>
+
+    <!-- GitHub & Repo Tool -->
+    <g transform="translate(1115, 42)">
+      <rect width="345" height="68" rx="6" fill="#03162b" stroke="#37d6ff" stroke-width="1" />
+      <text x="14" y="24" fill="#ffffff" font-size="12" font-weight="bold">🐙 GitHub &amp; Repo Tools (github_connector.py)</text>
+      <text x="14" y="42" fill="#7fa6b8" font-size="10">Repo overview, README, issues, PRs, file tree</text>
+      <text x="14" y="56" fill="#2ed573" font-size="10">Clone to workspace &amp; install skills from repo</text>
+    </g>
+
+    <!-- Tools Grid Row 2 -->
+    <!-- Win32 Desktop -->
+    <g transform="translate(20, 124)">
+      <rect width="345" height="68" rx="6" fill="#03162b" stroke="#37d6ff" stroke-width="1" />
+      <text x="14" y="24" fill="#ffffff" font-size="12" font-weight="bold">🖥️ Win32 Desktop Automation (ctypes)</text>
+      <text x="14" y="42" fill="#7fa6b8" font-size="10">Mouse, keyboard, LockWorkStation, volume</text>
+      <text x="14" y="56" fill="#37d6ff" font-size="10">Multimodal Desktop Screenshot &amp; Screen Vision</text>
+    </g>
+
+    <!-- Process & Code Sandbox -->
+    <g transform="translate(385, 124)">
+      <rect width="345" height="68" rx="6" fill="#03162b" stroke="#37d6ff" stroke-width="1" />
+      <text x="14" y="24" fill="#ffffff" font-size="12" font-weight="bold">💻 Terminal &amp; Code Execution (subprocess)</text>
+      <text x="14" y="42" fill="#7fa6b8" font-size="10">PowerShell, CMD, Bash execution with timeout</text>
+      <text x="14" y="56" fill="#ff4757" font-size="10">Guardian-gated confirmation before execution</text>
+    </g>
+
+    <!-- Skills Engine -->
+    <g transform="translate(750, 124)">
+      <rect width="345" height="68" rx="6" fill="#03162b" stroke="#37d6ff" stroke-width="1" />
+      <text x="14" y="24" fill="#ffffff" font-size="12" font-weight="bold">📚 Skills Engine (skills_engine.py)</text>
+      <text x="14" y="42" fill="#7fa6b8" font-size="10">Developer Mode &amp; Cyber Mode catalog</text>
+      <text x="14" y="56" fill="#37d6ff" font-size="10">Auto-loads skills/developer/*.md</text>
+    </g>
+
+    <!-- System Doctor -->
+    <g transform="translate(1115, 124)">
+      <rect width="345" height="68" rx="6" fill="#03162b" stroke="#2ed573" stroke-width="1" />
+      <text x="14" y="24" fill="#2ed573" font-size="12" font-weight="bold">🩺 System Doctor Diagnostics (diagnostics.py)</text>
+      <text x="14" y="42" fill="#7fa6b8" font-size="10">SQLite PRAGMA integrity_check, disk space</text>
+      <text x="14" y="56" fill="#37d6ff" font-size="10">CLI: python diagnostics.py --doctor</text>
+    </g>
+  </g>
+
+  <!-- Connectors from Layer 5 to Layer 6 (Persistence) -->
+  <path d="M 800 890 V 925" stroke="#37d6ff" stroke-width="2" marker-end="url(#arrowCyan)" />
+
+  <!-- ==================== LAYER 6: LOCAL PERSISTENCE ==================== -->
+  <g transform="translate(60, 930)">
+    <rect width="1480" height="110" rx="8" fill="url(#cardGrad)" stroke="#37d6ff" stroke-width="1.2" stroke-opacity="0.3" />
+    <text x="20" y="24" fill="#37d6ff" font-size="12" font-weight="bold" letter-spacing="1.5">6. LOCAL-FIRST PERSISTENCE &amp; STATE STORAGE</text>
+
+    <!-- SQLite Brain DB -->
+    <g transform="translate(20, 38)">
+      <rect width="270" height="56" rx="5" fill="#020d1c" stroke="#37d6ff" stroke-width="1" />
+      <text x="14" y="24" fill="#ffffff" font-size="12" font-weight="bold">🗄️ SQLite Database</text>
+      <text x="14" y="42" fill="#7fa6b8" font-size="10">data/nova_brain.db (FTS5 indexed)</text>
+    </g>
+
+    <!-- Audit JSONL -->
+    <g transform="translate(315, 38)">
+      <rect width="270" height="56" rx="5" fill="#020d1c" stroke="#37d6ff" stroke-width="1" />
+      <text x="14" y="24" fill="#ffffff" font-size="12" font-weight="bold">📜 Append-Only Audit Log</text>
+      <text x="14" y="42" fill="#7fa6b8" font-size="10">data/audit.jsonl (ISO UTC entries)</text>
+    </g>
+
+    <!-- Usage JSONL -->
+    <g transform="translate(610, 38)">
+      <rect width="270" height="56" rx="5" fill="#020d1c" stroke="#37d6ff" stroke-width="1" />
+      <text x="14" y="24" fill="#ffffff" font-size="12" font-weight="bold">📊 Token &amp; Usage Log</text>
+      <text x="14" y="42" fill="#7fa6b8" font-size="10">data/usage.jsonl (Cost calculations)</text>
+    </g>
+
+    <!-- Encrypted Config -->
+    <g transform="translate(905, 38)">
+      <rect width="270" height="56" rx="5" fill="#020d1c" stroke="#37d6ff" stroke-width="1" />
+      <text x="14" y="24" fill="#ffffff" font-size="12" font-weight="bold">⚙️ Encrypted Configuration</text>
+      <text x="14" y="42" fill="#7fa6b8" font-size="10">data/config.json (DPAPI keys)</text>
+    </g>
+
+    <!-- Workspace Directory -->
+    <g transform="translate(1200, 38)">
+      <rect width="260" height="56" rx="5" fill="#020d1c" stroke="#2ed573" stroke-width="1" />
+      <text x="14" y="24" fill="#2ed573" font-size="12" font-weight="bold">📁 Workspace Jail Root</text>
+      <text x="14" y="42" fill="#7fa6b8" font-size="10">workspace/ (Default execution dir)</text>
+    </g>
+  </g>
+
+  <!-- Footer Legend -->
+  <g transform="translate(60, 1075)">
+    <circle cx="10" cy="10" r="5" fill="#37d6ff" />
+    <text x="22" y="14" fill="#7fa6b8" font-size="11">Standard Path</text>
+
+    <circle cx="140" cy="10" r="5" fill="#ffa502" />
+    <text x="152" y="14" fill="#7fa6b8" font-size="11">Safety Gating &amp; Dual-Review</text>
+
+    <circle cx="340" cy="10" r="5" fill="#2ed573" />
+    <text x="352" y="14" fill="#7fa6b8" font-size="11">Safe / Approved Execution</text>
+
+    <circle cx="530" cy="10" r="5" fill="#ff4757" />
+    <text x="542" y="14" fill="#7fa6b8" font-size="11">Risk / Confirmation Gate</text>
+
+    <text x="1480" y="14" fill="#7fa6b8" font-size="11" text-anchor="end">100% Python Standard Library • Zero Pip Dependencies</text>
+  </g>
+</svg>

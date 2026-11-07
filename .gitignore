@@ -1,0 +1,38 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Local user configuration & secrets
+data/config.json
+.env
+*.env.*
+*.key
+*.pem
+
+# Local databases & logs
+data/*.db
+data/*.db-journal
+data/*.jsonl
+data/memory.json
+data/nova_browser_profile/
+
+# Workspace scratch files
+workspace/*
+!workspace/.gitkeep
+
+# Operating System files
+Thumbs.db
+[Dd]esktop.ini
+.DS_Store
+
+# IDE & Editor folders
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Build artifacts
+dist/
+build/
+*.exe

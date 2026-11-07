@@ -1,0 +1,32 @@
+{
+  "provider": "gemini",
+  "api_key": "",
+  "model": "gemini-2.0-flash",
+  "base_url": "",
+  "user_name": "User",
+  "language": "en-US",
+  "character": "jarvis",
+  "port": 8765,
+  "coding_workspace": "workspace",
+  "voice_rate": 1.0,
+  "voice_pitch": 1.0,
+  "voice_volume": 1.0,
+  "wake_word_enabled": true,
+  "barge_in_enabled": true,
+  "remote_enabled": false,
+  "remote_port": 8766,
+  "remote_token": "",
+  "allow_outside_workspace": false,
+  "max_tokens": 4096,
+  "confirm_destructive": true,
+  "remote_allow_dangerous": false,
+  "process_timeout": 30,
+  "run_code_trusted_minutes": 0,
+  "encrypt_keys": true,
+  "llm_timeout": 45,
+  "apps": {
+    "notepad": ["notepad.exe"],
+    "calculator": ["calc.exe"],
+    "browser": ["start", "msedge"]
+  }
+}
