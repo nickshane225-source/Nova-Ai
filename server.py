@@ -2104,6 +2104,8 @@ def skill_organize_folder(target_path="", cfg=None):
 
 
 def skill_run_code(arg, cfg=None):
+    if len(arg or "") > 2000:
+        return f"Error: RUN_CODE command exceeds maximum allowed length of 2,000 characters ({len(arg or '')} chars). Command rejected."
     parts = arg.split("|", 1)
     if len(parts) < 2:
         lang = "python"
@@ -2178,6 +2180,8 @@ def skill_run_code(arg, cfg=None):
 
 
 def skill_cmd(command, cfg=None):
+    if len(command or "") > 2000:
+        return f"Error: CMD command exceeds maximum allowed length of 2,000 characters ({len(command or '')} chars). Command rejected."
     if is_destructive_command(command):
         return "Refused: blocked destructive system pattern detected."
     timeout = max(1, min(300, int((cfg or {}).get("process_timeout", 45))))
@@ -2194,6 +2198,8 @@ def skill_cmd(command, cfg=None):
 
 
 def skill_powershell(script, cfg=None):
+    if len(script or "") > 2000:
+        return f"Error: POWERSHELL command exceeds maximum allowed length of 2,000 characters ({len(script or '')} chars). Command rejected."
     if is_destructive_command(script):
         return "Refused: blocked destructive system pattern detected."
     timeout = max(1, min(300, int((cfg or {}).get("process_timeout", 45))))
@@ -2500,6 +2506,9 @@ def run_skill(cfg, name, arg, source="pc", is_confirmed=False, mode="developer")
     try:
         name = name.strip().upper()
         raw_arg = (arg or "").strip()
+
+        if name in ("CMD", "POWERSHELL", "RUN_CODE") and len(raw_arg) > 2000:
+            return f"Error: {name} command exceeds maximum allowed length of 2,000 characters ({len(raw_arg)} chars). Command rejected."
 
         if mode == "cyber" and name not in CYBER_ALLOWED_TOOLS:
             return "Not available in Cyber Mode"
@@ -2887,6 +2896,13 @@ def execute_model_tags(tags, cfg, jid=None, mode="developer", source="pc", is_ta
 
     for name, arg, _, _ in tags:
         clean_name = unicodedata.normalize("NFKC", (name or "")).strip().upper()
+        if clean_name in ("CMD", "POWERSHELL", "RUN_CODE") and len(arg or "") > 2000:
+            err_msg = f"Error: {clean_name} command exceeds maximum allowed length of 2,000 characters ({len(arg or '')} chars). Command rejected."
+            actions.append({"skill": clean_name, "arg": arg, "result": err_msg})
+            feedback_items.append(f"[{clean_name} Output]:\n{err_msg}")
+            is_tainted = True
+            continue
+
         if clean_name in TAINT_SOURCE_TOOLS:
             is_tainted = True
 
@@ -2894,9 +2910,6 @@ def execute_model_tags(tags, cfg, jid=None, mode="developer", source="pc", is_ta
         if needs_confirm:
             action_id = secrets.token_hex(8)
             preview_str = arg or ""
-            if len(preview_str) > 20000:
-                more_chars = len(preview_str) - 20000
-                preview_str = preview_str[:20000] + f"\n... [truncated, {more_chars} more characters]"
 
             with PENDING_LOCK:
                 if len(PENDING_ACTIONS) >= 20:
@@ -2927,6 +2940,7 @@ def execute_model_tags(tags, cfg, jid=None, mode="developer", source="pc", is_ta
                 "id": action_id,
                 "action": clean_name,
                 "preview": preview_str,
+                "command": arg or "",
                 "prompt": prompt_text,
                 "guardian": g_verdict,
             }
@@ -3699,7 +3713,7 @@ class Handler(BaseHandler):
             return
         try:
             if path == "/api/confirm":
-                action_id = body.get("id")
+                action_id = body.get("id") or body.get("action_id")
                 approve = bool(body.get("approve"))
                 with PENDING_LOCK:
                     pending = PENDING_ACTIONS.pop(action_id, None)
@@ -3718,7 +3732,7 @@ class Handler(BaseHandler):
                             status="DENIED",
                             cfg=cfg,
                         )
-                    return self._send(200, {"ok": True, "approved": False, "action": pending["name"]})
+                    return self._send(200, {"ok": True, "approved": False, "action": pending["name"], "command": pending.get("arg", "")})
                 if pending.get("name") == "RUN_CODE":
                     with RUN_CODE_TRUST_LOCK:
                         LAST_RUN_CODE_APPROVED_TIME = time.time()
@@ -3732,7 +3746,7 @@ class Handler(BaseHandler):
                         status="APPROVED",
                         cfg=cfg,
                     )
-                return self._send(200, {"ok": True, "approved": True, "action": pending["name"], "result": res})
+                return self._send(200, {"ok": True, "approved": True, "action": pending["name"], "command": pending.get("arg", ""), "result": res})
             if path == "/api/notifications/clear":
                 if scheduler_engine:
                     scheduler_engine.SCHEDULER.clear_notifications()

@@ -69,13 +69,14 @@ class TestTelegramGateway(unittest.TestCase):
                 "text": "/allow abcdef12",
             }
         }
-        with patch("telegram_gateway.handle_remote_confirm", return_value={"ok": True, "result": "Done"}) as mock_confirm:
+        with patch("telegram_gateway.handle_remote_confirm", return_value={"ok": True, "action": "CMD", "command": "echo test_allow", "result": "Done"}) as mock_confirm:
             with patch.object(gw, "send_message") as mock_send:
                 handled = gw.process_update(update)
                 self.assertTrue(handled)
                 mock_confirm.assert_called_once_with("abcdef12", approve=True)
                 mock_send.assert_called_once()
                 self.assertIn("Approved", mock_send.call_args[0][1])
+                self.assertIn("echo test_allow", mock_send.call_args[0][1])
 
     def test_remote_deny_confirmation_command(self):
         cfg = {
@@ -92,13 +93,46 @@ class TestTelegramGateway(unittest.TestCase):
                 "text": "/deny abcdef12",
             }
         }
-        with patch("telegram_gateway.handle_remote_confirm", return_value={"ok": True, "action": "CMD"}) as mock_confirm:
+        with patch("telegram_gateway.handle_remote_confirm", return_value={"ok": True, "action": "CMD", "command": "echo test_deny"}) as mock_confirm:
             with patch.object(gw, "send_message") as mock_send:
                 handled = gw.process_update(update)
                 self.assertTrue(handled)
                 mock_confirm.assert_called_once_with("abcdef12", approve=False)
                 mock_send.assert_called_once()
                 self.assertIn("Denied", mock_send.call_args[0][1])
+                self.assertIn("echo test_deny", mock_send.call_args[0][1])
+
+    def test_remote_pending_action_includes_command_in_approval_prompt(self):
+        cfg = {
+            "telegram_bot_token": "fake_token",
+            "telegram_allowed_chat_ids": ["12345678"]
+        }
+        mock_cb = MagicMock(return_value={
+            "reply": "I need your confirmation.",
+            "pending": {
+                "id": "act_999",
+                "action": "CMD",
+                "prompt": "Run dir command?",
+                "command": "dir /s /b"
+            }
+        })
+        gw = telegram_gateway.TelegramGateway(cfg, chat_callback=mock_cb)
+        update = {
+            "update_id": 5,
+            "message": {
+                "message_id": 105,
+                "chat": {"id": 12345678},
+                "text": "Check files",
+            }
+        }
+        with patch.object(gw, "send_message") as mock_send:
+            handled = gw.process_update(update)
+            self.assertTrue(handled)
+            mock_send.assert_called_once()
+            msg = mock_send.call_args[0][1]
+            self.assertIn("Action Requires Approval", msg)
+            self.assertIn("dir /s /b", msg)
+            self.assertIn("Command:", msg)
 
 
 if __name__ == "__main__":

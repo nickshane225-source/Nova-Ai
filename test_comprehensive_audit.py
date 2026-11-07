@@ -257,6 +257,104 @@ class TestComprehensiveAudit(unittest.TestCase):
             self.assertFalse(res_post.get("ok"))
             self.assertIn("GitHub connector error", res_post.get("error", ""))
 
+    # --- 9. SECURITY FIX 1: CONFIRMATION PREVIEW & COMMAND LENGTH LIMITS ---
+    def test_issue1_cmd_powershell_run_code_over_2000_chars_rejected(self):
+        long_cmd = "echo " + "a" * 2005
+        res_cmd = server.skill_cmd(long_cmd)
+        self.assertIn("exceeds maximum allowed length of 2,000 characters", res_cmd)
+
+        res_ps = server.skill_powershell(long_cmd)
+        self.assertIn("exceeds maximum allowed length of 2,000 characters", res_ps)
+
+        long_code = "python|" + ("print('hello')\n" * 200)
+        res_code = server.skill_run_code(long_code)
+        self.assertIn("exceeds maximum allowed length of 2,000 characters", res_code)
+
+        # In run_skill directly
+        self.assertIn("exceeds maximum allowed length of 2,000 characters", server.run_skill({}, "CMD", long_cmd))
+        self.assertIn("exceeds maximum allowed length of 2,000 characters", server.run_skill({}, "POWERSHELL", long_cmd))
+        self.assertIn("exceeds maximum allowed length of 2,000 characters", server.run_skill({}, "RUN_CODE", long_code))
+
+        # In execute_model_tags: must be rejected immediately without asking confirmation
+        exec_res = server.execute_model_tags([("CMD", long_cmd, None, None)], cfg={})
+        self.assertIsNone(exec_res.get("pending_info"))
+        self.assertTrue(exec_res.get("is_tainted"))
+        self.assertIn("exceeds maximum allowed length of 2,000 characters", exec_res["actions"][0]["result"])
+
+    def test_issue1_confirmation_preview_no_20000_char_truncation(self):
+        huge_content = "huge.txt|" + ("A" * 25000)
+        exec_res = server.execute_model_tags([("WRITE_FILE", huge_content, None, None)], cfg={}, is_tainted=True)
+        pending = exec_res.get("pending_info")
+        self.assertIsNotNone(pending)
+        self.assertEqual(len(pending["preview"]), len(huge_content))
+        self.assertNotIn("[truncated", pending["preview"])
+        self.assertEqual(pending.get("command"), huge_content)
+
+    def test_issue1_api_confirm_includes_full_command(self):
+        action_id_approve = "test_iss1_appr"
+        with server.PENDING_LOCK:
+            server.PENDING_ACTIONS[action_id_approve] = {
+                "id": action_id_approve,
+                "name": "NOTE",
+                "arg": "security test note content",
+                "mode": "developer",
+                "source": "pc",
+                "expires_at": time.time() + 60,
+                "created_at": time.time(),
+                "reason": "testing confirm command reflection",
+            }
+        code, res = self._req("/api/confirm", method="POST", data={"action_id": action_id_approve, "approve": True})
+        self.assertEqual(code, 200)
+        self.assertTrue(res.get("ok"))
+        self.assertTrue(res.get("approved"))
+        self.assertEqual(res.get("command"), "security test note content")
+
+        action_id_deny = "test_iss1_deny"
+        with server.PENDING_LOCK:
+            server.PENDING_ACTIONS[action_id_deny] = {
+                "id": action_id_deny,
+                "name": "NOTE",
+                "arg": "security test note denied content",
+                "mode": "developer",
+                "source": "pc",
+                "expires_at": time.time() + 60,
+                "created_at": time.time(),
+                "reason": "testing confirm deny command reflection",
+            }
+        code_d, res_d = self._req("/api/confirm", method="POST", data={"action_id": action_id_deny, "approve": False})
+        self.assertEqual(code_d, 200)
+        self.assertTrue(res_d.get("ok"))
+        self.assertFalse(res_d.get("approved"))
+        self.assertEqual(res_d.get("command"), "security test note denied content")
+
+    def test_issue1_gateways_include_full_command(self):
+        import discord_gateway
+        # Telegram confirm
+        with server.PENDING_LOCK:
+            server.PENDING_ACTIONS["tg_iss1"] = {
+                "id": "tg_iss1",
+                "name": "NOTE",
+                "arg": "telegram payload to verify",
+                "mode": "developer",
+                "source": "telegram",
+                "expires_at": time.time() + 60,
+            }
+        res_tg = telegram_gateway.handle_remote_confirm("tg_iss1", approve=False)
+        self.assertEqual(res_tg.get("command"), "telegram payload to verify")
+
+        # Discord confirm
+        with server.PENDING_LOCK:
+            server.PENDING_ACTIONS["dc_iss1"] = {
+                "id": "dc_iss1",
+                "name": "NOTE",
+                "arg": "discord payload to verify",
+                "mode": "developer",
+                "source": "discord",
+                "expires_at": time.time() + 60,
+            }
+        res_dc = discord_gateway.handle_remote_confirm("dc_iss1", approve=False)
+        self.assertEqual(res_dc.get("command"), "discord payload to verify")
+
 
 if __name__ == "__main__":
     unittest.main()

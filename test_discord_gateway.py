@@ -64,10 +64,30 @@ class TestDiscordGateway(unittest.TestCase):
                 mock_send.assert_called_once_with("channel_123", "Mocked AI Response")
 
     def test_approval_commands(self):
+        self.mock_confirm.return_value = {"ok": True, "action": "CMD", "command": "echo test_discord_cmd", "result": "Success"}
         with patch.object(self.gateway, "send_message") as mock_send:
             self.gateway.handle_message("channel_123", "user_admin", "/allow token_xyz")
             self.mock_confirm.assert_called_once_with("token_xyz", True)
-            mock_send.assert_called_once_with("channel_123", "✅ Action allowed: None")
+            sent = mock_send.call_args[0][1]
+            self.assertIn("Action allowed: CMD", sent)
+            self.assertIn("echo test_discord_cmd", sent)
+            self.assertIn("Success", sent)
+
+    def test_pending_action_includes_command_in_approval_prompt(self):
+        self.mock_chat.return_value = {
+            "reply": "Need approval",
+            "pending": {
+                "id": "act_dc_99",
+                "prompt": "Run shell script?",
+                "command": "dir /s /b",
+            }
+        }
+        with patch.object(self.gateway, "send_message") as mock_send:
+            self.gateway.handle_message("channel_123", "user_admin", "List files")
+            sent = mock_send.call_args[0][1]
+            self.assertIn("Action Requires Approval", sent)
+            self.assertIn("dir /s /b", sent)
+            self.assertIn("Command:", sent)
 
     def test_approval_command_failure_reporting(self):
         self.mock_confirm.return_value = {"ok": False, "error": "Token expired"}

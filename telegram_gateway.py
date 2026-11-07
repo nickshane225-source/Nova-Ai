@@ -39,7 +39,7 @@ def handle_remote_confirm(action_id: str, approve: bool) -> Dict[str, Any]:
                     status="DENIED",
                     cfg=cfg,
                 )
-            return {"ok": True, "approved": False, "action": pending["name"]}
+            return {"ok": True, "approved": False, "action": pending["name"], "command": pending.get("arg", "")}
 
         res = server.run_skill(
             cfg,
@@ -58,7 +58,7 @@ def handle_remote_confirm(action_id: str, approve: bool) -> Dict[str, Any]:
                 status="APPROVED",
                 cfg=cfg,
             )
-        return {"ok": True, "approved": True, "action": pending["name"], "result": res}
+        return {"ok": True, "approved": True, "action": pending["name"], "command": pending.get("arg", ""), "result": res}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
@@ -123,7 +123,8 @@ class TelegramGateway:
                 return True
             res = handle_remote_confirm(action_id, approve=True)
             if res.get("ok"):
-                self.send_message(chat_id_int, f"✅ Action Approved: {res.get('action')}\n{res.get('result', '')}")
+                cmd_info = f"\nCommand:\n`{res.get('command')}`" if res.get("command") else ""
+                self.send_message(chat_id_int, f"✅ Action Approved: {res.get('action')}{cmd_info}\n{res.get('result', '')}")
             else:
                 self.send_message(chat_id_int, f"❌ Failed to approve: {res.get('error')}")
             return True
@@ -137,7 +138,8 @@ class TelegramGateway:
                 return True
             res = handle_remote_confirm(action_id, approve=False)
             if res.get("ok"):
-                self.send_message(chat_id_int, f"🚫 Action Denied: {res.get('action')}")
+                cmd_info = f"\nCommand:\n`{res.get('command')}`" if res.get("command") else ""
+                self.send_message(chat_id_int, f"🚫 Action Denied: {res.get('action')}{cmd_info}")
             else:
                 self.send_message(chat_id_int, f"❌ Failed to deny: {res.get('error')}")
             return True
@@ -157,7 +159,13 @@ class TelegramGateway:
                     reply_text = res.get("reply", "") or res.get("response", "")
                     if res.get("pending"):
                         p = res["pending"]
-                        reply_text += f"\n\n⚠️ Action Requires Approval (ID: `{p.get('id')}`):\n{p.get('prompt')}\nUse `/allow {p.get('id')}` or `/deny {p.get('id')}`"
+                        cmd_val = p.get("command") or p.get("arg") or p.get("preview") or ""
+                        reply_text += (
+                            f"\n\n⚠️ Action Requires Approval (ID: `{p.get('id')}`):\n"
+                            f"{p.get('prompt')}\n\n"
+                            f"Command:\n```\n{cmd_val}\n```\n"
+                            f"Use `/allow {p.get('id')}` or `/deny {p.get('id')}`"
+                        )
                 else:
                     reply_text = str(res)
                 self.send_message(chat_id_int, reply_text)

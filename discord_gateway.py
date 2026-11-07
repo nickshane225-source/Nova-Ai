@@ -139,7 +139,8 @@ class DiscordGateway:
                 if result.get("ok"):
                     res_detail = result.get("result")
                     res_str = f"\nResult: {res_detail}" if res_detail else ""
-                    reply = f"✅ Action {action}ed: {result.get('action')}{res_str}"
+                    cmd_str = f"\nCommand: `{result.get('command')}`" if result.get('command') else ""
+                    reply = f"✅ Action {action}ed: {result.get('action')}{cmd_str}{res_str}"
                 else:
                     reply = f"❌ Failed to {action}: {result.get('error', 'Action not found or expired')}"
             else:
@@ -172,6 +173,15 @@ class DiscordGateway:
                 # source="discord" triggers silent remote execution (no PC TTS playback)
                 resp = self.chat_handler(text, "discord")
                 reply_text = resp.get("reply") or resp.get("response") or "Done."
+                if isinstance(resp, dict) and resp.get("pending"):
+                    p = resp["pending"]
+                    cmd_val = p.get("command") or p.get("arg") or p.get("preview") or ""
+                    reply_text += (
+                        f"\n\n⚠️ Action Requires Approval (ID: `{p.get('id')}`):\n"
+                        f"{p.get('prompt')}\n\n"
+                        f"Command:\n```\n{cmd_val}\n```\n"
+                        f"Use `/allow {p.get('id')}` or `/deny {p.get('id')}`"
+                    )
                 self.send_message(channel_id, reply_text)
             except Exception as e:
                 self.send_message(channel_id, f"Error processing query: {e}")
@@ -234,7 +244,7 @@ def handle_remote_confirm(action_id: str, approve: bool) -> dict[str, Any]:
                     status="DENIED",
                     cfg=cfg,
                 )
-            return {"ok": True, "approved": False, "action": pending["name"]}
+            return {"ok": True, "approved": False, "action": pending["name"], "command": pending.get("arg", "")}
 
         res = server.run_skill(
             cfg,
@@ -253,7 +263,7 @@ def handle_remote_confirm(action_id: str, approve: bool) -> dict[str, Any]:
                 status="APPROVED",
                 cfg=cfg,
             )
-        return {"ok": True, "approved": True, "action": pending["name"], "result": res}
+        return {"ok": True, "approved": True, "action": pending["name"], "command": pending.get("arg", ""), "result": res}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 

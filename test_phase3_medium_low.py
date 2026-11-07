@@ -65,21 +65,27 @@ class TestPhase3MediumLow(unittest.TestCase):
             self.assertIn("--remote-debugging-address=127.0.0.1", args)
             self.assertIn(f"--remote-allow-origins=http://127.0.0.1:{nova_browser.CDP_PORT}", args)
 
-    # --- 3C: CONFIRMATION PREVIEW TRUNCATION ---
+    # --- 3C: CONFIRMATION PREVIEW TRUNCATION & LENGTH LIMITS ---
     def test_confirmation_preview_truncation(self):
+        # 1. RUN_CODE > 2000 chars is rejected immediately with error
         huge_cmd = "echo " + ("A" * 25000)
-        # Tag requiring confirmation
         tags = [("RUN_CODE", f"python | {huge_cmd}", 0, 100)]
         cfg = dict(server.DEFAULT_CONFIG)
         cfg["confirm_destructive"] = True
 
         tag_result = server.execute_model_tags(tags, cfg, mode="developer", source="pc", is_tainted=False)
-        pending = tag_result.get("pending_info")
+        self.assertIsNone(tag_result.get("pending_info"))
+        self.assertIn("exceeds maximum allowed length of 2,000 characters", tag_result["actions"][0]["result"])
+
+        # 2. Confirmation preview: 20,000-char truncation removed for actions requiring confirmation
+        huge_file_content = "bigfile.txt|" + ("A" * 25000)
+        file_tags = [("WRITE_FILE", huge_file_content, 0, 100)]
+        file_result = server.execute_model_tags(file_tags, cfg, mode="developer", source="pc", is_tainted=True)
+        pending = file_result.get("pending_info")
         self.assertIsNotNone(pending)
         preview = pending.get("preview", "")
-        self.assertIn("truncated", preview)
-        self.assertIn("more characters", preview)
-        self.assertTrue(len(preview) <= 21000)
+        self.assertNotIn("truncated", preview)
+        self.assertEqual(len(preview), len(huge_file_content))
 
     # --- 3D: TELEMETRY MASKING ---
     def test_telemetry_masking(self):
