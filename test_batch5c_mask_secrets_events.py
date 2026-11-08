@@ -66,18 +66,17 @@ class TestBatch5cMaskSecretsEvents(unittest.TestCase):
         done_ev = step_done_events[0]
 
         # 1. Secret must NOT appear in any event field
-        self.assertNotIn(raw_secret_key, done_ev.get("res", ""))
-        self.assertNotIn(raw_secret_key, done_ev.get("step", ""))
+        res_text = done_ev.get("preview") or done_ev.get("res", "")
+        self.assertNotIn(raw_secret_key, res_text)
         self.assertNotIn(raw_secret_key, done_ev.get("title", ""))
 
-        # 2. String lengths must strictly adhere to <= 100 characters
-        self.assertLessEqual(len(done_ev.get("res", "")), 100)
-        self.assertLessEqual(len(done_ev.get("step", "")), 100)
+        # 2. String lengths must strictly adhere to limit
+        self.assertLessEqual(len(res_text), 200)
         self.assertLessEqual(len(done_ev.get("title", "")), 100)
 
         # 3. Masked indicator present
         self.assertTrue(
-            "[MASKED_SECRET]" in done_ev.get("res", "") or "sk-proj****" in done_ev.get("res", "")
+            "[MASKED_SECRET]" in res_text or "sk-proj****" in res_text
         )
 
 

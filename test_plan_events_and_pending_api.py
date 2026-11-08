@@ -38,6 +38,7 @@ class TestPlanEventsAndPendingAPI(unittest.TestCase):
             server.PENDING_ACTIONS.clear()
         with server.ACTIVE_PLANS_LOCK:
             server.ACTIVE_PLANS.clear()
+        server.Handler.DEFAULT_PORT = 8765
         self.tmp_dir.cleanup()
 
     def _start_live_server(self):

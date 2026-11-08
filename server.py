@@ -6617,11 +6617,6 @@ class Handler(BaseHandler):
                         res_body["message"] = f"Plan '{plan_title}' aborted."
                     return self._send(200, res_body)
 
-            if path == "/api/plan/cancel":
-                target_pid = body.get("plan_id")
-                target_conv = body.get("conv_id")
-                res = cancel_plan(plan_id=target_pid, conv_id=target_conv, source="pc")
-                return self._send(200, res)
                 if pending.get("name") == "RUN_CODE":
                     if pending.get("is_tainted") or is_file_tainted_provenance(pending.get("arg", ""))[0]:
                         RUN_CODE_TRUST_STATE.invalidate()
@@ -6658,6 +6653,12 @@ class Handler(BaseHandler):
                         cfg=cfg,
                     )
                 return self._send(200, {"ok": True, "approved": True, "action": pending["name"], "command": pending.get("arg", ""), "guardian": pending.get("guardian", "NONE"), "result": res})
+
+            if path == "/api/plan/cancel":
+                target_pid = body.get("plan_id")
+                target_conv = body.get("conv_id")
+                res = cancel_plan(plan_id=target_pid, conv_id=target_conv, source="pc")
+                return self._send(200, res)
             if path == "/api/notifications/clear":
                 if scheduler_engine:
                     scheduler_engine.SCHEDULER.clear_notifications()

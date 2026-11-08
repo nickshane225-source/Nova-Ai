@@ -35,6 +35,9 @@ class TestBootSecurity(unittest.TestCase):
             server.BOOT_CODES.clear()
             server.LAST_401_BOOT_MINT_TIME = 0.0
 
+    def tearDown(self):
+        server.Handler.DEFAULT_PORT = 8765
+
     def _start_live_server(self):
         srv = server.SilentThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
         port = srv.server_address[1]
