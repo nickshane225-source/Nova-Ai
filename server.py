@@ -4181,9 +4181,12 @@ def create_plan_step_runner(plan_info, cfg, source="pc", mode="developer", is_ta
     return step_runner
 
 
-def resume_plan_execution(plan_state: dict, last_result=None, cfg=None, turn_tool_executions=None):
+def resume_plan_execution(plan_state: dict, last_result=None, cfg=None, turn_tool_executions=None, async_run=True):
     """
     Resumes execution of a paused plan after the user approves a gated step.
+    Runs remaining steps in a worker thread to prevent blocking the HTTP handler.
+    Exposes progress through activity tracking and /api/events.
+    Enforces a 5-minute total plan runtime.
     """
     if not plan_mode:
         return "Plan Mode coordinator not available."
@@ -4204,33 +4207,73 @@ def resume_plan_execution(plan_state: dict, last_result=None, cfg=None, turn_too
         CONVERSATION_TAINT[conv_id] = True
         RUN_CODE_TRUST_STATE.invalidate()
 
+    plan_title = plan_state.get("title", "Execution Plan")
+
     if not remaining:
-        return f"Plan '{plan_state.get('title', 'Execution Plan')}' executed successfully ({len(completed)} steps completed)."
+        return f"Plan '{plan_title}' executed successfully ({len(completed)} steps completed)."
 
     plan_data = {
-        "title": plan_state.get("title", "Execution Plan"),
+        "title": plan_title,
         "steps": plan_state.get("all_steps", []),
         "completed": completed,
         "results": results,
         "remaining_steps": remaining,
+        "started_at": plan_state.get("started_at", time.time()),
     }
-    step_runner = create_plan_step_runner(
-        plan_data,
-        cfg,
-        source=source,
-        mode=mode,
-        is_tainted=is_tainted,
-        conv_id=conv_id,
-        turn_tool_executions=turn_tool_executions,
-    )
-    batch_res = plan_mode.execute_plan_batch(plan_data, cfg=cfg, runner=step_runner)
-    if batch_res.get("paused"):
-        return batch_res
-    if batch_res.get("ok"):
-        c_count = len(batch_res.get("completed", []))
-        return f"Plan '{plan_state.get('title', 'Execution Plan')}' executed successfully ({c_count} steps completed)."
+
+    def _execute_worker():
+        jid = act_start(source, f"Plan resume: {plan_title}")
+        add_event(type="plan_resumed", title=plan_title, completed=len(completed), remaining=len(remaining))
+        try:
+            step_runner = create_plan_step_runner(
+                plan_data,
+                cfg,
+                source=source,
+                mode=mode,
+                is_tainted=is_tainted,
+                conv_id=conv_id,
+                turn_tool_executions=turn_tool_executions,
+            )
+            def _progress_runner(step, *args):
+                act_phase(jid, "executing", f"Step: {step}")
+                add_event(type="plan_step_start", title=plan_title, step=step)
+                res = step_runner(step, *args)
+                act_step(jid, "PLAN_STEP", step, 0.05)
+                add_event(type="plan_step_done", title=plan_title, step=step, res=str(res)[:100])
+                return res
+
+            batch_res = plan_mode.execute_plan_batch(plan_data, cfg=cfg, runner=_progress_runner)
+            if batch_res.get("paused"):
+                act_phase(jid, "paused", f"Waiting for user confirmation on step: {batch_res.get('paused_step')}")
+                add_event(type="plan_paused", title=plan_title, paused_step=batch_res.get("paused_step"))
+                return batch_res
+            if batch_res.get("ok"):
+                c_count = len(batch_res.get("completed", []))
+                act_end(jid, ok=True)
+                add_event(type="plan_completed", title=plan_title, completed_count=c_count)
+                return f"Plan '{plan_title}' executed successfully ({c_count} steps completed)."
+            else:
+                err_msg = batch_res.get("error", "Unknown error")
+                act_end(jid, ok=False, error=err_msg)
+                add_event(type="plan_failed", title=plan_title, error=err_msg, failed_step=batch_res.get("failed_step"))
+                return f"Plan '{plan_title}' aborted at step '{batch_res.get('failed_step')}': {err_msg}"
+        except Exception as exc:
+            act_end(jid, ok=False, error=str(exc))
+            add_event(type="plan_error", title=plan_title, error=str(exc))
+            return f"Plan '{plan_title}' execution error: {exc}"
+
+    if async_run:
+        worker = threading.Thread(target=_execute_worker, name="PlanResumeWorker", daemon=True)
+        worker.start()
+        add_event(type="plan_resumed_async", title=plan_title, remaining=len(remaining))
+        return {
+            "ok": True,
+            "resumed": True,
+            "message": f"Plan '{plan_title}' resumed in background.",
+            "worker": worker,
+        }
     else:
-        return f"Plan '{plan_state.get('title', 'Execution Plan')}' aborted at step '{batch_res.get('failed_step')}': {batch_res.get('error')}"
+        return _execute_worker()
 
 
 def run_skill(cfg, name, arg, source="pc", is_confirmed=False, mode="developer", is_tainted=False, conv_id=None, turn_tool_executions=None):
@@ -4312,6 +4355,7 @@ def run_skill(cfg, name, arg, source="pc", is_confirmed=False, mode="developer",
             parsed = plan_mode.parse_plan_tag(raw_arg)
             if not parsed.get("steps"):
                 return f"Plan '{parsed.get('title', 'Execution Plan')}' has no steps."
+            parsed["started_at"] = time.time()
             effective_conv = conv_id or (f"{source}:{mode}" if source == "pc" else f"{source}:general")
             step_runner = create_plan_step_runner(parsed, cfg, source=source, mode=mode, is_tainted=is_tainted, conv_id=effective_conv, turn_tool_executions=turn_tool_executions)
             batch_res = plan_mode.execute_plan_batch(parsed, cfg=cfg, runner=step_runner)
@@ -4971,7 +5015,8 @@ def _chat_inner(user_text, source, jid, mode="developer", is_automation=False, c
                             if source != "pc":
                                 add_event(source=source, text=user_text, reply=reply, actions=[{"skill": pending["name"], "arg": pending["arg"], "result": res}])
                             return {"reply": reply, "actions": [{"skill": pending["name"], "arg": pending["arg"], "result": res}], "pending": plan_res.get("pending_info")}
-                        res = f"{res}\n\n{plan_res}"
+                        res_msg = plan_res.get("message") if isinstance(plan_res, dict) else str(plan_res)
+                        res = f"{res}\n\n{res_msg}"
                     if audit_logger:
                         audit_logger.log_audit_event(
                             channel=source,
@@ -5905,7 +5950,8 @@ class Handler(BaseHandler):
                             "result": f"{res}\n\n[Next Step Requires Confirmation]: {plan_res.get('pending_info', {}).get('prompt')}",
                             "pending": plan_res.get("pending_info"),
                         })
-                    res = f"{res}\n\n{plan_res}"
+                    res_msg = plan_res.get("message") if isinstance(plan_res, dict) else str(plan_res)
+                    res = f"{res}\n\n{res_msg}"
                 if audit_logger:
                     audit_logger.log_audit_event(
                         channel=pending.get("source", "pc"),

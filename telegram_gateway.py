@@ -73,7 +73,8 @@ def handle_remote_confirm(action_id: str, approve: bool) -> Dict[str, Any]:
                     "result": str(res).strip(),
                     "pending": plan_res.get("pending_info"),
                 }
-            res = f"{res}\n\n{plan_res}"
+            res_msg = plan_res.get("message") if isinstance(plan_res, dict) else str(plan_res)
+            res = f"{res}\n\n{res_msg}"
         if getattr(server, "audit_logger", None):
             server.audit_logger.log_audit_event(
                 channel="telegram",

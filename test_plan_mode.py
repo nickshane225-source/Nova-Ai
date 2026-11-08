@@ -203,7 +203,9 @@ class TestPlanMode(unittest.TestCase):
             "conv_id": conv_id_resume,
         }
         with patch("nova_browser.read_page_content", return_value={"title": "Data", "url": "https://example.com/data", "content": "Untrusted"}):
-            server.resume_plan_execution(paused_plan_state, last_result="1", cfg=cfg)
+            res_res = server.resume_plan_execution(paused_plan_state, last_result="1", cfg=cfg)
+            if isinstance(res_res, dict) and res_res.get("worker"):
+                res_res["worker"].join(2.0)
 
         self.assertTrue(server.CONVERSATION_TAINT.get(conv_id_resume, False), "Resume path must propagate taint to conversation taint store")
 
@@ -238,10 +240,9 @@ class TestPlanMode(unittest.TestCase):
             self.assertEqual(pending_entry["plan_state"]["title"], "Deploy Pipeline")
             self.assertEqual(pending_entry["plan_state"]["paused_step_idx"], 2)
 
-        # 2. Approving resumes step 3 and finishes
+        # 2. Approving resumes remaining steps non-blocking with resumed message
         res_approve = server.chat("yes", source="pc", mode="developer")
-        self.assertIn("executed successfully", res_approve["reply"])
-        self.assertIn("3 steps completed", res_approve["reply"])
+        self.assertIn("resumed in background", res_approve["reply"])
         with server.PENDING_LOCK:
             self.assertNotIn(action_id, server.PENDING_ACTIONS)
 
@@ -383,6 +384,59 @@ class TestPlanMode(unittest.TestCase):
         # Full reset
         server.reset_search_counts()
         self.assertEqual(len(server.CONVERSATION_SEARCH_COUNTS), 0)
+
+    def test_resume_plan_execution_nonblocking_events_and_timeout(self):
+        import time
+        import server
+        import plan_mode
+
+        # 1. Non-blocking resume execution & immediate return
+        plan_state = {
+            "title": "Nonblocking Test Plan",
+            "all_steps": ["NOTE: step1", "NOTE: step2"],
+            "completed": ["NOTE: step1"],
+            "remaining_steps": ["NOTE: step2"],
+            "started_at": time.time(),
+            "source": "pc",
+            "mode": "developer",
+        }
+        res_resume = server.resume_plan_execution(plan_state, last_result="step1 ok", cfg={})
+        self.assertIsInstance(res_resume, dict)
+        self.assertTrue(res_resume.get("ok"))
+        self.assertTrue(res_resume.get("resumed"))
+        self.assertIn("resumed in background", res_resume.get("message", ""))
+        self.assertIn("worker", res_resume)
+        # Wait for worker thread to finish
+        res_resume["worker"].join(timeout=3.0)
+
+        # 2. Verify events exposed on status channel (/api/events)
+        with server.LOCK:
+            event_types = [e.get("type") for e in server.EVENTS]
+        self.assertIn("plan_resumed_async", event_types)
+        self.assertIn("plan_completed", event_types)
+
+        # 3. 5-minute total plan runtime timeout enforcement
+        expired_plan = {
+            "title": "Expired Test Plan",
+            "steps": ["NOTE: stepA", "NOTE: stepB"],
+            "started_at": time.time() - 310,  # 310 seconds ago (> 300s)
+        }
+        batch_res = plan_mode.execute_plan_batch(expired_plan, cfg={}, runner=lambda s: "ok")
+        self.assertFalse(batch_res["ok"])
+        self.assertTrue(batch_res.get("timed_out"))
+        self.assertIn("Plan execution timed out", batch_res["error"])
+        self.assertIn("maximum allowed: 300s", batch_res["error"])
+
+        # 4. Immediate timeout parameter support
+        quick_timeout_plan = {
+            "title": "Quick Timeout Plan",
+            "steps": ["NOTE: step1", "NOTE: step2"],
+            "started_at": time.time() - 5,
+        }
+        res_quick = plan_mode.execute_plan_batch(quick_timeout_plan, cfg={}, runner=lambda s: "ok", timeout=1.0)
+        self.assertFalse(res_quick["ok"])
+        self.assertTrue(res_quick.get("timed_out"))
+        self.assertIn("maximum allowed: 1s", res_quick["error"])
 
 
 if __name__ == "__main__":

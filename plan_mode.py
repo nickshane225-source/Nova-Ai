@@ -5,6 +5,7 @@ Zero third-party pip dependencies - Python standard library only.
 """
 import inspect
 import re
+import time
 from typing import Any, Callable, Dict, List, Optional
 
 
@@ -43,10 +44,12 @@ def execute_plan_batch(
     plan: Dict[str, Any],
     cfg: Optional[Dict[str, Any]] = None,
     runner: Optional[Callable[..., Any]] = None,
+    timeout: float = 300.0,
 ) -> Dict[str, Any]:
     """
     Sequentially executes each step in the plan.
     Caps plan execution at 10 steps.
+    Enforces a 5-minute (300s default) maximum plan runtime.
     Aborts immediately upon first step failure (fail-fast architecture).
     Pauses execution if a step requires user confirmation.
     """
@@ -54,6 +57,11 @@ def execute_plan_batch(
     all_steps = (plan.get("steps") or [])[:10]  # Cap at 10 steps
     completed: List[str] = list(plan.get("completed") or [])
     step_results: List[Any] = list(plan.get("results") or [])
+
+    start_time = plan.get("started_at")
+    if start_time is None:
+        start_time = time.time()
+        plan["started_at"] = start_time
 
     # If resuming from a paused state, execute remaining_steps, otherwise all_steps
     steps_to_run = plan.get("remaining_steps") if "remaining_steps" in plan else all_steps
@@ -77,6 +85,17 @@ def execute_plan_batch(
         idx = start_offset + i + 1
         if idx > 10:
             break
+
+        elapsed = time.time() - start_time
+        if elapsed > timeout:
+            return {
+                "ok": False,
+                "error": f"Plan execution timed out after {int(elapsed)} seconds (maximum allowed: {int(timeout)}s).",
+                "failed_step": step,
+                "completed": completed,
+                "results": step_results,
+                "timed_out": True,
+            }
 
         # Refuse nested PLAN tags or nested plan steps
         step_str = (step or "").strip().upper()
@@ -102,14 +121,18 @@ def execute_plan_batch(
                     # Calculate remaining steps strictly after this paused step
                     # If steps_to_run is a sublist, remaining in this batch is steps_to_run[i+1:]
                     rem = steps_to_run[i + 1:]
+                    p_info = res.get("pending_info") or {}
+                    if isinstance(p_info, dict) and "plan_state" in p_info:
+                        p_info["plan_state"]["started_at"] = start_time
                     return {
                         "ok": True,
                         "paused": True,
                         "completed": completed,
                         "paused_step": step,
-                        "pending_info": res.get("pending_info"),
+                        "pending_info": p_info,
                         "results": step_results,
                         "remaining_steps": rem,
+                        "started_at": start_time,
                     }
                 if not res.get("ok", True):
                     return {
@@ -135,4 +158,5 @@ def execute_plan_batch(
         "ok": True,
         "completed": completed,
         "results": step_results,
+        "started_at": start_time,
     }
