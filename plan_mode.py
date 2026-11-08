@@ -3,6 +3,7 @@ Plan Mode Coordinator for Nova AI.
 Inspired by PocketPaw's autonomous multi-step execution loop.
 Zero third-party pip dependencies - Python standard library only.
 """
+import inspect
 import re
 from typing import Any, Callable, Dict, List, Optional
 
@@ -58,15 +59,29 @@ def execute_plan_batch(
     steps_to_run = plan.get("remaining_steps") if "remaining_steps" in plan else all_steps
     start_offset = len(completed)
 
+    takes_extra_args = False
+    if runner is not None:
+        try:
+            sig = inspect.signature(runner)
+            params = list(sig.parameters.values())
+            has_varargs = any(p.kind == inspect.Parameter.VAR_POSITIONAL for p in params)
+            pos_params = [
+                p for p in params
+                if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+            ]
+            takes_extra_args = has_varargs or len(pos_params) >= 5
+        except (ValueError, TypeError):
+            takes_extra_args = False
+
     for i, step in enumerate(steps_to_run):
         idx = start_offset + i + 1
         if idx > 10:
             break
         try:
             if runner is not None:
-                try:
+                if takes_extra_args:
                     res = runner(step, idx, all_steps, completed, step_results)
-                except TypeError:
+                else:
                     res = runner(step)
             else:
                 res = f"Step {idx} ({step}): OK"

@@ -60,6 +60,23 @@ class TestPlanMode(unittest.TestCase):
         self.assertIn("Deploy Update", res)
         self.assertIn("executed successfully", res)
 
+    def test_execute_plan_batch_no_double_execution_on_type_error(self):
+        plan = {
+            "title": "Side Effect Plan",
+            "steps": ["step 1", "step 2"]
+        }
+        side_effects = []
+        def buggy_runner(step_text, idx, all_steps, completed, step_results):
+            side_effects.append(step_text)
+            # Perform side effect and then raise TypeError
+            raise TypeError("simulated inner type error in runner")
+
+        res = plan_mode.execute_plan_batch(plan, {}, runner=buggy_runner)
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["failed_step"], "step 1")
+        self.assertEqual(len(side_effects), 1, "Side effect must only execute once without fallback re-execution")
+        self.assertIn("simulated inner type error in runner", res["error"])
+
 
 if __name__ == "__main__":
     unittest.main()
