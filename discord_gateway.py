@@ -76,11 +76,56 @@ class DiscordGateway:
     def get_bot_info(self) -> dict | None:
         try:
             me = self._api_request("/users/@me")
-            self.bot_id = str(me.get("id"))
+            self.bot_id = str(me.get("id") or "").strip()
+            if not self.bot_id:
+                raise RuntimeError("Empty bot_id received from Discord API")
             return me
         except Exception as e:
-            logger.warning(f"[Discord Gateway] Could not fetch bot user info: {e}")
+            logger.error(f"[Discord Gateway] Could not fetch bot user info: {e}")
+            self.bot_id = ""
             return None
+
+    def process_raw_message(self, msg: dict) -> bool:
+        """
+        Parses incoming raw Discord message JSON and invokes handle_message:
+        - Sets is_bot from author.bot
+        - Ignores webhook_id messages
+        - Derives is_dm from a missing guild_id
+        """
+        if not isinstance(msg, dict):
+            return False
+
+        # 1. Ignore webhook messages
+        if msg.get("webhook_id"):
+            logger.debug(f"[Discord Security] Ignored message from webhook: {msg.get('webhook_id')}")
+            return False
+
+        msg_id = str(msg.get("id") or "")
+        channel_id = str(msg.get("channel_id") or "")
+
+        author = msg.get("author", {})
+        if not isinstance(author, dict):
+            return False
+        user_id = str(author.get("id") or "")
+        is_bot = bool(author.get("bot", False))
+
+        # 2. Derive is_dm from missing guild_id (or guild_id is None / empty)
+        guild_id = msg.get("guild_id")
+        is_dm = (guild_id is None or str(guild_id).strip() == "")
+
+        content = (msg.get("content") or "").strip()
+        if not content:
+            return False
+
+        self.handle_message(
+            channel_id=channel_id,
+            user_id=user_id,
+            text=content,
+            is_bot=is_bot,
+            is_dm=is_dm,
+            author_id=user_id,
+        )
+        return True
 
     def poll_channel(self, channel_id: str) -> None:
         """Fetch and process new messages from a single channel."""
@@ -104,16 +149,9 @@ class DiscordGateway:
         for msg in messages:
             msg_id = str(msg.get("id"))
             self.last_message_ids[channel_id] = msg_id
-
-            author = msg.get("author", {})
-            user_id = str(author.get("id"))
-            is_bot = bool(author.get("bot", False))
-
-            content = (msg.get("content") or "").strip()
-            if not content:
-                continue
-
-            self.handle_message(channel_id, user_id, content, is_bot=is_bot, is_dm=False, author_id=user_id)
+            if not msg.get("channel_id"):
+                msg["channel_id"] = channel_id
+            self.process_raw_message(msg)
 
     def is_authorized(self, user_id: str | int, channel_id: str | int = "") -> bool:
         """
@@ -262,7 +300,12 @@ class DiscordGateway:
             self.send_message(channel_id, "Chat handler is not attached.")
 
     def run_loop(self) -> None:
-        self.get_bot_info()
+        if not self.bot_id:
+            me = self.get_bot_info()
+            if not me or not self.bot_id:
+                logger.error("[Discord Gateway] Could not obtain bot_id at startup. Gateway failing closed.")
+                self._running = False
+                return
         logger.info(f"[Discord Gateway] Gateway started for channels: {self.channel_ids}")
 
         # Initialize last message id for each channel to avoid replaying historic backlog
@@ -282,12 +325,17 @@ class DiscordGateway:
                     logger.debug(f"[Discord Gateway] Channel {cid} loop exception: {e}")
             time.sleep(self.poll_interval)
 
-    def start(self) -> None:
+    def start(self) -> bool:
         if self._running or not self.bot_token or not self.channel_ids:
-            return
+            return False
+        me = self.get_bot_info()
+        if not me or not self.bot_id:
+            logger.error("[Discord Gateway] Could not obtain bot_id at startup. Failing closed.")
+            return False
         self._running = True
         self._thread = threading.Thread(target=self.run_loop, daemon=True, name="DiscordGatewayThread")
         self._thread.start()
+        return True
 
     def stop(self) -> None:
         self._running = False

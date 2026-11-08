@@ -343,5 +343,94 @@ class TestSecurityHardeningItems(unittest.TestCase):
                 mock_record.assert_called_once()
                 self.assertEqual(mock_record.call_args[1].get("source"), "guardian")
 
+    # -----------------------------------------------------------------
+    # ITEM 5: DISCORD RAW PAYLOAD PARSING & FAIL-CLOSED BOT_ID
+    # -----------------------------------------------------------------
+    def test_item5_discord_raw_payload_parsing_and_fail_closed(self):
+        """
+        Item 5:
+        - Raw Discord JSON parsing in process_raw_message:
+          * Sets is_bot from author.bot
+          * Ignores webhook_id messages
+          * Derives is_dm from missing guild_id
+        - Startup fails closed if bot_id cannot be obtained.
+        """
+        import discord_gateway
+
+        gw = discord_gateway.DiscordGateway(
+            bot_token="fake_bot_token",
+            channel_ids=["chan_123"],
+            allowed_user_ids=["user_alice"],
+            allow_dms=False,
+        )
+        gw.bot_id = "bot_999"
+
+        # 1. Ignore webhook_id messages
+        webhook_payload = {
+            "id": "msg_001",
+            "channel_id": "chan_123",
+            "guild_id": "guild_888",
+            "webhook_id": "hook_555",
+            "content": "hello from webhook",
+            "author": {"id": "user_alice", "username": "alice", "bot": False},
+        }
+        with patch.object(gw, "handle_message") as mock_h:
+            processed = gw.process_raw_message(webhook_payload)
+            self.assertFalse(processed)
+            mock_h.assert_not_called()
+
+        # 2. Sets is_bot from author.bot
+        bot_payload = {
+            "id": "msg_002",
+            "channel_id": "chan_123",
+            "guild_id": "guild_888",
+            "content": "hello from another bot",
+            "author": {"id": "bot_456", "username": "other_bot", "bot": True},
+        }
+        with patch.object(gw, "handle_message") as mock_h:
+            processed = gw.process_raw_message(bot_payload)
+            self.assertTrue(processed)
+            mock_h.assert_called_once()
+            self.assertTrue(mock_h.call_args[1].get("is_bot"))
+
+        # 3. Derives is_dm from missing guild_id
+        dm_payload = {
+            "id": "msg_003",
+            "channel_id": "dm_chan_111",
+            "content": "hello in DM",
+            "author": {"id": "user_alice", "username": "alice", "bot": False},
+            # Note: no guild_id key
+        }
+        with patch.object(gw, "handle_message") as mock_h:
+            processed = gw.process_raw_message(dm_payload)
+            self.assertTrue(processed)
+            mock_h.assert_called_once()
+            self.assertTrue(mock_h.call_args[1].get("is_dm"))
+
+        # Guild message derives is_dm = False
+        guild_payload = {
+            "id": "msg_004",
+            "channel_id": "chan_123",
+            "guild_id": "guild_888",
+            "content": "hello in guild",
+            "author": {"id": "user_alice", "username": "alice", "bot": False},
+        }
+        with patch.object(gw, "handle_message") as mock_h:
+            processed = gw.process_raw_message(guild_payload)
+            self.assertTrue(processed)
+            mock_h.assert_called_once()
+            self.assertFalse(mock_h.call_args[1].get("is_dm"))
+
+        # 4. Startup fails closed if bot_id cannot be obtained
+        gw_fail = discord_gateway.DiscordGateway(
+            bot_token="invalid_token",
+            channel_ids=["chan_123"],
+            allowed_user_ids=["user_alice"],
+        )
+        with patch.object(gw_fail, "_api_request", side_effect=RuntimeError("401 Unauthorized")):
+            started = gw_fail.start()
+            self.assertFalse(started, "Gateway must fail closed on startup if bot_id cannot be obtained")
+            self.assertFalse(gw_fail._running)
+
 if __name__ == "__main__":
     unittest.main()
