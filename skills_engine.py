@@ -13,18 +13,26 @@ import sys
 import threading
 from pathlib import Path
 
-if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
-    ROOT = Path(sys._MEIPASS)
-elif getattr(sys, "frozen", False):
-    ROOT = Path(sys.executable).resolve().parent
-else:
-    ROOT = Path(__file__).resolve().parent
+def get_bundled_skills_dir() -> Path:
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS) / "skills"
+    elif getattr(sys, "frozen", False):
+        exe_skills = Path(sys.executable).resolve().parent / "skills"
+        if exe_skills.exists():
+            return exe_skills
+        return Path(sys.executable).resolve().parent / "skills"
+    return Path(__file__).resolve().parent / "skills"
 
-SKILLS_DIR = ROOT / "skills"
-if not SKILLS_DIR.exists() and getattr(sys, "frozen", False):
-    exe_skills = Path(sys.executable).resolve().parent / "skills"
-    if exe_skills.exists():
-        SKILLS_DIR = exe_skills
+def get_user_skills_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        base = Path(sys.executable).resolve().parent
+    else:
+        base = Path(__file__).resolve().parent
+    return base / "data" / "user_skills"
+
+ROOT = Path(sys._MEIPASS) if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS") else (Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent)
+SKILLS_DIR = get_bundled_skills_dir()
+USER_SKILLS_DIR = get_user_skills_dir()
 
 # Attempt to reuse tokenizer from memory_engine if present, else fallback
 try:
@@ -97,42 +105,87 @@ def parse_skill_file(filepath: Path) -> Skill:
     )
 
 
+def invalidate_cache():
+    """Clear in-memory cached skills for all modes."""
+    with _CACHE_LOCK:
+        _SKILLS_CACHE["developer"] = {"mtime": 0.0, "files": set(), "skills": [], "file_sigs": set()}
+        _SKILLS_CACHE["cyber"] = {"mtime": 0.0, "files": set(), "skills": [], "file_sigs": set()}
+
+def install_user_skill(mode: str, name: str, content: str, description: str = "", triggers: list = None) -> Path:
+    """Installs or updates a user skill in the writable user_skills directory."""
+    mode = "cyber" if mode == "cyber" else "developer"
+    dest_dir = get_user_skills_dir() / mode
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"{name}.md" if not name.endswith(".md") else name
+    dest_file = dest_dir / filename
+
+    if not re.match(r"^---\s*\n.*?\n---\s*\n", content, re.DOTALL):
+        fm_lines = [f"name: {name}"]
+        if description:
+            fm_lines.append(f"description: {description}")
+        if triggers:
+            if isinstance(triggers, list):
+                fm_lines.append(f"triggers: {', '.join(triggers)}")
+            else:
+                fm_lines.append(f"triggers: {triggers}")
+        content = f"---\n{chr(10).join(fm_lines)}\n---\n{content.strip()}\n"
+
+    dest_file.write_text(content, encoding="utf-8")
+    invalidate_cache()
+    return dest_file
+
 def load_skills(mode: str) -> list:
     """
-    Reads only skills/<mode>/ and returns parsed skills.
+    Reads bundled skills from sys._MEIPASS / skills / <mode> (or project skills/<mode>/)
+    and user-installed skills from data/user_skills/<mode>/ next to the executable.
     Never reads or touches the other mode's directory.
     Caches results and automatically reloads if file modification times change.
     """
     mode = "cyber" if mode == "cyber" else "developer"
-    target_dir = SKILLS_DIR / mode
-    if not target_dir.exists():
+    bundled_dir = get_bundled_skills_dir() / mode
+    user_dir = get_user_skills_dir() / mode
+
+    bundled_files = sorted(bundled_dir.glob("*.md")) if bundled_dir.exists() else []
+    user_files = sorted(user_dir.glob("*.md")) if user_dir.exists() else []
+    all_files = bundled_files + user_files
+
+    if not all_files:
         return []
 
-    files = sorted(target_dir.glob("*.md"))
-    current_filenames = {f.name for f in files}
-    max_mtime = max((f.stat().st_mtime for f in files), default=0.0)
+    file_sigs = {(str(f.resolve()), f.stat().st_mtime) for f in all_files if f.exists()}
+    current_filenames = {f.name for f in all_files}
+    max_mtime = max((f.stat().st_mtime for f in all_files), default=0.0)
 
     with _CACHE_LOCK:
-        cache = _SKILLS_CACHE[mode]
-        # Invalidate cache if files changed, added, removed, or mtime updated
+        cache = _SKILLS_CACHE.get(mode, {})
         if (
-            cache["skills"]
-            and cache["mtime"] >= max_mtime
-            and cache["files"] == current_filenames
+            cache.get("skills")
+            and cache.get("file_sigs") == file_sigs
         ):
             return list(cache["skills"])
 
-        loaded = []
-        for f in files:
+        skills_by_name = {}
+        for f in bundled_files:
             try:
                 skill = parse_skill_file(f)
-                loaded.append(skill)
+                skills_by_name[skill.name] = skill
             except Exception:
                 pass
 
-        cache["skills"] = loaded
-        cache["mtime"] = max_mtime
-        cache["files"] = current_filenames
+        for f in user_files:
+            try:
+                skill = parse_skill_file(f)
+                skills_by_name[skill.name] = skill
+            except Exception:
+                pass
+
+        loaded = list(skills_by_name.values())
+        _SKILLS_CACHE[mode] = {
+            "skills": loaded,
+            "mtime": max_mtime,
+            "files": current_filenames,
+            "file_sigs": file_sigs,
+        }
         return list(loaded)
 
 

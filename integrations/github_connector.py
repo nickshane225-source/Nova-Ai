@@ -254,7 +254,11 @@ class GitHubConnector(BaseIntegration):
 
     def install_skills_from_repo(self, repo: str, token: str = "") -> str:
         """Finds SKILL.md files in repository and installs them into Nova AI skills catalog."""
-        dev_skills_dir = SKILLS_DIR / "developer"
+        try:
+            import skills_engine
+            dev_skills_dir = skills_engine.get_user_skills_dir() / "developer"
+        except Exception:
+            dev_skills_dir = SKILLS_DIR / "developer"
         dev_skills_dir.mkdir(parents=True, exist_ok=True)
 
         with tempfile.TemporaryDirectory() as tmpdir:
