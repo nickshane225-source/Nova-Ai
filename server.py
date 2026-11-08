@@ -672,8 +672,6 @@ class _ConversationTaintDict(dict):
 CONVERSATION_TAINT = _ConversationTaintDict({
     "pc:developer": False,
     "pc:cyber": False,
-    "developer": False,
-    "cyber": False,
 })
 
 
@@ -6270,10 +6268,7 @@ class Handler(BaseHandler):
                 target_conv = f"{req_source}:{state_mode}"
             else:
                 target_conv = f"pc:{state_mode}"
-            is_tainted = bool(
-                CONVERSATION_TAINT.get(target_conv, False)
-                or (target_conv == f"pc:{state_mode}" and CONVERSATION_TAINT.get(state_mode, False))
-            )
+            is_tainted = bool(CONVERSATION_TAINT.get(target_conv, False))
             return self._send(
                 200,
                 {
@@ -7033,9 +7028,8 @@ class Handler(BaseHandler):
                 with LOCK:
                     if reset_mode in HISTORIES:
                         HISTORIES[reset_mode].clear()
-                        CONVERSATION_TAINT[reset_mode] = False
                         CONVERSATION_TAINT[f"pc:{reset_mode}"] = False
-                        reset_search_counts([reset_mode, f"pc:{reset_mode}"])
+                        reset_search_counts([f"pc:{reset_mode}"])
                     else:
                         HISTORIES["developer"].clear()
                         HISTORIES["cyber"].clear()
