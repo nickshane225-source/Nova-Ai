@@ -687,8 +687,18 @@ def http_post(url, headers, body, timeout=90):
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
-        detail = e.read().decode("utf-8", "ignore")[:400]
-        raise LLMError(f"API error {e.code}: {detail}")
+        raw_b = e.read()
+        detail = raw_b.decode("utf-8", "ignore")
+        usage_info = {}
+        try:
+            parsed = json.loads(detail)
+            if isinstance(parsed, dict) and "usage" in parsed:
+                usage_info = parsed["usage"]
+        except Exception:
+            pass
+        err = LLMError(f"API error {e.code}: {detail[:400]}")
+        err.usage = usage_info
+        raise err
     except Exception as e:
         raise LLMError(f"Could not reach the AI provider: {e}")
 
@@ -773,7 +783,10 @@ def _call_single_llm(cfg, system, messages):
     try:
         return data["choices"][0]["message"].get("content") or "Sorry, I got an empty answer. Please try again."
     except (KeyError, IndexError):
-        raise LLMError(f"Unexpected reply from the AI provider: {str(data)[:300]}")
+        err = LLMError(f"Unexpected reply from the AI provider: {str(data)[:300]}")
+        if isinstance(data, dict) and "usage" in data:
+            err.usage = data["usage"]
+        raise err
 
 
 def call_llm_with_fallback(cfg, system, messages):
@@ -854,6 +867,21 @@ def call_llm_with_fallback(cfg, system, messages):
                 break
             except LLMError as fb_err:
                 last_err = fb_err
+                if usage_tracker:
+                    try:
+                        err_u = getattr(fb_err, "usage", None) or {}
+                        in_t = err_u.get("prompt_tokens") or err_u.get("input_tokens") or 0
+                        out_t = err_u.get("completion_tokens") or err_u.get("output_tokens") or 0
+                        if in_t or out_t:
+                            usage_tracker.record_usage(
+                                provider=fb_name,
+                                model=fb_cfg.get("model", "unknown"),
+                                input_tokens=in_t,
+                                output_tokens=out_t,
+                                duration_sec=0.0,
+                            )
+                    except Exception:
+                        pass
                 continue
 
         if res is None:

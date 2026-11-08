@@ -17,6 +17,7 @@ Can be run via CLI (`python diagnostics.py --doctor`) or invoked via API (`GET /
 import json
 import os
 import platform
+import re
 import shutil
 import sqlite3
 import sys
@@ -168,8 +169,21 @@ def _detect_provider_from_cfg(cfg: dict) -> str:
         return "OpenRouter"
     if prov == "ollama" or "localhost:11434" in base or "127.0.0.1:11434" in base:
         return "Ollama (Offline)"
-    if prov == "openai" or "api.openai.com" in base or "gpt" in model or "o3" in model or "o4" in model:
+    
+    # Exact or prefix matching for OpenAI models
+    is_openai_model = bool(re.match(r'^(gpt-[345]|o[1-4](-mini|-preview)?|chatgpt)\b', model))
+    if "api.openai.com" in base:
         return "OpenAI"
+    if is_openai_model and ("localhost" not in base and "127.0.0.1" not in base):
+        return "OpenAI"
+    if prov == "openai":
+        if is_openai_model:
+            return "OpenAI"
+        if "mistral" in model or "nemo" in model or "phi" in model or "llama" in model:
+            return "Custom Provider"
+        if not base:
+            return "OpenAI"
+        return "OpenAI-Compatible"
     if prov:
         return prov.capitalize()
     return "Custom Provider"
