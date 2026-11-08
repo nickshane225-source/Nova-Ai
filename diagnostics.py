@@ -171,7 +171,7 @@ def _detect_provider_from_cfg(cfg: dict) -> str:
         return "Ollama (Offline)"
     
     # Exact or prefix matching for OpenAI models
-    is_openai_model = bool(re.match(r'^(gpt-[345]|o[1-4](-mini|-preview)?|chatgpt)\b', model))
+    is_openai_model = bool(re.match(r'^(gpt-(?:[345]|4o|\d+\.\d+)|o[1-4]|chatgpt)(?:$|[-._])', model))
     if "api.openai.com" in base:
         return "OpenAI"
     if is_openai_model and ("localhost" not in base and "127.0.0.1" not in base):
