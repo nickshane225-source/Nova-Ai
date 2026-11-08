@@ -137,5 +137,73 @@ class TestTelegramGateway(unittest.TestCase):
             self.assertIn("Command:", msg)
 
 
+    def test_telegram_paused_plan_approval_format_and_pc_only(self):
+        import server
+        cfg = {
+            "telegram_bot_token": "fake_token",
+            "telegram_allowed_chat_ids": ["12345678"]
+        }
+        gw = telegram_gateway.TelegramGateway(cfg)
+
+        # 1. Normal paused plan step approval format
+        update = {
+            "update_id": 6,
+            "message": {
+                "message_id": 106,
+                "chat": {"id": 12345678, "type": "private"},
+                "from": {"id": 12345678},
+                "text": "/allow p_step1",
+            }
+        }
+        step2_pending = {
+            "id": "p_step2",
+            "prompt": "Run step 2 command",
+            "command": "dir /b",
+        }
+        with patch("telegram_gateway.handle_remote_confirm", return_value={
+            "ok": True,
+            "action": "CMD",
+            "command": "echo step1",
+            "result": "step1 done",
+            "pending": step2_pending,
+        }):
+            with patch.object(gw, "send_message") as mock_send:
+                handled = gw.process_update(update)
+                self.assertTrue(handled)
+                # Two messages: prefix approval confirmation, then next step announcement
+                self.assertEqual(mock_send.call_count, 2)
+                first_msg = mock_send.call_args_list[0][0][1]
+                announcement = mock_send.call_args_list[1][0][1]
+                self.assertIn("✅ Action Approved: CMD", first_msg)
+                self.assertIn("⚠️ Action Requires Approval (ID: `p_step2`):", announcement)
+                self.assertIn("Run step 2 command", announcement)
+                self.assertIn("```\ndir /b\n```", announcement)
+                self.assertIn("/allow p_step2", announcement)
+                self.assertIn("/deny p_step2", announcement)
+
+        # 2. Oversized next step triggers pc_only fallback
+        oversized_pending = {
+            "id": "p_step3_oversized",
+            "prompt": "Huge payload step",
+            "command": "A" * 4500,
+        }
+        with server.PENDING_LOCK:
+            server.PENDING_ACTIONS["p_step3_oversized"] = {"id": "p_step3_oversized", "pc_only": False}
+        with patch("telegram_gateway.handle_remote_confirm", return_value={
+            "ok": True,
+            "action": "CMD",
+            "command": "echo step2",
+            "result": "step2 done",
+            "pending": oversized_pending,
+        }):
+            with patch.object(gw, "send_message") as mock_send:
+                handled = gw.process_update(update)
+                self.assertTrue(handled)
+                announcement = mock_send.call_args_list[1][0][1]
+                self.assertIn("Approval for this action must be done on the PC (payload exceeds Telegram limits)", announcement)
+                with server.PENDING_LOCK:
+                    self.assertTrue(server.PENDING_ACTIONS["p_step3_oversized"]["pc_only"])
+
+
 if __name__ == "__main__":
     unittest.main()

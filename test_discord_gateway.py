@@ -110,5 +110,57 @@ class TestDiscordGateway(unittest.TestCase):
             self.assertEqual(mock_req.call_count, 2)
 
 
+    def test_discord_paused_plan_approval_format_and_pc_only(self):
+        import server
+
+        # 1. Normal paused plan step approval format
+        step2_pending = {
+            "id": "p_disc_step2",
+            "prompt": "Run next discord step",
+            "command": "dir /s",
+        }
+        self.mock_confirm.return_value = {
+            "ok": True,
+            "action": "CMD",
+            "command": "echo disc1",
+            "result": "disc1 ok",
+            "pending": step2_pending,
+        }
+        with patch.object(self.gateway, "send_message") as mock_send:
+            self.gateway.handle_message("channel_123", "user_admin", "/allow p_disc_step1")
+            self.assertEqual(mock_send.call_count, 2)
+            first_msg = mock_send.call_args_list[0][0][1]
+            announcement = mock_send.call_args_list[1][0][1]
+            self.assertIn("✅ Action allowed: CMD", first_msg)
+            self.assertIn("⚠️ Action Requires Approval (ID: `p_disc_step2`):", announcement)
+            self.assertIn("Run next discord step", announcement)
+            self.assertIn("```\ndir /s\n```", announcement)
+            self.assertIn("/allow p_disc_step2", announcement)
+            self.assertIn("/deny p_disc_step2", announcement)
+
+        # 2. Oversized next step triggers pc_only fallback
+        oversized_pending = {
+            "id": "p_disc_step3_oversized",
+            "prompt": "Huge payload discord step",
+            "command": "B" * 2500,
+        }
+        with server.PENDING_LOCK:
+            server.PENDING_ACTIONS["p_disc_step3_oversized"] = {"id": "p_disc_step3_oversized", "pc_only": False}
+        self.mock_confirm.return_value = {
+            "ok": True,
+            "action": "CMD",
+            "command": "echo disc2",
+            "result": "disc2 ok",
+            "pending": oversized_pending,
+        }
+        with patch.object(self.gateway, "send_message") as mock_send:
+            self.gateway.handle_message("channel_123", "user_admin", "/allow p_disc_step2")
+            self.assertEqual(mock_send.call_count, 2)
+            announcement = mock_send.call_args_list[1][0][1]
+            self.assertIn("Approval for this action must be done on the PC (payload exceeds Discord limits)", announcement)
+            with server.PENDING_LOCK:
+                self.assertTrue(server.PENDING_ACTIONS["p_disc_step3_oversized"]["pc_only"])
+
+
 if __name__ == "__main__":
     unittest.main()

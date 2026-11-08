@@ -70,7 +70,7 @@ def handle_remote_confirm(action_id: str, approve: bool) -> Dict[str, Any]:
                     "approved": True,
                     "action": pending["name"],
                     "command": pending.get("arg", ""),
-                    "result": f"{res}\n\n[Next Step Requires Confirmation]: {plan_res.get('pending_info', {}).get('prompt')}",
+                    "result": str(res).strip(),
                     "pending": plan_res.get("pending_info"),
                 }
             res = f"{res}\n\n{plan_res}"
@@ -116,6 +116,37 @@ class TelegramGateway:
         except Exception as e:
             logger.error(f"[Telegram] Failed to send message to {chat_id}: {e}")
             return False
+
+    def send_approval_announcement(self, chat_id: Any, pending: Dict[str, Any], prefix_text: str = "") -> None:
+        import server
+        p_id = pending.get("id")
+        raw_prompt = pending.get("prompt") or ""
+        safe_prompt, _ = server.sanitize_preview(raw_prompt)
+        cmd_val = pending.get("command") or pending.get("arg") or pending.get("preview") or ""
+        safe_cmd, has_invis = server.sanitize_preview(cmd_val)
+        invis_warn = "\n⚠️ Warning: Command contains hidden or invisible characters." if has_invis else ""
+        backticks = re.findall(r"`+", safe_cmd)
+        fence = "`" * max(3, max([len(b) for b in backticks], default=0) + 1)
+        full_approval_msg = (
+            f"⚠️ Action Requires Approval (ID: `{p_id}`):\n"
+            f"{safe_prompt}\n\n"
+            f"Command:\n{fence}\n{safe_cmd}\n{fence}{invis_warn}\n\n"
+            f"Use `/allow {p_id}` or `/deny {p_id}`"
+        )
+        if prefix_text:
+            self.send_message(chat_id, prefix_text)
+        if len(full_approval_msg) > 4000:
+            with server.PENDING_LOCK:
+                if p_id in server.PENDING_ACTIONS:
+                    server.PENDING_ACTIONS[p_id]["pc_only"] = True
+            short_msg = (
+                f"⚠️ Action Requires Approval (ID: `{p_id}`):\n"
+                f"{safe_prompt}\n\n"
+                f"Notice: Approval for this action must be done on the PC (payload exceeds Telegram limits)."
+            )
+            self.send_message(chat_id, short_msg)
+        else:
+            self.send_message(chat_id, full_approval_msg)
 
     def is_authorized(self, chat_id: Any, user_id: Any = None, chat_type: str = "private") -> bool:
         """
@@ -223,7 +254,11 @@ class TelegramGateway:
                     backticks = re.findall(r"`+", safe_c)
                     fence = "`" * max(3, max([len(b) for b in backticks], default=0) + 1)
                     cmd_info = f"\nCommand:\n{fence}\n{safe_c}\n{fence}"
-                self.send_message(chat_id_int, f"✅ Action Approved: {res.get('action')}{cmd_info}\n{res.get('result', '')}")
+                prefix_text = f"✅ Action Approved: {res.get('action')}{cmd_info}\n{res.get('result', '')}"
+                if res.get("pending"):
+                    self.send_approval_announcement(chat_id_int, res["pending"], prefix_text=prefix_text)
+                else:
+                    self.send_message(chat_id_int, prefix_text)
             else:
                 self.send_message(chat_id_int, f"❌ Failed to approve: {res.get('error')}")
             return True
@@ -274,37 +309,7 @@ class TelegramGateway:
                 if isinstance(res, dict):
                     reply_text = res.get("reply", "") or res.get("response", "")
                     if res.get("pending"):
-                        import server
-                        p = res["pending"]
-                        p_id = p.get("id")
-                        raw_prompt = p.get("prompt") or ""
-                        safe_prompt, _ = server.sanitize_preview(raw_prompt)
-                        cmd_val = p.get("command") or p.get("arg") or p.get("preview") or ""
-                        safe_cmd, has_invis = server.sanitize_preview(cmd_val)
-                        invis_warn = "\n⚠️ Warning: Command contains hidden or invisible characters." if has_invis else ""
-                        backticks = re.findall(r"`+", safe_cmd)
-                        fence = "`" * max(3, max([len(b) for b in backticks], default=0) + 1)
-                        full_approval_msg = (
-                            f"⚠️ Action Requires Approval (ID: `{p_id}`):\n"
-                            f"{safe_prompt}\n\n"
-                            f"Command:\n{fence}\n{safe_cmd}\n{fence}{invis_warn}\n\n"
-                            f"Use `/allow {p_id}` or `/deny {p_id}`"
-                        )
-                        if reply_text:
-                            self.send_message(chat_id_int, reply_text)
-                            reply_text = ""
-                        if len(full_approval_msg) > 4000:
-                            with server.PENDING_LOCK:
-                                if p_id in server.PENDING_ACTIONS:
-                                    server.PENDING_ACTIONS[p_id]["pc_only"] = True
-                            short_msg = (
-                                f"⚠️ Action Requires Approval (ID: `{p_id}`):\n"
-                                f"{safe_prompt}\n\n"
-                                f"Notice: Approval for this action must be done on the PC (payload exceeds Telegram limits)."
-                            )
-                            self.send_message(chat_id_int, short_msg)
-                        else:
-                            self.send_message(chat_id_int, full_approval_msg)
+                        self.send_approval_announcement(chat_id_int, res["pending"], prefix_text=reply_text)
                         return True
                     else:
                         if reply_text:

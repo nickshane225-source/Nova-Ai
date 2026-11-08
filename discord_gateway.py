@@ -73,6 +73,37 @@ class DiscordGateway:
                 return False
         return True
 
+    def send_approval_announcement(self, channel_id: str, pending: dict, prefix_text: str = "") -> None:
+        import server
+        p_id = pending.get("id")
+        raw_prompt = pending.get("prompt") or ""
+        safe_prompt, _ = server.sanitize_preview(raw_prompt)
+        cmd_val = pending.get("command") or pending.get("arg") or pending.get("preview") or ""
+        safe_cmd, has_invis = server.sanitize_preview(cmd_val)
+        invis_warn = "\n⚠️ Warning: Command contains hidden or invisible characters." if has_invis else ""
+        backticks = re.findall(r"`+", safe_cmd)
+        fence = "`" * max(3, max([len(b) for b in backticks], default=0) + 1)
+        full_approval_msg = (
+            f"⚠️ Action Requires Approval (ID: `{p_id}`):\n"
+            f"{safe_prompt}\n\n"
+            f"Command:\n{fence}\n{safe_cmd}\n{fence}{invis_warn}\n\n"
+            f"Use `/allow {p_id}` or `/deny {p_id}`"
+        )
+        if prefix_text and prefix_text != "Done.":
+            self.send_message(channel_id, prefix_text)
+        if len(full_approval_msg) > 1950:
+            with server.PENDING_LOCK:
+                if p_id in server.PENDING_ACTIONS:
+                    server.PENDING_ACTIONS[p_id]["pc_only"] = True
+            short_msg = (
+                f"⚠️ Action Requires Approval (ID: `{p_id}`):\n"
+                f"{safe_prompt}\n\n"
+                f"Notice: Approval for this action must be done on the PC (payload exceeds Discord limits)."
+            )
+            self.send_message(channel_id, short_msg)
+        else:
+            self.send_message(channel_id, full_approval_msg)
+
     def get_bot_info(self) -> dict | None:
         try:
             me = self._api_request("/users/@me")
@@ -232,6 +263,9 @@ class DiscordGateway:
                         fence = "`" * max(3, max([len(b) for b in backticks], default=0) + 1)
                         cmd_str = f"\nCommand:\n{fence}\n{safe_c}\n{fence}"
                     reply = f"✅ Action {action}ed: {result.get('action')}{cmd_str}{res_str}"
+                    if result.get("pending"):
+                        self.send_approval_announcement(channel_id, result["pending"], prefix_text=reply)
+                        return
                 else:
                     reply = f"❌ Failed to {action}: {result.get('error', 'Action not found or expired')}"
             else:
@@ -265,36 +299,7 @@ class DiscordGateway:
                 resp = self.chat_handler(text, "discord")
                 reply_text = resp.get("reply") or resp.get("response") or "Done."
                 if isinstance(resp, dict) and resp.get("pending"):
-                    import server
-                    p = resp["pending"]
-                    p_id = p.get("id")
-                    raw_prompt = p.get("prompt") or ""
-                    safe_prompt, _ = server.sanitize_preview(raw_prompt)
-                    cmd_val = p.get("command") or p.get("arg") or p.get("preview") or ""
-                    safe_cmd, has_invis = server.sanitize_preview(cmd_val)
-                    invis_warn = "\n⚠️ Warning: Command contains hidden or invisible characters." if has_invis else ""
-                    backticks = re.findall(r"`+", safe_cmd)
-                    fence = "`" * max(3, max([len(b) for b in backticks], default=0) + 1)
-                    full_approval_msg = (
-                        f"⚠️ Action Requires Approval (ID: `{p_id}`):\n"
-                        f"{safe_prompt}\n\n"
-                        f"Command:\n{fence}\n{safe_cmd}\n{fence}{invis_warn}\n\n"
-                        f"Use `/allow {p_id}` or `/deny {p_id}`"
-                    )
-                    if reply_text and reply_text != "Done.":
-                        self.send_message(channel_id, reply_text)
-                    if len(full_approval_msg) > 1950:
-                        with server.PENDING_LOCK:
-                            if p_id in server.PENDING_ACTIONS:
-                                server.PENDING_ACTIONS[p_id]["pc_only"] = True
-                        short_msg = (
-                            f"⚠️ Action Requires Approval (ID: `{p_id}`):\n"
-                            f"{safe_prompt}\n\n"
-                            f"Notice: Approval for this action must be done on the PC (payload exceeds Discord limits)."
-                        )
-                        self.send_message(channel_id, short_msg)
-                    else:
-                        self.send_message(channel_id, full_approval_msg)
+                    self.send_approval_announcement(channel_id, resp["pending"], prefix_text=reply_text)
                     return
                 else:
                     self.send_message(channel_id, reply_text)
@@ -398,7 +403,7 @@ def handle_remote_confirm(action_id: str, approve: bool) -> dict[str, Any]:
                     "approved": True,
                     "action": pending["name"],
                     "command": pending.get("arg", ""),
-                    "result": f"{res}\n\n[Next Step Requires Confirmation]: {plan_res.get('pending_info', {}).get('prompt')}",
+                    "result": str(res).strip(),
                     "pending": plan_res.get("pending_info"),
                 }
             res = f"{res}\n\n{plan_res}"
