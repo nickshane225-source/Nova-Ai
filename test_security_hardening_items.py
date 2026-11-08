@@ -5,6 +5,7 @@ import unittest
 import time
 import os
 import sys
+import json
 import urllib.parse
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -273,6 +274,74 @@ class TestSecurityHardeningItems(unittest.TestCase):
         })
         self.assertTrue(gw_groups.is_authorized(chat_id="12345", user_id="99999", chat_type="group"))
         self.assertTrue(gw_groups.is_authorized(chat_id="12345", user_id="99999", chat_type="supergroup"))
+
+    # -----------------------------------------------------------------
+    # ITEM 4: GUARDIAN OPTIMIZATIONS, CACHING & USAGE LEDGER
+    # -----------------------------------------------------------------
+    def test_item4_guardian_optimizations(self):
+        """
+        Item 4:
+        - Call only for exec-capable tags (CMD, POWERSHELL, RUN_CODE,
+          WRITE_FILE/EDIT_FILE with executable extensions, SMART_HOME, GITHUB write actions),
+          after local rails.
+        - Cache identical command verdicts for 60 seconds.
+        - Count tokens in the usage ledger.
+        - Classifier failure = DANGEROUS only for those tags.
+        """
+        import usage_tracker
+
+        # Clear cache
+        with guardian_agent.GUARDIAN_CACHE_LOCK:
+            guardian_agent.GUARDIAN_VERDICT_CACHE.clear()
+
+        # 1. Non-exec tags return SAFE without calling Guardian LLM or failing closed
+        no_key_cfg = {"provider": "google"}  # no api_key
+        v_read, _ = guardian_agent.review_command_safety(no_key_cfg, "READ_FILE", "notes.txt")
+        self.assertEqual(v_read, guardian_agent.VERDICT_SAFE)
+
+        v_write_txt, _ = guardian_agent.review_command_safety(no_key_cfg, "WRITE_FILE", "notes.txt | hello")
+        self.assertEqual(v_write_txt, guardian_agent.VERDICT_SAFE)
+
+        v_search, _ = guardian_agent.review_command_safety(no_key_cfg, "SEARCH", "python tips")
+        self.assertEqual(v_search, guardian_agent.VERDICT_SAFE)
+
+        # 2. Exec-capable tags fail closed as DANGEROUS when classifier/provider fails
+        v_cmd, _ = guardian_agent.review_command_safety(no_key_cfg, "CMD", "dir")
+        self.assertEqual(v_cmd, guardian_agent.VERDICT_DANGEROUS)
+
+        v_run_code, _ = guardian_agent.review_command_safety(no_key_cfg, "RUN_CODE", "python | 1+1")
+        self.assertEqual(v_run_code, guardian_agent.VERDICT_DANGEROUS)
+
+        v_write_exe, _ = guardian_agent.review_command_safety(no_key_cfg, "WRITE_FILE", "script.py | print(1)")
+        self.assertEqual(v_write_exe, guardian_agent.VERDICT_DANGEROUS)
+
+        # 3. 60-second caching & usage tracking for exec-capable commands
+        valid_cfg = {"provider": "google", "api_key": "valid_mock_key"}
+        with guardian_agent.GUARDIAN_CACHE_LOCK:
+            guardian_agent.GUARDIAN_VERDICT_CACHE.clear()
+
+        mock_llm_calls = []
+        def mock_guardian_llm(cfg, prompt):
+            mock_llm_calls.append(prompt)
+            return json.dumps({"status": "SAFE", "reason": "harmless command"})
+
+        with patch("guardian_agent._call_guardian_llm", side_effect=mock_guardian_llm) as p_call:
+            # First invocation calls LLM
+            v1, r1 = guardian_agent.review_command_safety(valid_cfg, "CMD", "echo hello_cache")
+            self.assertEqual(v1, guardian_agent.VERDICT_SAFE)
+            self.assertEqual(p_call.call_count, 1)
+
+            # Second invocation within 60s uses cache
+            v2, r2 = guardian_agent.review_command_safety(valid_cfg, "CMD", "echo hello_cache")
+            self.assertEqual(v2, guardian_agent.VERDICT_SAFE)
+            self.assertEqual(p_call.call_count, 1)  # NOT incremented
+
+        # 4. Token counting in usage ledger when Guardian LLM is invoked
+        with patch("server._call_single_llm", return_value=json.dumps({"status": "SAFE", "reason": "safe"})):
+            with patch("usage_tracker.record_usage") as mock_record:
+                guardian_agent._call_guardian_llm(valid_cfg, "Evaluate CMD: dir")
+                mock_record.assert_called_once()
+                self.assertEqual(mock_record.call_args[1].get("source"), "guardian")
 
 if __name__ == "__main__":
     unittest.main()

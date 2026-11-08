@@ -8,8 +8,44 @@ Provides a secondary safety check for tool execution:
 3. Strict fail-closed policy (if anything fails or is uncertain, marks as DANGEROUS).
 """
 
-import json
+import os
 import re
+import json
+import logging
+import threading
+import time
+
+logger = logging.getLogger("nova_ai.guardian")
+
+EXECUTABLE_EXTENSIONS = {
+    ".exe", ".bat", ".cmd", ".ps1", ".vbs", ".js", ".sh", ".py", ".lnk",
+    ".hta", ".reg", ".scr", ".com", ".pif", ".jar", ".msi", ".dll", ".psm1", ".url", ".chm"
+}
+
+GUARDIAN_VERDICT_CACHE = {}  # cache_key -> (verdict, reason, timestamp)
+GUARDIAN_CACHE_TTL = 60.0
+GUARDIAN_CACHE_LOCK = threading.Lock()
+
+def is_exec_capable_tag(tool_name: str, argument: str) -> bool:
+    """
+    Check if a tool is execution-capable:
+    CMD, POWERSHELL, RUN_CODE, WRITE_FILE/EDIT_FILE with executable extensions,
+    SMART_HOME, GITHUB write actions.
+    """
+    tool_upper = str(tool_name or "").strip().upper()
+    cmd = str(argument or "").strip()
+    if tool_upper in ("CMD", "POWERSHELL", "RUN_CODE"):
+        return True
+    if tool_upper in ("WRITE_FILE", "EDIT_FILE"):
+        parts = cmd.split("|", 1)
+        ext = os.path.splitext(parts[0].strip())[1].lower()
+        return ext in EXECUTABLE_EXTENSIONS
+    if tool_upper in ("SMART_HOME", "WEBHOOK", "IOT"):
+        return True
+    if tool_upper in ("GITHUB", "GH", "GIT_HUB"):
+        parts = cmd.lower().split()
+        return any(w in parts for w in ("create", "new", "edit", "update", "delete", "close", "merge", "comment", "push", "fork"))
+    return False
 
 # Local rails for immediate destructive command rejection
 _DESTRUCTIVE_PATTERNS = [
@@ -113,7 +149,26 @@ def _call_guardian_llm(cfg: dict, prompt: str) -> str:
         g_cfg = dict(cfg)
         g_cfg["llm_timeout"] = 15
         g_cfg["max_tokens"] = 64
-        return server._call_single_llm(g_cfg, system, messages)
+        t0 = time.time()
+        res = server._call_single_llm(g_cfg, system, messages)
+        try:
+            import usage_tracker
+            if usage_tracker:
+                inp_chars = len(system) + len(prompt)
+                out_chars = len(res or "")
+                inp_tokens = usage_tracker.estimate_tokens_from_text("x" * inp_chars)
+                out_tokens = usage_tracker.estimate_tokens_from_text(res or "")
+                usage_tracker.record_usage(
+                    provider=g_cfg.get("provider", "unknown"),
+                    model=g_cfg.get("model", "unknown"),
+                    input_tokens=inp_tokens,
+                    output_tokens=out_tokens,
+                    duration_sec=time.time() - t0,
+                    source="guardian",
+                )
+        except Exception:
+            pass
+        return res
     except Exception as e:
         raise RuntimeError(f"Guardian LLM error: {e}")
 
@@ -127,8 +182,9 @@ _PROMPT_INJECTION_IN_CMD_RE = re.compile(
 def review_command_safety(cfg: dict, tool_name: str, argument: str, source: str = "pc") -> tuple[str, str]:
     """
     Evaluates whether a tool invocation is SAFE or DANGEROUS.
-    Returns (verdict_string: str, reason: str) where verdict_string is VERDICT_SAFE or VERDICT_DANGEROUS.
-    Note: A SAFE verdict never skips user confirmation; confirmation is strictly enforced by check_tool_confirmation_required.
+    Called only for exec-capable tags after local rails.
+    Caches identical command verdicts for 60 seconds and counts tokens in usage ledger.
+    Classifier failure = DANGEROUS only for exec-capable tags.
     """
     tool_upper = str(tool_name or "").strip().upper()
     cmd = str(argument or "").strip()
@@ -140,21 +196,35 @@ def review_command_safety(cfg: dict, tool_name: str, argument: str, source: str 
     if _PROMPT_INJECTION_IN_CMD_RE.search(cmd):
         return VERDICT_DANGEROUS, "DANGEROUS: Command contains prompt-injection instructions attempting to override Guardian."
 
+    # 2. Call Guardian LLM ONLY for exec-capable tags after local rails
+    if not is_exec_capable_tag(tool_upper, cmd):
+        return VERDICT_SAFE, "SAFE: Non-exec tool"
+
+    # 3. Check 60-second verdict cache
+    cache_key = f"{tool_upper}:{cmd}"
+    now_t = time.time()
+    with GUARDIAN_CACHE_LOCK:
+        if cache_key in GUARDIAN_VERDICT_CACHE:
+            cached_v, cached_r, cached_t = GUARDIAN_VERDICT_CACHE[cache_key]
+            if now_t - cached_t < GUARDIAN_CACHE_TTL:
+                return cached_v, cached_r
+
     # Commands that skip confirmation (remote or scheduled) must match explicit allowlist
     if source in ("phone", "remote", "telegram", "discord", "scheduled"):
         if not is_command_in_allowlist(tool_upper, cmd):
-            return VERDICT_DANGEROUS, f"DANGEROUS: Command '{cmd}' from {source} is not on the safety allowlist."
-        return VERDICT_SAFE, f"SAFE: Command '{cmd}' matched safety allowlist for {source} execution."
+            v_res = (VERDICT_DANGEROUS, f"DANGEROUS: Command '{cmd}' from {source} is not on the safety allowlist.")
+            with GUARDIAN_CACHE_LOCK:
+                GUARDIAN_VERDICT_CACHE[cache_key] = (v_res[0], v_res[1], now_t)
+            return v_res
 
-    # 2. Check read-only tools
-    if is_command_in_allowlist(tool_upper, cmd):
-        return VERDICT_SAFE, "SAFE: Read-only tool inspection"
-
-    # 3. Fail closed if no provider or API key is available
+    # 4. Fail closed if no provider or API key is available (only for exec-capable tags)
     if not _has_usable_guardian_provider(cfg):
-        return VERDICT_DANGEROUS, "DANGEROUS: No LLM provider or API key available for Guardian safety review (fail-closed)"
+        v_res = (VERDICT_DANGEROUS, "DANGEROUS: No LLM provider or API key available for Guardian safety review (fail-closed)")
+        with GUARDIAN_CACHE_LOCK:
+            GUARDIAN_VERDICT_CACHE[cache_key] = (v_res[0], v_res[1], now_t)
+        return v_res
 
-    # 4. For RUN_CODE, CMD, POWERSHELL, invoke Guardian LLM with <UNTRUSTED_COMMAND_DATA> wrapping
+    # 5. Invoke Guardian LLM with <UNTRUSTED_COMMAND_DATA> wrapping
     prompt = _wrap_untrusted_command(tool_upper, cmd)
     try:
         raw_res = _call_guardian_llm(cfg, prompt)
@@ -165,9 +235,15 @@ def review_command_safety(cfg: dict, tool_name: str, argument: str, source: str 
             status = str(data.get("status", "")).strip().upper()
             reason = str(data.get("reason", "No reason provided")).strip()
             if status == VERDICT_SAFE:
-                return VERDICT_SAFE, f"SAFE: {reason}"
-            return VERDICT_DANGEROUS, f"DANGEROUS: {reason}"
-        return VERDICT_DANGEROUS, "DANGEROUS: Guardian LLM returned invalid JSON format (fail-closed)"
+                v_res = (VERDICT_SAFE, f"SAFE: {reason}")
+            else:
+                v_res = (VERDICT_DANGEROUS, f"DANGEROUS: {reason}")
+        else:
+            v_res = (VERDICT_DANGEROUS, "DANGEROUS: Guardian LLM returned invalid JSON format (fail-closed)")
     except Exception as e:
-        # Strict fail-closed policy
-        return VERDICT_DANGEROUS, f"DANGEROUS: Guardian safety review fail-closed ({e})"
+        # Strict fail-closed policy for exec-capable tags
+        v_res = (VERDICT_DANGEROUS, f"DANGEROUS: Guardian safety review fail-closed ({e})")
+
+    with GUARDIAN_CACHE_LOCK:
+        GUARDIAN_VERDICT_CACHE[cache_key] = (v_res[0], v_res[1], now_t)
+    return v_res

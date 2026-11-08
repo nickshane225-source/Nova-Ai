@@ -4170,8 +4170,13 @@ def execute_model_tags(tags, cfg, jid=None, mode="developer", source="pc", is_ta
                 else:
                     g_verdict = guardian_agent.VERDICT_DANGEROUS
             except Exception as e:
-                g_verdict = getattr(guardian_agent, "VERDICT_DANGEROUS", "DANGEROUS")
-                g_reason = f"Guardian classifier failed closed: {e}"
+                is_exec = guardian_agent.is_exec_capable_tag(clean_name, arg) if hasattr(guardian_agent, "is_exec_capable_tag") else True
+                if is_exec:
+                    g_verdict = getattr(guardian_agent, "VERDICT_DANGEROUS", "DANGEROUS")
+                    g_reason = f"Guardian classifier failed closed: {e}"
+                else:
+                    g_verdict = getattr(guardian_agent, "VERDICT_SAFE", "SAFE")
+                    g_reason = f"Non-exec tool bypassed classifier error: {e}"
 
         needs_confirm, reason = check_tool_confirmation_required(
             cfg, clean_name, arg, is_tainted=is_tainted, source=source, turn_written_files=turn_written_files
