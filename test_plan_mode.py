@@ -287,6 +287,46 @@ class TestPlanMode(unittest.TestCase):
         with server.PENDING_LOCK:
             self.assertNotIn(exp_action_id, server.PENDING_ACTIONS)
 
+    def test_plan_step_nested_plan_refused(self):
+        import server
+        # Direct batch execution check
+        plan_data = {
+            "title": "Outer Plan",
+            "steps": ["STEP: step 1", "PLAN: Inner | a | b"]
+        }
+        res_batch = plan_mode.execute_plan_batch(plan_data, {})
+        self.assertFalse(res_batch["ok"])
+        self.assertIn("Nested plans are not allowed", res_batch["error"])
+
+        # run_skill check
+        res_skill = server.run_skill({}, "PLAN", "Outer Plan | STEP: step 1 | PLAN: Nested | step a")
+        self.assertIn("Nested plans are not allowed", res_skill)
+
+        # Embedded [[PLAN: ...]] tag check
+        res_embedded = server.run_skill({}, "PLAN", "Outer Plan | STEP: step 1 | [[PLAN: Nested | step a]]")
+        self.assertIn("Nested plans are not allowed", res_embedded)
+
+    def test_total_tool_executions_cap_at_25_per_turn(self):
+        import server
+
+        # 1. Direct execute_model_tags cap check
+        tags_30 = [("NOTE", f"note {i}", 0, 10) for i in range(30)]
+        turn_counter = [0]
+        res_exec = server.execute_model_tags(tags_30, {}, turn_tool_executions=turn_counter)
+        self.assertEqual(turn_counter[0], 25)
+        # 25 executed actions + 1 halted action
+        self.assertEqual(len(res_exec["actions"]), 26)
+        self.assertIn("Maximum of 25 tool executions reached", res_exec["actions"][-1]["result"])
+
+        # 2. Plan step execution cap check
+        plan_steps = [f"NOTE: note {i}" for i in range(10)]
+        counter_plan = [20]  # Already used 20
+        runner = server.create_plan_step_runner({"title": "Cap Plan"}, {}, turn_tool_executions=counter_plan)
+        res_plan = plan_mode.execute_plan_batch({"title": "Cap Plan", "steps": plan_steps}, {}, runner=runner)
+        self.assertFalse(res_plan["ok"])
+        self.assertEqual(counter_plan[0], 25)
+        self.assertIn("Maximum of 25 tool executions reached", res_plan["error"])
+
 
 if __name__ == "__main__":
     unittest.main()

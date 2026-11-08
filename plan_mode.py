@@ -77,6 +77,17 @@ def execute_plan_batch(
         idx = start_offset + i + 1
         if idx > 10:
             break
+
+        # Refuse nested PLAN tags or nested plan steps
+        step_str = (step or "").strip().upper()
+        if step_str.startswith("PLAN:") or "[[PLAN:" in step_str or "[[PLAN " in step_str:
+            return {
+                "ok": False,
+                "error": "Refused: Nested plans are not allowed. A plan step must never execute another PLAN tag or nested plan.",
+                "failed_step": step,
+                "completed": completed,
+                "results": step_results,
+            }
         try:
             if runner is not None:
                 if takes_extra_args:

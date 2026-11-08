@@ -3927,7 +3927,7 @@ def parse_step_to_tag(step_str: str) -> tuple[str, str]:
     return "STEP", s
 
 
-def create_plan_step_runner(plan_info, cfg, source="pc", mode="developer", is_tainted=False, conv_id=None):
+def create_plan_step_runner(plan_info, cfg, source="pc", mode="developer", is_tainted=False, conv_id=None, turn_tool_executions=None):
     """
     Creates a step runner callback for plan_mode.execute_plan_batch().
     Routes every plan step through taint, Guardian, confirmation gate,
@@ -3935,12 +3935,21 @@ def create_plan_step_runner(plan_info, cfg, source="pc", mode="developer", is_ta
     """
     cfg = cfg or {}
     effective_conv = conv_id or (f"{source}:{mode}" if source == "pc" else f"{source}:general")
+    if turn_tool_executions is None:
+        turn_tool_executions = [0]
 
     def step_runner(step: str, idx: int = 1, all_steps: list = None, completed: list = None, step_results: list = None):
         nonlocal is_tainted
         all_steps = all_steps or []
         completed = completed or []
         step_results = step_results or []
+
+        # 0. Cap total tool executions per turn at 25
+        if turn_tool_executions[0] >= 25:
+            return {
+                "ok": False,
+                "error": "Error: Maximum of 25 tool executions reached for this turn. Plan execution halted.",
+            }
 
         # If conversation is already tainted in the store, taint this run immediately
         if CONVERSATION_TAINT.get(effective_conv, False):
@@ -3963,6 +3972,13 @@ def create_plan_step_runner(plan_info, cfg, source="pc", mode="developer", is_ta
         name, arg = parse_step_to_tag(step)
         clean_name = unicodedata.normalize("NFKC", (name or "")).strip().upper()
 
+        # Refuse nested plans
+        if clean_name == "PLAN" or "[[PLAN" in (step or "").upper():
+            return {
+                "ok": False,
+                "error": "Refused: Nested plans are not allowed. A plan step must never execute another PLAN tag or nested plan.",
+            }
+
         KNOWN_SKILL_NAMES = {
             "CMD", "POWERSHELL", "RUN_CODE", "WRITE_FILE", "EDIT_FILE", "CREATE_PROJECT",
             "READ_FILE", "LIST_FILES", "SEARCH", "PLAY", "OPEN_APP", "CLOSE_APP",
@@ -3974,6 +3990,7 @@ def create_plan_step_runner(plan_info, cfg, source="pc", mode="developer", is_ta
             "NEWS", "SCREENSHOT", "VISION", "ORGANIZE", "ORGANIZE_FILES", "ORGANIZE_FOLDER"
         }
         if clean_name not in KNOWN_SKILL_NAMES and clean_name == "STEP":
+            turn_tool_executions[0] += 1
             res_msg = f"Step {idx}: {arg} (noted)"
             return {
                 "ok": True,
@@ -4053,7 +4070,8 @@ def create_plan_step_runner(plan_info, cfg, source="pc", mode="developer", is_ta
             RUN_CODE_TRUST_STATE.invalidate()
 
         # 6. Execute step
-        step_res = run_skill(cfg, clean_name, arg, source=source, mode=mode, is_tainted=is_tainted, conv_id=effective_conv)
+        turn_tool_executions[0] += 1
+        step_res = run_skill(cfg, clean_name, arg, source=source, mode=mode, is_tainted=is_tainted, conv_id=effective_conv, turn_tool_executions=turn_tool_executions)
 
         # Check error taint
         if clean_name in TAINT_SOURCE_TOOLS and step_res and any(err_pat in str(step_res) for err_pat in ("STDERR:", "Traceback (most recent call last)", "Exit code:", "Error:", "failed:")):
@@ -4088,7 +4106,7 @@ def create_plan_step_runner(plan_info, cfg, source="pc", mode="developer", is_ta
     return step_runner
 
 
-def resume_plan_execution(plan_state: dict, last_result=None, cfg=None):
+def resume_plan_execution(plan_state: dict, last_result=None, cfg=None, turn_tool_executions=None):
     """
     Resumes execution of a paused plan after the user approves a gated step.
     """
@@ -4128,6 +4146,7 @@ def resume_plan_execution(plan_state: dict, last_result=None, cfg=None):
         mode=mode,
         is_tainted=is_tainted,
         conv_id=conv_id,
+        turn_tool_executions=turn_tool_executions,
     )
     batch_res = plan_mode.execute_plan_batch(plan_data, cfg=cfg, runner=step_runner)
     if batch_res.get("paused"):
@@ -4139,10 +4158,12 @@ def resume_plan_execution(plan_state: dict, last_result=None, cfg=None):
         return f"Plan '{plan_state.get('title', 'Execution Plan')}' aborted at step '{batch_res.get('failed_step')}': {batch_res.get('error')}"
 
 
-def run_skill(cfg, name, arg, source="pc", is_confirmed=False, mode="developer", is_tainted=False, conv_id=None):
+def run_skill(cfg, name, arg, source="pc", is_confirmed=False, mode="developer", is_tainted=False, conv_id=None, turn_tool_executions=None):
     try:
         name = name.strip().upper()
         raw_arg = (arg or "").strip()
+        if turn_tool_executions is None:
+            turn_tool_executions = [0]
 
         if name in ("CMD", "POWERSHELL", "RUN_CODE") and len(raw_arg) > 2000:
             return f"Error: {name} command exceeds maximum allowed length of 2,000 characters ({len(raw_arg)} chars). Command rejected."
@@ -4217,7 +4238,7 @@ def run_skill(cfg, name, arg, source="pc", is_confirmed=False, mode="developer",
             if not parsed.get("steps"):
                 return f"Plan '{parsed.get('title', 'Execution Plan')}' has no steps."
             effective_conv = conv_id or (f"{source}:{mode}" if source == "pc" else f"{source}:general")
-            step_runner = create_plan_step_runner(parsed, cfg, source=source, mode=mode, is_tainted=is_tainted, conv_id=effective_conv)
+            step_runner = create_plan_step_runner(parsed, cfg, source=source, mode=mode, is_tainted=is_tainted, conv_id=effective_conv, turn_tool_executions=turn_tool_executions)
             batch_res = plan_mode.execute_plan_batch(parsed, cfg=cfg, runner=step_runner)
             if batch_res.get("paused"):
                 pending = batch_res.get("pending_info")
@@ -4614,7 +4635,7 @@ TAINT_SOURCE_TOOLS = {
     "NEWS"
 }
 
-def execute_model_tags(tags, cfg, jid=None, mode="developer", source="pc", is_tainted=False, is_healing=False, conv_id=None):
+def execute_model_tags(tags, cfg, jid=None, mode="developer", source="pc", is_tainted=False, is_healing=False, conv_id=None, turn_tool_executions=None):
     """
     Unified function that executes model-emitted tags.
     Every tool call passes through check_tool_confirmation_required().
@@ -4622,6 +4643,8 @@ def execute_model_tags(tags, cfg, jid=None, mode="developer", source="pc", is_ta
     """
     if conv_id is None:
         conv_id = f"{source}:{mode}" if source == "pc" else f"{source}:{jid}"
+    if turn_tool_executions is None:
+        turn_tool_executions = [0]
     actions = []
     feedback_items = []
     pending_info = None
@@ -4629,6 +4652,12 @@ def execute_model_tags(tags, cfg, jid=None, mode="developer", source="pc", is_ta
 
     for name, arg, _, _ in tags:
         clean_name = unicodedata.normalize("NFKC", (name or "")).strip().upper()
+        if turn_tool_executions[0] >= 25:
+            err_msg = "Error: Maximum of 25 tool executions reached for this turn. Further tool execution halted."
+            actions.append({"skill": clean_name, "arg": arg, "result": err_msg})
+            feedback_items.append(f"[{clean_name} Output]:\n{err_msg}")
+            break
+
         if clean_name in ("CMD", "POWERSHELL", "RUN_CODE") and len(arg or "") > 2000:
             err_msg = f"Error: {clean_name} command exceeds maximum allowed length of 2,000 characters ({len(arg or '')} chars). Command rejected."
             actions.append({"skill": clean_name, "arg": arg, "result": err_msg})
@@ -4725,7 +4754,9 @@ def execute_model_tags(tags, cfg, jid=None, mode="developer", source="pc", is_ta
 
         act_phase(jid, "running", f"{'HEAL: ' if is_healing else ''}{clean_name}: {(arg or '').strip().splitlines()[0][:70] if (arg or '').strip() else ''}")
         _t0 = time.time()
-        res = run_skill(cfg, clean_name, arg, source=source, mode=mode, is_tainted=is_tainted, conv_id=conv_id)
+        if clean_name != "PLAN":
+            turn_tool_executions[0] += 1
+        res = run_skill(cfg, clean_name, arg, source=source, mode=mode, is_tainted=is_tainted, conv_id=conv_id, turn_tool_executions=turn_tool_executions)
         if isinstance(res, dict) and res.get("paused") and res.get("pending_info"):
             pending_info = res["pending_info"]
             actions.append({"skill": clean_name, "arg": arg, "result": res.get("result", "Plan paused for confirmation")})
@@ -4959,6 +4990,7 @@ def _chat_inner(user_text, source, jid, mode="developer", is_automation=False, c
     actions = []
     feedback_items = []
     pending_info = None
+    turn_tool_executions = [0]
 
     while tool_loop_steps < max_tool_steps:
         parsed_tags = extract_tags(raw)
@@ -4966,7 +4998,7 @@ def _chat_inner(user_text, source, jid, mode="developer", is_automation=False, c
             break
         tool_loop_steps += 1
         tag_result = execute_model_tags(
-            parsed_tags, cfg, jid=jid, mode=mode, source=source, is_tainted=is_tainted, is_healing=False, conv_id=conv_id
+            parsed_tags, cfg, jid=jid, mode=mode, source=source, is_tainted=is_tainted, is_healing=False, conv_id=conv_id, turn_tool_executions=turn_tool_executions
         )
         actions.extend(tag_result["actions"])
         feedback_items = list(tag_result["feedback_items"])
@@ -5022,7 +5054,7 @@ def _chat_inner(user_text, source, jid, mode="developer", is_automation=False, c
             heal_raw = call_llm(cfg, sys_prompt, conversation_chain)
             raw = heal_raw
             heal_tags = extract_tags(heal_raw)
-            heal_result = execute_model_tags(heal_tags, cfg, jid=jid, mode=mode, source=source, is_tainted=is_tainted, is_healing=True, conv_id=conv_id)
+            heal_result = execute_model_tags(heal_tags, cfg, jid=jid, mode=mode, source=source, is_tainted=is_tainted, is_healing=True, conv_id=conv_id, turn_tool_executions=turn_tool_executions)
             actions.extend(heal_result["actions"])
             is_tainted = heal_result["is_tainted"] or is_tainted
             if heal_result["pending_info"]:
