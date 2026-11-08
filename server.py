@@ -1943,6 +1943,8 @@ def run_sandboxed_process(cmd, shell=False, cwd=None, timeout=60, max_output=102
         target_cwd = WORKSPACE.resolve()
         
     env = get_sanitized_subprocess_env(target_cwd)
+    # Strip any GIT_* environment variables inherited from parent
+    env = {k: v for k, v in env.items() if not k.upper().startswith("GIT_")}
     if extra_env:
         env.update(extra_env)
     creationflags = 0
@@ -2003,9 +2005,12 @@ GIT_SUBCOMMAND_FLAGS = {
     "remote": {"-v", "--verbose", "get-url", "show"},
 }
 
+DEFAULT_GIT_ALLOWED_HOSTS = {"github.com", "gitlab.com"}
+
 UNCONDITIONAL_REJECT_FLAGS = {
     "--output", "-o", "--upload-pack", "--receive-pack", "--exec",
-    "--no-index", "--ext-diff", "--paginate"
+    "--no-index", "--ext-diff", "--paginate",
+    "-c", "--config", "--template", "--recurse-submodules",
 }
 
 FLAGS_WITH_ARGS = {
@@ -3240,9 +3245,11 @@ def skill_git(arg, cfg=None):
     if not tokens:
         return "Refused: empty git arguments."
 
-    # 1. Check unconditional reject flags anywhere in tokens
+    # 1. Check unconditional reject flags and disallowed schemes anywhere in tokens
     for tok in tokens:
         tok_lower = tok.lower()
+        if tok_lower.startswith(("ext::", "file://", "file:")) or "ext::" in tok_lower:
+            return f"Refused: git argument '{tok}' contains disallowed URL scheme (ext::, file://)."
         for bad in UNCONDITIONAL_REJECT_FLAGS:
             if tok == bad or tok_lower == bad or tok_lower.startswith(bad + "=") or tok_lower.startswith(bad):
                 return f"Git flag '{tok}' is disallowed for security."
@@ -3268,6 +3275,30 @@ def skill_git(arg, cfg=None):
 
     if not subcmd or subcmd not in GIT_ALLOWED_SUBCOMMANDS:
         return f"Refused: git subcommand '{subcmd or ''}' is not permitted."
+
+    clone_url = None
+    target_dir = None
+    parsed_clone_url = None
+    if subcmd == "clone":
+        for tok in tokens[subcmd_idx + 1:]:
+            if tok.startswith("-"):
+                continue
+            if not clone_url:
+                clone_url = tok
+            elif not target_dir:
+                target_dir = tok
+
+        if not clone_url:
+            return "Refused: git clone requires a repository URL."
+
+        if not clone_url.startswith("https://"):
+            return f"Refused: git clone is only permitted from https:// URLs (got '{clone_url}')."
+
+        parsed_clone_url = urllib.parse.urlparse(clone_url)
+        clone_host = (parsed_clone_url.netloc or "").split(":")[0].lower()
+        allowed_hosts = set((cfg or {}).get("git_allowed_hosts", DEFAULT_GIT_ALLOWED_HOSTS))
+        if clone_host not in allowed_hosts:
+            return f"Refused: git clone host '{clone_host}' is not in allowed hosts ({', '.join(sorted(allowed_hosts))})."
 
     # Reject any global flags before the subcommand
     for tok in tokens[:subcmd_idx]:
@@ -3333,13 +3364,37 @@ def skill_git(arg, cfg=None):
             "-c", "core.fsmonitor=false",
             "-c", "protocol.ext.allow=never",
         ]
-        cmd = ["git"] + safe_configs + tokens
+        diff_show_flags = []
+        if subcmd in ("diff", "show", "log"):
+            diff_show_flags = ["--no-ext-diff", "--no-textconv"]
+
+        cmd = ["git"] + safe_configs + tokens[:subcmd_idx + 1] + diff_show_flags + tokens[subcmd_idx + 1:]
         git_env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
         git_env["GIT_CONFIG_NOSYSTEM"] = "1"
         git_env["GIT_CONFIG_GLOBAL"] = empty_dev
         git_env["GIT_CONFIG_SYSTEM"] = empty_dev
         git_env["GIT_TERMINAL_PROMPT"] = "0"
         retcode, out, err = run_sandboxed_process(cmd, shell=False, cwd=WORKSPACE, timeout=30, extra_env=git_env)
+
+        if retcode == 0 and subcmd == "clone" and parsed_clone_url:
+            if target_dir:
+                cloned_folder_name = target_dir
+            else:
+                path_parts = parsed_clone_url.path.strip("/").split("/")
+                cloned_folder_name = path_parts[-1].removesuffix(".git") if path_parts else ""
+
+            if cloned_folder_name:
+                cloned_path = (WORKSPACE / cloned_folder_name).resolve()
+                mark_file_tainted(str(cloned_path), is_tainted=True)
+                mark_file_tainted(cloned_folder_name, is_tainted=True)
+                if cloned_path.is_dir():
+                    try:
+                        for sub_f in cloned_path.rglob("*"):
+                            if sub_f.is_file():
+                                mark_file_tainted(str(sub_f), is_tainted=True)
+                    except Exception:
+                        pass
+
         return (out or err or f"Git completed with code {retcode}")[:2500]
     except subprocess.TimeoutExpired:
         return "Git command timed out after 30 seconds."

