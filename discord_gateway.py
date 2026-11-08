@@ -1,3 +1,4 @@
+import server
 #!/usr/bin/env python3
 """
 Nova AI Discord Remote Gateway
@@ -175,13 +176,30 @@ class DiscordGateway:
                 reply_text = resp.get("reply") or resp.get("response") or "Done."
                 if isinstance(resp, dict) and resp.get("pending"):
                     p = resp["pending"]
+                    p_id = p.get("id")
                     cmd_val = p.get("command") or p.get("arg") or p.get("preview") or ""
-                    reply_text += (
-                        f"\n\n⚠️ Action Requires Approval (ID: `{p.get('id')}`):\n"
+                    # 1b. Strip or escape backticks
+                    safe_cmd = cmd_val.replace("```", "'''").replace("`", "'")
+                    # 1c. Escape control and invisible characters
+                    if hasattr(server, "sanitize_preview"):
+                        safe_cmd, _ = server.sanitize_preview(safe_cmd)
+                    full_approval_msg = (
+                        f"\n\n⚠️ Action Requires Approval (ID: `{p_id}`):\n"
                         f"{p.get('prompt')}\n\n"
-                        f"Command:\n```\n{cmd_val}\n```\n"
-                        f"Use `/allow {p.get('id')}` or `/deny {p.get('id')}`"
+                        f"Command:\n```\n{safe_cmd}\n```\n"
+                        f"Use `/allow {p_id}` or `/deny {p_id}`"
                     )
+                    if len(reply_text + full_approval_msg) > 2000:
+                        with server.PENDING_LOCK:
+                            if p_id in server.PENDING_ACTIONS:
+                                server.PENDING_ACTIONS[p_id]["pc_only"] = True
+                        reply_text += (
+                            f"\n\n⚠️ Action Requires Approval (ID: `{p_id}`):\n"
+                            f"{p.get('prompt')}\n\n"
+                            f"Notice: Approval for this action must be done on the PC (payload exceeds Discord limits)."
+                        )
+                    else:
+                        reply_text += full_approval_msg
                 self.send_message(channel_id, reply_text)
             except Exception as e:
                 self.send_message(channel_id, f"Error processing query: {e}")
@@ -227,9 +245,12 @@ def handle_remote_confirm(action_id: str, approve: bool) -> dict[str, Any]:
     try:
         import server
         with server.PENDING_LOCK:
+            pending = server.PENDING_ACTIONS.get(action_id)
+            if not pending:
+                return {"ok": False, "error": "Pending action not found or expired"}
+            if pending.get("pc_only"):
+                return {"ok": False, "error": "Approval for this action must be done on the PC."}
             pending = server.PENDING_ACTIONS.pop(action_id, None)
-        if not pending:
-            return {"ok": False, "error": "Pending action not found or expired"}
         if pending.get("expires_at", 0) < time.time():
             return {"ok": False, "error": "Pending action expired"}
 

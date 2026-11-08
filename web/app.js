@@ -1411,7 +1411,12 @@ async function renderPanel(name) {
 
   if (name === "memory") {
     body.innerHTML = `<h2>Memory</h2><p class="hint">Nova saves lasting facts about you here (say "remember that I…"). Stored only on this PC in data/memory.json.</p>
-      ${state.memory.map((m, i) => `<div class="row"><span>${esc(m)}</span><button data-del="${i}">delete</button></div>`).join("") || "<p class='hint'>Nothing yet.</p>"}
+      ${state.memory.map((m, i) => {
+        const text = (typeof m === 'object' && m !== null) ? (m.text || '') : m;
+        const isTainted = (typeof m === 'object' && m !== null && m.tainted);
+        const badge = isTainted ? ' <span style="color:#ff6b6b;font-size:10px;">[untrusted source]</span>' : '';
+        return `<div class="row"><span>${esc(text)}${badge}</span><button data-del="${i}">delete</button></div>`;
+      }).join("") || "<p class='hint'>Nothing yet.</p>"}
       <label>Add a memory</label><input id="newmem" placeholder="e.g. My sister's name is Ayesha"><br><br><button class="btn" id="addmem">Add</button>`;
     const addMem = async () => {
       const val = $("#newmem").value.trim();

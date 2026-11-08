@@ -52,9 +52,14 @@ def init_db(db_path=None):
                 content TEXT,
                 category TEXT DEFAULT 'general',
                 created_at TEXT,
-                updated_at TEXT
+                updated_at TEXT,
+                tainted INTEGER DEFAULT 0
             )
             """)
+            cur.execute("PRAGMA table_info(notes)")
+            cols = [r["name"] for r in cur.fetchall()]
+            if "tainted" not in cols:
+                cur.execute("ALTER TABLE notes ADD COLUMN tainted INTEGER DEFAULT 0")
             cur.execute("""
             CREATE TABLE IF NOT EXISTS memories (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -77,7 +82,7 @@ def _tokenize(text: str):
     words = re.findall(r"[a-zA-Z0-9_\u0900-\u097F\u0980-\u09FF\u0600-\u06FF\u4E00-\u9FFF]+", text.lower())
     return [w for w in words if len(w) > 1]
 
-def save_note(title: str, content: str, category: str = "general", db_path=None) -> int:
+def save_note(title: str, content: str, category: str = "general", tainted: int = 0, db_path=None) -> int:
     """Creates or updates a note in the second brain."""
     title = title.strip()
     content = content.strip()
@@ -88,14 +93,15 @@ def save_note(title: str, content: str, category: str = "general", db_path=None)
             cur = conn.cursor()
             cur.execute(
                 """
-                INSERT INTO notes (title, content, category, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO notes (title, content, category, created_at, updated_at, tainted)
+                VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT(title) DO UPDATE SET
                     content = excluded.content,
                     category = excluded.category,
-                    updated_at = excluded.updated_at
+                    updated_at = excluded.updated_at,
+                    tainted = excluded.tainted
                 """,
-                (title, content, category, now, now)
+                (title, content, category, now, now, 1 if tainted else 0)
             )
             conn.commit()
             last_id = cur.lastrowid

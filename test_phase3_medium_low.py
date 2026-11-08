@@ -77,15 +77,25 @@ class TestPhase3MediumLow(unittest.TestCase):
         self.assertIsNone(tag_result.get("pending_info"))
         self.assertIn("exceeds maximum allowed length of 2,000 characters", tag_result["actions"][0]["result"])
 
-        # 2. Confirmation preview: 20,000-char truncation removed for actions requiring confirmation
+        # 2. Confirmation preview: 20,000-char truncation removed for untainted actions requiring confirmation
         huge_file_content = "bigfile.txt|" + ("A" * 25000)
         file_tags = [("WRITE_FILE", huge_file_content, 0, 100)]
-        file_result = server.execute_model_tags(file_tags, cfg, mode="developer", source="pc", is_tainted=True)
+        file_result = server.execute_model_tags(file_tags, cfg, mode="developer", source="pc", is_tainted=False)
         pending = file_result.get("pending_info")
         self.assertIsNotNone(pending)
         preview = pending.get("preview", "")
         self.assertNotIn("truncated", preview)
         self.assertEqual(len(preview), len(huge_file_content))
+
+        # 3. 1d: Tainted WRITE_FILE over 20,000 chars shows first 500, last 500, size, and SHA-256
+        tainted_result = server.execute_model_tags(file_tags, cfg, mode="developer", source="pc", is_tainted=True)
+        pending_t = tainted_result.get("pending_info")
+        self.assertIsNotNone(pending_t)
+        preview_t = pending_t.get("preview", "")
+        self.assertIn("Tainted WRITE_FILE Content Summary", preview_t)
+        self.assertIn("Total Size: 25012 characters", preview_t)
+        self.assertIn("SHA-256:", preview_t)
+        self.assertLess(len(preview_t), 2500)
 
     # --- 3D: TELEMETRY MASKING ---
     def test_telemetry_masking(self):
