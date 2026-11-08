@@ -122,12 +122,17 @@ class TelegramGateway:
         if allowed_chat_ids and cid not in allowed_chat_ids:
             return False
 
+        allow_groups = bool(self.cfg.get("telegram_allow_groups", False))
+
         if allowed_user_ids:
             if not uid or uid not in allowed_user_ids:
                 return False
+            # In the user-id branch, also require chat.type == "private" unless telegram_allow_groups is true
+            if not allow_groups and ctype != "private":
+                return False
         else:
             # Only chat_ids are set -> group chats must be refused; only private chats accepted
-            if ctype and ctype != "private":
+            if ctype and ctype != "private" and not allow_groups:
                 return False
             # In a Telegram private chat, the user's ID equals the private chat ID; if from.id is present and differs, reject
             if uid and uid not in allowed_chat_ids:
@@ -136,12 +141,8 @@ class TelegramGateway:
         return True
 
     def process_update(self, update: Dict[str, Any]) -> bool:
-        message = (
-            update.get("message")
-            or update.get("edited_message")
-            or update.get("channel_post")
-            or update.get("edited_channel_post")
-        )
+        # Strictly drop edited_message, channel_post, edited_channel_post
+        message = update.get("message")
         if not message:
             return False
 
@@ -171,8 +172,13 @@ class TelegramGateway:
         if not text:
             return False
 
-        # Command: /allow <id>
-        if text.startswith("/allow"):
+        parts = text.split(maxsplit=1)
+        first_word = parts[0].strip().lower()
+        is_allow_cmd = (first_word == "/allow" or (first_word.startswith("/allow@") and len(first_word) > 7))
+        is_deny_cmd = (first_word == "/deny" or (first_word.startswith("/deny@") and len(first_word) > 6))
+
+        # Command: /allow <id> or /allow@botname <id> (exact command parsing; not /allowance)
+        if is_allow_cmd:
             # /allow and /deny MUST strictly come from an allowlisted user.id
             raw_users = self.cfg.get("telegram_allowed_user_ids") or []
             allowed_uids = [str(x).strip() for x in raw_users if str(x).strip()]
@@ -184,7 +190,6 @@ class TelegramGateway:
                 self.send_message(chat_id_int, "❌ Unauthorized: /allow must come from an authorized user ID.")
                 return False
 
-            parts = text.split(maxsplit=1)
             action_id = parts[1].strip() if len(parts) > 1 else ""
             if not action_id:
                 self.send_message(chat_id_int, "Usage: /allow <action_id>")
@@ -204,8 +209,8 @@ class TelegramGateway:
                 self.send_message(chat_id_int, f"❌ Failed to approve: {res.get('error')}")
             return True
 
-        # Command: /deny <id>
-        if text.startswith("/deny"):
+        # Command: /deny <id> or /deny@botname <id> (exact command parsing; not /denying)
+        if is_deny_cmd:
             # /allow and /deny MUST strictly come from an allowlisted user.id
             raw_users = self.cfg.get("telegram_allowed_user_ids") or []
             allowed_uids = [str(x).strip() for x in raw_users if str(x).strip()]
@@ -217,7 +222,6 @@ class TelegramGateway:
                 self.send_message(chat_id_int, "❌ Unauthorized: /deny must come from an authorized user ID.")
                 return False
 
-            parts = text.split(maxsplit=1)
             action_id = parts[1].strip() if len(parts) > 1 else ""
             if not action_id:
                 self.send_message(chat_id_int, "Usage: /deny <action_id>")
@@ -301,7 +305,7 @@ class TelegramGateway:
         if not self.token:
             return
         url = self.get_api_url("getUpdates")
-        params = {"timeout": 15, "offset": self.offset}
+        params = {"timeout": 15, "offset": self.offset, "allowed_updates": json.dumps(["message"])}
         full_url = f"{url}?{urllib.parse.urlencode(params)}"
         req = urllib.request.Request(full_url)
         try:

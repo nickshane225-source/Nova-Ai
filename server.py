@@ -107,7 +107,7 @@ SAFE_STATE_FIELDS = {
     "process_timeout", "max_tokens", "apps", "run_code_trusted_minutes",
     "encrypt_keys", "mode", "shortcuts", "theme", "smart_home_hosts",
     "llm_timeout", "debug_llm", "llm_reasoning_effort", "fallback_providers",
-    "telegram_enabled", "telegram_allowed_chat_ids", "telegram_allowed_user_ids",
+    "telegram_enabled", "telegram_allowed_chat_ids", "telegram_allowed_user_ids", "telegram_allow_groups",
     "discord_enabled", "discord_channel_ids", "discord_allowed_user_ids",
     "monthly_budget_usd"
 }
@@ -330,6 +330,7 @@ DEFAULT_CONFIG = {
     "telegram_bot_token": "",
     "telegram_allowed_chat_ids": [],
     "telegram_allowed_user_ids": [],
+    "telegram_allow_groups": False,
     "discord_enabled": False,
     "discord_bot_token": "",
     "discord_channel_ids": [],
@@ -5363,6 +5364,7 @@ class Handler(BaseHandler):
                     "confirm_token", "source", "smart_home_hosts", "llm_timeout",
                     "debug_llm", "llm_reasoning_effort", "fallback_providers",
                     "telegram_enabled", "telegram_allowed_chat_ids", "telegram_allowed_user_ids",
+                    "telegram_allow_groups",
                     "monthly_budget_usd", "discord_enabled",
                     "discord_channel_ids", "discord_allowed_user_ids",
                 } | SECRET_FIELDS | {f"clear_{sec}" for sec in SECRET_FIELDS}
@@ -5411,6 +5413,9 @@ class Handler(BaseHandler):
                 if "discord_enabled" in body:
                     if not isinstance(body["discord_enabled"], bool):
                         return self._send(400, {"ok": False, "error": "discord_enabled must be a boolean"})
+                if "telegram_allow_groups" in body:
+                    if not isinstance(body["telegram_allow_groups"], bool):
+                        return self._send(400, {"ok": False, "error": "telegram_allow_groups must be a boolean"})
                 for id_list_key in ("discord_channel_ids", "discord_allowed_user_ids", "telegram_allowed_chat_ids", "telegram_allowed_user_ids"):
                     if id_list_key in body:
                         raw_list = body[id_list_key]
@@ -5439,6 +5444,7 @@ class Handler(BaseHandler):
                     "smart_home_hosts",
                     "telegram_allowed_chat_ids",
                     "telegram_allowed_user_ids",
+                    "telegram_allow_groups",
                 }
                 current_cfg = get_config()
 
@@ -5486,7 +5492,7 @@ class Handler(BaseHandler):
                 for k in ("provider", "model", "base_url", "user_name", "language", "character", "llm_reasoning_effort"):
                     if k in body:
                         cfg[k] = str(body[k])
-                for k in ("wake_word_enabled", "barge_in_enabled", "allow_outside_workspace", "confirm_destructive", "remote_enabled", "remote_allow_dangerous", "encrypt_keys", "debug_llm", "telegram_enabled", "discord_enabled"):
+                for k in ("wake_word_enabled", "barge_in_enabled", "allow_outside_workspace", "confirm_destructive", "remote_enabled", "remote_allow_dangerous", "encrypt_keys", "debug_llm", "telegram_enabled", "discord_enabled", "telegram_allow_groups"):
                     if k in body:
                         cfg[k] = bool(body[k])
                 if "monthly_budget_usd" in body:

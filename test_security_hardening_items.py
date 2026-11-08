@@ -5,6 +5,7 @@ import unittest
 import time
 import os
 import sys
+import urllib.parse
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -172,6 +173,106 @@ class TestSecurityHardeningItems(unittest.TestCase):
         for m in next_call_history:
             self.assertNotIn("SECRET_TOOL_RESULT_ABC123", m["content"])
             self.assertNotIn("<UNTRUSTED_TOOL_OUTPUT>", m["content"])
+
+    # -----------------------------------------------------------------
+    # ITEM 3: TELEGRAM GATEWAY HARDENING
+    # -----------------------------------------------------------------
+    def test_item3_telegram_gateway_hardening(self):
+        """
+        Item 3:
+        - Drop edited_message, channel_post, edited_channel_post
+        - Request allowed_updates=["message"] in getUpdates
+        - Exact command parsing (/allow, /allow@botname; not /allowance)
+        - In user-id branch, require chat.type == "private" unless telegram_allow_groups is true.
+        """
+        import telegram_gateway
+
+        cfg = {
+            "telegram_bot_token": "fake_token_123",
+            "telegram_allowed_user_ids": ["99999"],
+            "telegram_allowed_chat_ids": ["12345"],
+            "telegram_allow_groups": False,
+        }
+        gw = telegram_gateway.TelegramGateway(cfg)
+
+        # 1. Dropping edited_message, channel_post, edited_channel_post
+        self.assertFalse(gw.process_update({"update_id": 1, "edited_message": {"chat": {"id": 12345}, "text": "hi"}}))
+        self.assertFalse(gw.process_update({"update_id": 2, "channel_post": {"chat": {"id": 12345}, "text": "hi"}}))
+        self.assertFalse(gw.process_update({"update_id": 3, "edited_channel_post": {"chat": {"id": 12345}, "text": "hi"}}))
+
+        # 2. allowed_updates=["message"] in poll_updates getUpdates request
+        with patch("urllib.request.urlopen") as mock_url:
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = b'{"ok": true, "result": []}'
+            mock_url.return_value.__enter__.return_value = mock_resp
+            gw.poll_updates()
+            called_req = mock_url.call_args[0][0]
+            self.assertIn("allowed_updates", called_req.full_url)
+            self.assertIn("message", urllib.parse.unquote(called_req.full_url))
+
+        # 3. Exact command parsing: /allow and /allow@botname vs /allowance
+        # /allowance should not trigger handle_remote_confirm
+        update_allowance = {
+            "update_id": 4,
+            "message": {
+                "message_id": 10,
+                "chat": {"id": 12345, "type": "private"},
+                "from": {"id": 99999},
+                "text": "/allowance abc12345",
+            }
+        }
+        with patch("telegram_gateway.handle_remote_confirm") as mock_h:
+            with patch.object(gw, "send_message"):
+                gw.process_update(update_allowance)
+                mock_h.assert_not_called()
+
+        # /allow abc12345 SHOULD trigger
+        update_allow = {
+            "update_id": 5,
+            "message": {
+                "message_id": 11,
+                "chat": {"id": 12345, "type": "private"},
+                "from": {"id": 99999},
+                "text": "/allow abc12345",
+            }
+        }
+        with patch("telegram_gateway.handle_remote_confirm", return_value={"ok": True, "action": "CMD", "command": "dir"}) as mock_h:
+            with patch.object(gw, "send_message"):
+                handled = gw.process_update(update_allow)
+                self.assertTrue(handled)
+                mock_h.assert_called_once_with("abc12345", approve=True)
+
+        # /allow@my_nova_bot abc12345 SHOULD trigger
+        update_allow_bot = {
+            "update_id": 6,
+            "message": {
+                "message_id": 12,
+                "chat": {"id": 12345, "type": "private"},
+                "from": {"id": 99999},
+                "text": "/allow@my_nova_bot abc12345",
+            }
+        }
+        with patch("telegram_gateway.handle_remote_confirm", return_value={"ok": True, "action": "CMD", "command": "dir"}) as mock_h:
+            with patch.object(gw, "send_message"):
+                handled = gw.process_update(update_allow_bot)
+                self.assertTrue(handled)
+                mock_h.assert_called_once_with("abc12345", approve=True)
+
+        # 4. User-id branch: chat.type == "private" required unless telegram_allow_groups is true
+        # When telegram_allow_groups is False:
+        self.assertTrue(gw.is_authorized(chat_id="12345", user_id="99999", chat_type="private"))
+        self.assertFalse(gw.is_authorized(chat_id="12345", user_id="99999", chat_type="group"))
+        self.assertFalse(gw.is_authorized(chat_id="12345", user_id="99999", chat_type="supergroup"))
+
+        # When telegram_allow_groups is True:
+        gw_groups = telegram_gateway.TelegramGateway({
+            "telegram_bot_token": "fake_token_123",
+            "telegram_allowed_user_ids": ["99999"],
+            "telegram_allowed_chat_ids": ["12345"],
+            "telegram_allow_groups": True,
+        })
+        self.assertTrue(gw_groups.is_authorized(chat_id="12345", user_id="99999", chat_type="group"))
+        self.assertTrue(gw_groups.is_authorized(chat_id="12345", user_id="99999", chat_type="supergroup"))
 
 if __name__ == "__main__":
     unittest.main()
