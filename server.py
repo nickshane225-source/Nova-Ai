@@ -4079,17 +4079,15 @@ def create_plan_step_runner(plan_info, cfg, source="pc", mode="developer", is_ta
             CONVERSATION_TAINT[effective_conv] = True
             RUN_CODE_TRUST_STATE.invalidate()
 
-        # 7. Record usage
+        # 7. Record usage (Plan tool steps do not call an LLM; log 0 tokens and 0 cost)
         try:
             import usage_tracker
             if usage_tracker:
-                inp_tok = usage_tracker.estimate_tokens_from_text(step)
-                out_tok = usage_tracker.estimate_tokens_from_text(str(step_res))
                 usage_tracker.record_usage(
                     provider=cfg.get("provider", "unknown"),
                     model=cfg.get("model", "unknown"),
-                    input_tokens=inp_tok,
-                    output_tokens=out_tok,
+                    input_tokens=0,
+                    output_tokens=0,
                     source=f"plan:{source}",
                 )
         except Exception:

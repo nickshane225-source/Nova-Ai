@@ -327,6 +327,29 @@ class TestPlanMode(unittest.TestCase):
         self.assertEqual(counter_plan[0], 25)
         self.assertIn("Maximum of 25 tool executions reached", res_plan["error"])
 
+    def test_honest_usage_accounting_zero_tokens_and_budget_exhaustion(self):
+        import server
+        from unittest.mock import patch
+        import usage_tracker
+
+        cfg = {"monthly_budget_usd": 10.0}
+
+        # 1. Plan tool steps log 0 tokens and 0 cost
+        with patch("usage_tracker.record_usage") as mock_record:
+            res = server.run_skill(cfg, "PLAN", "Usage Accounting Plan | NOTE: step a | NOTE: step b")
+            self.assertIn("executed successfully", res)
+            self.assertGreaterEqual(mock_record.call_count, 1)
+            for call in mock_record.call_args_list:
+                kw = call.kwargs
+                self.assertEqual(kw.get("input_tokens"), 0)
+                self.assertEqual(kw.get("output_tokens"), 0)
+
+        # 2. Budget exhaustion stops plan immediately
+        with patch("usage_tracker.check_budget_status", return_value={"exhausted": True, "spent_usd": 15.75}):
+            res_exhausted = server.run_skill(cfg, "PLAN", "Exhausted Plan | NOTE: step 1 | NOTE: step 2")
+            self.assertIn("aborted", res_exhausted)
+            self.assertIn("Monthly budget limit reached ($15.75 spent)", res_exhausted)
+
 
 if __name__ == "__main__":
     unittest.main()
