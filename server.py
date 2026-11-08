@@ -4298,20 +4298,22 @@ def resume_plan_execution(plan_state: dict, last_result=None, cfg=None, turn_too
                 conv_id=conv_id,
                 turn_tool_executions=turn_tool_executions,
             )
+            clean_title = (audit_logger.mask_secrets(plan_title) if audit_logger else mask_secrets(plan_title))[:100]
             def _progress_runner(step, *args):
-                act_phase(jid, "executing", f"Step: {step}")
-                add_event(type="plan_step_start", title=plan_title, step=step)
+                clean_step = (audit_logger.mask_secrets(step) if audit_logger else mask_secrets(step))[:100]
+                act_phase(jid, "executing", f"Step: {clean_step}")
+                add_event(type="plan_step_start", title=clean_title, step=clean_step)
                 res = step_runner(step, *args)
-                act_step(jid, "PLAN_STEP", step, 0.05)
-                clean_res = mask_secrets(str(res))[:100]
-                add_event(type="plan_step_done", title=plan_title, step=step, res=clean_res)
+                act_step(jid, "PLAN_STEP", clean_step, 0.05)
+                clean_res = (audit_logger.mask_secrets(str(res)) if audit_logger else mask_secrets(str(res)))[:100]
+                add_event(type="plan_step_done", title=clean_title, step=clean_step, res=clean_res)
                 if notify:
                     try:
                         notify({
                             "status": "step_done",
-                            "plan_title": plan_title,
-                            "message": f"Step '{step}' completed.",
-                            "step": step,
+                            "plan_title": clean_title,
+                            "message": f"Step '{clean_step}' completed.",
+                            "step": clean_step,
                             "result": clean_res,
                         })
                     except Exception:
@@ -4326,15 +4328,16 @@ def resume_plan_execution(plan_state: dict, last_result=None, cfg=None, turn_too
                 p_id = p_info.get("id")
                 p_prompt = p_info.get("prompt") or f"Step '{batch_res.get('paused_step')}' requires user approval."
                 clean_prompt, _ = sanitize_preview(p_prompt)
-                act_phase(jid, "paused", f"Waiting for user confirmation on step: {batch_res.get('paused_step')}")
-                add_event(type="plan_paused", title=plan_title, paused_step=batch_res.get("paused_step"), pending_id=p_id, pending_info=p_info)
+                clean_paused_step = (audit_logger.mask_secrets(str(batch_res.get("paused_step") or "")) if audit_logger else mask_secrets(str(batch_res.get("paused_step") or "")))[:100]
+                act_phase(jid, "paused", f"Waiting for user confirmation on step: {clean_paused_step}")
+                add_event(type="plan_paused", title=clean_title, paused_step=clean_paused_step, pending_id=p_id, pending_info=p_info)
                 if notify:
                     try:
                         notify({
                             "status": "paused",
-                            "plan_title": plan_title,
+                            "plan_title": clean_title,
                             "message": f"Plan paused: {clean_prompt}",
-                            "paused_step": batch_res.get("paused_step"),
+                            "paused_step": clean_paused_step,
                             "pending_id": p_id,
                             "pending_info": p_info,
                         })
@@ -4346,13 +4349,13 @@ def resume_plan_execution(plan_state: dict, last_result=None, cfg=None, turn_too
                     ACTIVE_PLANS.pop(conv_id, None)
                 c_count = len(batch_res.get("completed", []))
                 act_end(jid, ok=True)
-                msg = f"Plan '{plan_title}' executed successfully ({c_count} steps completed)."
-                add_event(type="plan_completed", title=plan_title, completed_count=c_count)
+                msg = f"Plan '{clean_title}' executed successfully ({c_count} steps completed)."
+                add_event(type="plan_completed", title=clean_title, completed_count=c_count)
                 if notify:
                     try:
                         notify({
                             "status": "completed",
-                            "plan_title": plan_title,
+                            "plan_title": clean_title,
                             "message": msg,
                             "completed_count": c_count,
                         })
@@ -4367,16 +4370,18 @@ def resume_plan_execution(plan_state: dict, last_result=None, cfg=None, turn_too
                 is_timeout = bool(batch_res.get("timed_out"))
                 ev_type = "plan_timeout" if is_timeout else "plan_failed"
                 status_type = "timeout" if is_timeout else "failed"
-                msg = f"Plan '{plan_title}' {'timed out' if is_timeout else 'aborted at step ' + str(batch_res.get('failed_step'))}: {err_msg}"
-                add_event(type=ev_type, title=plan_title, error=err_msg, failed_step=batch_res.get("failed_step"))
+                clean_err = (audit_logger.mask_secrets(str(err_msg)) if audit_logger else mask_secrets(str(err_msg)))[:100]
+                clean_failed_step = (audit_logger.mask_secrets(str(batch_res.get("failed_step") or "")) if audit_logger else mask_secrets(str(batch_res.get("failed_step") or "")))[:100]
+                msg = f"Plan '{clean_title}' {'timed out' if is_timeout else 'aborted at step ' + str(clean_failed_step)}: {clean_err}"
+                add_event(type=ev_type, title=clean_title, error=clean_err, failed_step=clean_failed_step)
                 if notify:
                     try:
                         notify({
                             "status": status_type,
-                            "plan_title": plan_title,
+                            "plan_title": clean_title,
                             "message": msg,
-                            "failed_step": batch_res.get("failed_step"),
-                            "error": err_msg,
+                            "failed_step": clean_failed_step,
+                            "error": clean_err,
                         })
                     except Exception:
                         pass
@@ -4385,14 +4390,15 @@ def resume_plan_execution(plan_state: dict, last_result=None, cfg=None, turn_too
             with ACTIVE_PLANS_LOCK:
                 ACTIVE_PLANS.pop(conv_id, None)
             act_end(jid, ok=False, error=str(exc))
-            add_event(type="plan_error", title=plan_title, error=str(exc))
+            clean_exc = (audit_logger.mask_secrets(str(exc)) if audit_logger else mask_secrets(str(exc)))[:100]
+            add_event(type="plan_error", title=clean_title, error=clean_exc)
             if notify:
                 try:
                     notify({
                         "status": "error",
-                        "plan_title": plan_title,
-                        "message": f"Plan '{plan_title}' execution error: {exc}",
-                        "error": str(exc),
+                        "plan_title": clean_title,
+                        "message": f"Plan '{clean_title}' execution error: {clean_exc}",
+                        "error": clean_exc,
                     })
                 except Exception:
                     pass
