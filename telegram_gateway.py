@@ -55,6 +55,18 @@ def handle_remote_confirm(action_id: str, approve: bool) -> Dict[str, Any]:
             mode=pending.get("mode", "developer"),
             is_tainted=pending.get("is_tainted", False),
         )
+        if pending.get("plan_state") and hasattr(server, "resume_plan_execution"):
+            plan_res = server.resume_plan_execution(pending["plan_state"], last_result=res, cfg=cfg)
+            if isinstance(plan_res, dict) and plan_res.get("paused"):
+                return {
+                    "ok": True,
+                    "approved": True,
+                    "action": pending["name"],
+                    "command": pending.get("arg", ""),
+                    "result": f"{res}\n\n[Next Step Requires Confirmation]: {plan_res.get('pending_info', {}).get('prompt')}",
+                    "pending": plan_res.get("pending_info"),
+                }
+            res = f"{res}\n\n{plan_res}"
         if getattr(server, "audit_logger", None):
             server.audit_logger.log_audit_event(
                 channel="telegram",

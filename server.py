@@ -3759,6 +3759,234 @@ def open_url(url, cfg=None):
         return f"Opened {url}"
 
 
+def parse_step_to_tag(step_str: str) -> tuple[str, str]:
+    """Parses a plan step into (tool_name, argument)."""
+    s = str(step_str or "").strip()
+    if s.startswith("[[") and s.endswith("]]"):
+        tags = extract_tags(s)
+        if tags:
+            return tags[0][0], tags[0][1]
+    if ":" in s:
+        parts = s.split(":", 1)
+        potential_name = parts[0].strip().upper()
+        if re.match(r"^[A-Z][A-Z0-9_]*$", potential_name):
+            return potential_name, parts[1].strip()
+    return "STEP", s
+
+
+def create_plan_step_runner(plan_info, cfg, source="pc", mode="developer", is_tainted=False, conv_id=None):
+    """
+    Creates a step runner callback for plan_mode.execute_plan_batch().
+    Routes every plan step through taint, Guardian, confirmation gate,
+    budget checking, and output wrapping.
+    """
+    cfg = cfg or {}
+
+    def step_runner(step: str, idx: int = 1, all_steps: list = None, completed: list = None, step_results: list = None):
+        nonlocal is_tainted
+        all_steps = all_steps or []
+        completed = completed or []
+        step_results = step_results or []
+
+        # 1. Budget check
+        try:
+            import usage_tracker
+            if usage_tracker:
+                b_stat = usage_tracker.check_budget_status(cfg.get("monthly_budget_usd"))
+                if b_stat.get("exhausted"):
+                    return {
+                        "ok": False,
+                        "error": f"Monthly budget limit reached (${b_stat.get('spent_usd')} spent). Plan execution halted.",
+                    }
+        except Exception:
+            pass
+
+        # 2. Parse tag
+        name, arg = parse_step_to_tag(step)
+        clean_name = unicodedata.normalize("NFKC", (name or "")).strip().upper()
+
+        KNOWN_SKILL_NAMES = {
+            "CMD", "POWERSHELL", "RUN_CODE", "WRITE_FILE", "EDIT_FILE", "CREATE_PROJECT",
+            "READ_FILE", "LIST_FILES", "SEARCH", "PLAY", "OPEN_APP", "CLOSE_APP",
+            "VOLUME", "MEDIA", "SYSTEM", "NOTE", "SEARCH_NOTES", "REMIND", "TIMER",
+            "GIT", "GITHUB", "BRIEFING", "WEATHER", "CALCULATE", "FETCH_URL", "BROWSER_RESEARCH",
+            "BROWSER_READ", "BROWSER_CLICK", "BROWSER_TYPE", "BROWSER_SCROLL", "BROWSER_NAVIGATE",
+            "BROWSER_TABS", "BROWSER_YOUTUBE", "BROWSER_SCREENSHOT", "BROWSER_ACTIVATE", "BROWSER_OPEN",
+            "OPEN_URL", "OPEN_FILE", "VIEW_FILE", "READ_URL", "FETCH", "SMART_HOME", "WEBHOOK", "IOT",
+            "NEWS", "SCREENSHOT", "VISION", "ORGANIZE", "ORGANIZE_FILES", "ORGANIZE_FOLDER"
+        }
+        if clean_name not in KNOWN_SKILL_NAMES and clean_name == "STEP":
+            res_msg = f"Step {idx}: {arg} (noted)"
+            return {
+                "ok": True,
+                "result": res_msg,
+                "wrapped_output": wrap_untrusted_tool_output(res_msg),
+            }
+
+        # 3. Check Guardian safety review
+        g_verdict = "NONE"
+        g_reason = ""
+        if guardian_agent:
+            try:
+                g_verdict, g_reason = guardian_agent.review_command_safety(cfg, clean_name, arg, source=source)
+            except Exception as e:
+                is_exec = guardian_agent.is_exec_capable_tag(clean_name, arg) if hasattr(guardian_agent, "is_exec_capable_tag") else True
+                if is_exec:
+                    g_verdict = getattr(guardian_agent, "VERDICT_DANGEROUS", "DANGEROUS")
+                    g_reason = f"Guardian classifier failed closed: {e}"
+                else:
+                    g_verdict = getattr(guardian_agent, "VERDICT_SAFE", "SAFE")
+                    g_reason = f"Non-exec tool bypassed classifier error: {e}"
+
+        # 4. Check tool confirmation required
+        needs_confirm, reason = check_tool_confirmation_required(
+            cfg, clean_name, arg, is_tainted=is_tainted, source=source, conv_id=conv_id
+        )
+
+        if g_verdict == getattr(guardian_agent, "VERDICT_DANGEROUS", "DANGEROUS"):
+            needs_confirm = True
+            reason = f"Guardian flagged action as DANGEROUS: {g_reason}" if g_reason else "Guardian flagged action as DANGEROUS"
+
+        if needs_confirm:
+            action_id = secrets.token_hex(8)
+            preview_str = arg or ""
+            prompt = f"Plan '{plan_info.get('title', 'Execution Plan')}' Step {idx} ({clean_name}): {preview_str}"
+            rem_steps = all_steps[idx:] if idx < len(all_steps) else []
+            pending_data = {
+                "id": action_id,
+                "name": clean_name,
+                "arg": arg,
+                "source": source,
+                "mode": mode,
+                "is_tainted": is_tainted,
+                "prompt": prompt,
+                "guardian": g_verdict,
+                "created_at": time.time(),
+                "expires_at": time.time() + 300,
+                "plan_state": {
+                    "title": plan_info.get("title", "Execution Plan"),
+                    "all_steps": all_steps,
+                    "completed": list(completed),
+                    "paused_step_idx": idx,
+                    "paused_step": step,
+                    "remaining_steps": rem_steps,
+                    "results": list(step_results),
+                    "source": source,
+                    "mode": mode,
+                    "is_tainted": is_tainted,
+                    "conv_id": conv_id,
+                }
+            }
+            with PENDING_LOCK:
+                PENDING_ACTIONS[action_id] = pending_data
+            if audit_logger:
+                audit_logger.log_audit_event(
+                    channel=source,
+                    tool=clean_name,
+                    preview=preview_str,
+                    guardian_verdict=g_verdict,
+                    status="PENDING_APPROVAL",
+                    cfg=cfg,
+                )
+            return {
+                "ok": True,
+                "paused": True,
+                "pending_info": {
+                    "id": action_id,
+                    "name": clean_name,
+                    "arg": arg,
+                    "prompt": prompt,
+                    "guardian": g_verdict,
+                    "is_tainted": is_tainted,
+                }
+            }
+
+        # 5. Check taint before execution
+        if clean_name in ("READ_FILE", "LIST_FILES"):
+            if is_read_or_list_target_tainted(arg, cfg=cfg):
+                is_tainted = True
+                RUN_CODE_TRUST_STATE.invalidate()
+        elif clean_name in TAINT_SOURCE_TOOLS:
+            is_tainted = True
+            RUN_CODE_TRUST_STATE.invalidate()
+
+        # 6. Execute step
+        step_res = run_skill(cfg, clean_name, arg, source=source, mode=mode, is_tainted=is_tainted)
+
+        # Check error taint
+        if clean_name in TAINT_SOURCE_TOOLS and step_res and any(err_pat in str(step_res) for err_pat in ("STDERR:", "Traceback (most recent call last)", "Exit code:", "Error:", "failed:")):
+            is_tainted = True
+
+        # 7. Record usage
+        try:
+            import usage_tracker
+            if usage_tracker:
+                inp_tok = usage_tracker.estimate_tokens_from_text(step)
+                out_tok = usage_tracker.estimate_tokens_from_text(str(step_res))
+                usage_tracker.record_usage(
+                    provider=cfg.get("provider", "unknown"),
+                    model=cfg.get("model", "unknown"),
+                    input_tokens=inp_tok,
+                    output_tokens=out_tok,
+                    source=f"plan:{source}",
+                )
+        except Exception:
+            pass
+
+        # 8. Wrap output
+        wrapped = wrap_untrusted_tool_output(str(step_res))
+        return {
+            "ok": True,
+            "result": step_res,
+            "wrapped_output": wrapped,
+        }
+
+    return step_runner
+
+
+def resume_plan_execution(plan_state: dict, last_result=None, cfg=None):
+    """
+    Resumes execution of a paused plan after the user approves a gated step.
+    """
+    if not plan_mode:
+        return "Plan Mode coordinator not available."
+    cfg = cfg or get_config()
+    remaining = list(plan_state.get("remaining_steps") or [])
+    completed = list(plan_state.get("completed") or [])
+    if plan_state.get("paused_step"):
+        completed.append(plan_state["paused_step"])
+    results = list(plan_state.get("results") or [])
+    if last_result is not None:
+        results.append(last_result)
+
+    if not remaining:
+        return f"Plan '{plan_state.get('title', 'Execution Plan')}' executed successfully ({len(completed)} steps completed)."
+
+    plan_data = {
+        "title": plan_state.get("title", "Execution Plan"),
+        "steps": plan_state.get("all_steps", []),
+        "completed": completed,
+        "results": results,
+        "remaining_steps": remaining,
+    }
+    step_runner = create_plan_step_runner(
+        plan_data,
+        cfg,
+        source=plan_state.get("source", "pc"),
+        mode=plan_state.get("mode", "developer"),
+        is_tainted=plan_state.get("is_tainted", False),
+        conv_id=plan_state.get("conv_id"),
+    )
+    batch_res = plan_mode.execute_plan_batch(plan_data, cfg=cfg, runner=step_runner)
+    if batch_res.get("paused"):
+        return batch_res
+    if batch_res.get("ok"):
+        c_count = len(batch_res.get("completed", []))
+        return f"Plan '{plan_state.get('title', 'Execution Plan')}' executed successfully ({c_count} steps completed)."
+    else:
+        return f"Plan '{plan_state.get('title', 'Execution Plan')}' aborted at step '{batch_res.get('failed_step')}': {batch_res.get('error')}"
+
+
 def run_skill(cfg, name, arg, source="pc", is_confirmed=False, mode="developer", is_tainted=False):
     try:
         name = name.strip().upper()
@@ -3836,7 +4064,17 @@ def run_skill(cfg, name, arg, source="pc", is_confirmed=False, mode="developer",
             parsed = plan_mode.parse_plan_tag(raw_arg)
             if not parsed.get("steps"):
                 return f"Plan '{parsed.get('title', 'Execution Plan')}' has no steps."
-            batch_res = plan_mode.execute_plan_batch(parsed, cfg=cfg)
+            step_runner = create_plan_step_runner(parsed, cfg, source=source, mode=mode, is_tainted=is_tainted)
+            batch_res = plan_mode.execute_plan_batch(parsed, cfg=cfg, runner=step_runner)
+            if batch_res.get("paused"):
+                pending = batch_res.get("pending_info")
+                p_prompt = pending.get("prompt") if pending else "Step requires approval"
+                return {
+                    "ok": True,
+                    "paused": True,
+                    "pending_info": pending,
+                    "result": f"Plan '{parsed['title']}' paused: {p_prompt}",
+                }
             if batch_res.get("ok"):
                 completed_count = len(batch_res.get("completed", []))
                 return f"Plan '{parsed['title']}' executed successfully ({completed_count} steps completed)."
@@ -4373,6 +4611,10 @@ def execute_model_tags(tags, cfg, jid=None, mode="developer", source="pc", is_ta
         act_phase(jid, "running", f"{'HEAL: ' if is_healing else ''}{clean_name}: {(arg or '').strip().splitlines()[0][:70] if (arg or '').strip() else ''}")
         _t0 = time.time()
         res = run_skill(cfg, clean_name, arg, source=source, mode=mode, is_tainted=is_tainted)
+        if isinstance(res, dict) and res.get("paused") and res.get("pending_info"):
+            pending_info = res["pending_info"]
+            actions.append({"skill": clean_name, "arg": arg, "result": res.get("result", "Plan paused for confirmation")})
+            break
         act_step(jid, f"{'HEAL_' if is_healing else ''}{clean_name}", arg, time.time() - _t0)
         actions.append({"skill": clean_name, "arg": arg, "result": res})
         if audit_logger:
@@ -4495,6 +4737,17 @@ def _chat_inner(user_text, source, jid, mode="developer", is_automation=False, c
                     elif pending.get("is_tainted") or is_file_tainted_provenance(pending.get("arg", ""))[0]:
                         RUN_CODE_TRUST_STATE.invalidate()
                     res = run_skill(cfg, pending["name"], pending["arg"], source=source, is_confirmed=True, mode=pending.get("mode", mode), is_tainted=pending.get("is_tainted", False))
+                    if pending.get("plan_state"):
+                        plan_res = resume_plan_execution(pending["plan_state"], last_result=res, cfg=cfg)
+                        if isinstance(plan_res, dict) and plan_res.get("paused"):
+                            reply = f"Approved and executed {pending['name']}.\n{res}\n\n[Action Requires Confirmation: {plan_res.get('pending_info', {}).get('prompt')}]"
+                            with LOCK:
+                                hist.append(user_msg)
+                                hist.append({"role": "assistant", "content": reply})
+                            if source != "pc":
+                                add_event(source=source, text=user_text, reply=reply, actions=[{"skill": pending["name"], "arg": pending["arg"], "result": res}])
+                            return {"reply": reply, "actions": [{"skill": pending["name"], "arg": pending["arg"], "result": res}], "pending": plan_res.get("pending_info")}
+                        res = f"{res}\n\n{plan_res}"
                     if audit_logger:
                         audit_logger.log_audit_event(
                             channel=source,
@@ -5402,6 +5655,19 @@ class Handler(BaseHandler):
                 elif pending.get("is_tainted") or is_file_tainted_provenance(pending.get("arg", ""))[0]:
                     RUN_CODE_TRUST_STATE.invalidate()
                 res = run_skill(cfg, pending["name"], pending["arg"], source=pending.get("source", "pc"), is_confirmed=True, mode=pending.get("mode", "developer"), is_tainted=pending.get("is_tainted", False))
+                if pending.get("plan_state"):
+                    plan_res = resume_plan_execution(pending["plan_state"], last_result=res, cfg=cfg)
+                    if isinstance(plan_res, dict) and plan_res.get("paused"):
+                        return self._send(200, {
+                            "ok": True,
+                            "approved": True,
+                            "action": pending["name"],
+                            "command": pending.get("arg", ""),
+                            "guardian": pending.get("guardian", "NONE"),
+                            "result": f"{res}\n\n[Next Step Requires Confirmation]: {plan_res.get('pending_info', {}).get('prompt')}",
+                            "pending": plan_res.get("pending_info"),
+                        })
+                    res = f"{res}\n\n{plan_res}"
                 if audit_logger:
                     audit_logger.log_audit_event(
                         channel=pending.get("source", "pc"),
