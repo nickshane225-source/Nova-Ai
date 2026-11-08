@@ -194,7 +194,7 @@ class TestBatch3AndFollowUps(unittest.TestCase):
                 ("discord_allowed_user_ids", ["987654321098765432"]),
                 ("allow_outside_workspace", True),
                 ("confirm_destructive", False),
-                ("run_code_trusted_minutes", 15),
+                ("run_code_trusted_minutes", 10),
                 ("remote_allow_dangerous", True),
                 ("smart_home_hosts", ["192.168.1.50"]),
                 ("telegram_allowed_chat_ids", ["555666777"]),

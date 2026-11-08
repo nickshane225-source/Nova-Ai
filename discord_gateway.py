@@ -32,6 +32,7 @@ class DiscordGateway:
         chat_handler: Callable[[str, str], dict[str, Any]] | None = None,
         confirm_handler: Callable[[str, bool], dict[str, Any]] | None = None,
         poll_interval: float = 3.0,
+        allow_dms: bool = False,
     ):
         self.bot_token = (bot_token or "").strip()
         self.channel_ids = [str(cid).strip() for cid in channel_ids if str(cid).strip()]
@@ -39,6 +40,7 @@ class DiscordGateway:
         self.chat_handler = chat_handler
         self.confirm_handler = confirm_handler
         self.poll_interval = max(1.0, poll_interval)
+        self.allow_dms = bool(allow_dms)
         self.last_message_ids: dict[str, str] = {}
         self._running = False
         self._thread: threading.Thread | None = None
@@ -105,21 +107,13 @@ class DiscordGateway:
 
             author = msg.get("author", {})
             user_id = str(author.get("id"))
-            is_bot = author.get("bot", False)
-
-            # Ignore own messages or other bot messages
-            if is_bot or user_id == self.bot_id:
-                continue
-
-            if not self.is_authorized(user_id, channel_id):
-                logger.warning(f"[Discord Security] Ignored message from unauthorized user/channel: {user_id}/{channel_id}")
-                continue
+            is_bot = bool(author.get("bot", False))
 
             content = (msg.get("content") or "").strip()
             if not content:
                 continue
 
-            self.handle_message(channel_id, user_id, content)
+            self.handle_message(channel_id, user_id, content, is_bot=is_bot, is_dm=False, author_id=user_id)
 
     def is_authorized(self, user_id: str | int, channel_id: str | int = "") -> bool:
         """
@@ -138,11 +132,39 @@ class DiscordGateway:
                 return False
         return True
 
-    def handle_message(self, channel_id: str, user_id: str, text: str) -> None:
+    def handle_message(
+        self,
+        channel_id: str,
+        user_id: str,
+        text: str,
+        is_bot: bool = False,
+        is_dm: bool = False,
+        author_id: str | None = None,
+    ) -> None:
         """Handle incoming command or user query."""
-        if not self.is_authorized(user_id, channel_id):
-            logger.warning(f"[Discord Security] Ignored message from unauthorized user/channel: {user_id}/{channel_id}")
+        # 1. Ignore bot messages
+        if is_bot:
+            logger.debug(f"[Discord Security] Ignored bot message from user {user_id}")
             return
+
+        # 2. Ignore self messages
+        effective_author = str(author_id or user_id or "").strip()
+        if self.bot_id and effective_author == str(self.bot_id):
+            logger.debug(f"[Discord Security] Ignored self message from bot {self.bot_id}")
+            return
+
+        # 3. Explicit DM policy
+        if is_dm:
+            if not self.allow_dms:
+                logger.warning(f"[Discord Security] Ignored DM because DMs are disabled: user={user_id}")
+                return
+            if not self.allowed_user_ids or effective_author not in self.allowed_user_ids:
+                logger.warning(f"[Discord Security] Ignored DM from unauthorized user: user={user_id}")
+                return
+        else:
+            if not self.is_authorized(effective_author, channel_id):
+                logger.warning(f"[Discord Security] Ignored message from unauthorized user/channel: {effective_author}/{channel_id}")
+                return
         cmd = text.strip()
 
         # Approval commands: /allow <id> or /deny <id>

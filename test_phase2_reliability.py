@@ -248,10 +248,7 @@ class TestPhase2Reliability(unittest.TestCase):
                 "status", "status -s", "status -b", "status -u",
                 "diff --stat", "diff -p",
                 "log -n 5", "log --oneline", "log --oneline -n 5",
-                "add -A", "commit -m 'Initial commit'", "commit -m msg",
-                "branch -a", "checkout -b new-feat", "switch -c new-feat",
-                "init -b main", "restore --staged",
-                "pull -u", "push --force"
+                "show HEAD", "clone https://github.com/example/repo"
             ]:
                 res = server.skill_git(valid_cmd)
                 self.assertNotIn("is not permitted", res)
@@ -280,7 +277,7 @@ class TestPhase2Reliability(unittest.TestCase):
 
         # 3. Path outside workspace rejected
         outside_p = r"C:\Windows\System32" if platform.system() == "Windows" else "/etc"
-        res_path = server.skill_git(f"add {outside_p}")
+        res_path = server.skill_git(f"diff {outside_p}")
         self.assertEqual(res_path, "Path is outside the Nova workspace.")
 
         # 4. Dangerous URLs rejected

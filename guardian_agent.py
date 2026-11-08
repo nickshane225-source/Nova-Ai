@@ -28,7 +28,7 @@ _DESTRUCTIVE_PATTERNS = [
     re.compile(r":\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:", re.IGNORECASE),  # fork bomb
 ]
 
-SAFE_READ_ONLY_TOOLS = {"LIST_FILES", "READ_FILE", "SEARCH_NOTES", "BRIEFING", "GET_TIME", "WEATHER", "CALCULATE"}
+SAFE_READ_ONLY_TOOLS = {"LIST_FILES", "READ_FILE", "SEARCH", "SEARCH_NOTES", "BRIEFING", "GET_TIME", "WEATHER", "CALCULATE"}
 SAFE_SHELL_COMMANDS = {"dir", "ls", "echo", "date", "time", "whoami", "hostname", "ver", "systeminfo"}
 SAFE_GIT_COMMANDS = set()  # Git is removed from auto-approve allowlist for security (Follow-up #3)
 _READ_ONLY_TOOLS = SAFE_READ_ONLY_TOOLS

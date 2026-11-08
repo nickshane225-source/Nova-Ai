@@ -55,9 +55,25 @@ async function streamChat(path, body, onChunk) {
 }
 async function loadState() {
   state = await api("/api/state");
-  if ($("#quickLang") && state.config && state.config.language) {
+  if ($("#quickLang") && state && state.config && state.config.language) {
     $("#quickLang").value = state.config.language;
   }
+  const untrustedBadge = $("#untrustedBadge");
+  if (untrustedBadge) {
+    if (state && state.is_tainted) {
+      untrustedBadge.classList.remove("hidden");
+    } else {
+      untrustedBadge.classList.add("hidden");
+    }
+  }
+}
+if ($("#clearUntrustedBtn")) {
+  $("#clearUntrustedBtn").onclick = async (e) => {
+    e.stopPropagation();
+    await api("/api/clear_untrusted_context", { mode: ModeManager.current });
+    await loadState();
+    showToast("Context Cleared", "Untrusted tool outputs removed from conversation context.", "info");
+  };
 }
 if ($("#quickLang")) {
   $("#quickLang").onchange = async () => {

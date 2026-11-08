@@ -65,7 +65,8 @@ class TestTelegramGateway(unittest.TestCase):
             "update_id": 3,
             "message": {
                 "message_id": 103,
-                "chat": {"id": 12345678},
+                "chat": {"id": 12345678, "type": "private"},
+                "from": {"id": 12345678},
                 "text": "/allow abcdef12",
             }
         }
@@ -89,7 +90,8 @@ class TestTelegramGateway(unittest.TestCase):
             "update_id": 4,
             "message": {
                 "message_id": 104,
-                "chat": {"id": 12345678},
+                "chat": {"id": 12345678, "type": "private"},
+                "from": {"id": 12345678},
                 "text": "/deny abcdef12",
             }
         }

@@ -618,6 +618,11 @@ HISTORIES = {
 }
 HISTORY = HISTORIES["developer"]  # short-term conversation backward compatibility alias
 
+CONVERSATION_TAINT = {
+    "developer": False,
+    "cyber": False,
+}
+
 
 # ----------------------------------------------------------------------------
 # LLM
@@ -1906,8 +1911,7 @@ def run_sandboxed_process(cmd, shell=False, cwd=None, timeout=60, max_output=102
     return proc.returncode, stdout, stderr
 
 GIT_ALLOWED_SUBCOMMANDS = {
-    "status", "diff", "log", "add", "commit", "branch", "checkout", "switch",
-    "init", "show", "stash", "restore", "pull", "push", "clone", "remote", "fetch"
+    "status", "log", "diff", "show", "clone"
 }
 
 GIT_SUBCOMMAND_FLAGS = {
@@ -2064,7 +2068,11 @@ def check_tool_confirmation_required(cfg, name, arg, is_tainted=False, source="p
             return True, f"Listing '{arg}' outside workspace requires user approval."
     if name == "SEARCH":
         if is_tainted or source != "pc":
-            return True, "Running SEARCH during a tainted or non-PC turn requires user approval."
+            # In a tainted conversation, SEARCH needs confirmation, except SEARCH with <= 80 chars
+            if is_tainted and source == "pc" and len(arg or "") <= 80:
+                pass
+            else:
+                return True, "Running SEARCH during a tainted or non-PC turn requires user approval."
     # 1a. WRITE_FILE/EDIT_FILE to executable extensions ALWAYS requires confirmation,
     # even in untainted turns and regardless of confirm_destructive setting.
     if name in ("WRITE_FILE", "EDIT_FILE"):
@@ -2079,8 +2087,9 @@ def check_tool_confirmation_required(cfg, name, arg, is_tainted=False, source="p
 
     if (is_tainted or source != "pc") and (
         name in (
-            "VISION", "SCREEN_ANALYZE", "OPEN_URL", "OPEN_FILE", "VIEW_FILE",
-            "GITHUB", "GH", "GIT_HUB", "WRITE_FILE", "EDIT_FILE", "CREATE_PROJECT",
+            "PLAY", "SMART_HOME", "WEBHOOK", "IOT", "VISION", "SCREEN_ANALYZE",
+            "OPEN_URL", "OPEN_FILE", "VIEW_FILE", "GITHUB", "GH", "GIT_HUB",
+            "WRITE_FILE", "EDIT_FILE", "CREATE_PROJECT",
         )
         or name.startswith("BROWSER_")
     ):
@@ -2191,7 +2200,8 @@ def check_tool_confirmation_required(cfg, name, arg, is_tainted=False, source="p
     if name == "RUN_CODE":
         if is_tainted:
             RUN_CODE_TRUST_STATE.invalidate()
-        trusted_mins = int((cfg or {}).get("run_code_trusted_minutes", 0) or 0)
+        raw_mins = int((cfg or {}).get("run_code_trusted_minutes", 0) or 0)
+        trusted_mins = min(10, max(0, raw_mins))  # default 0, hard cap 10
         prov_tainted, _ = is_file_tainted_provenance(arg or "")
         if prov_tainted:
             RUN_CODE_TRUST_STATE.invalidate()
@@ -3249,16 +3259,17 @@ def skill_git(arg, cfg=None):
     try:
         empty_dev = "NUL" if OS == "Windows" else "/dev/null"
         safe_configs = [
+            "--no-optional-locks",
             "-c", f"core.hooksPath={empty_dev}",
             "-c", "core.fsmonitor=false",
             "-c", "protocol.ext.allow=never",
         ]
         cmd = ["git"] + safe_configs + tokens
-        git_env = {
-            "GIT_CONFIG_GLOBAL": empty_dev,
-            "GIT_CONFIG_SYSTEM": empty_dev,
-            "GIT_TERMINAL_PROMPT": "0",
-        }
+        git_env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        git_env["GIT_CONFIG_NOSYSTEM"] = "1"
+        git_env["GIT_CONFIG_GLOBAL"] = empty_dev
+        git_env["GIT_CONFIG_SYSTEM"] = empty_dev
+        git_env["GIT_TERMINAL_PROMPT"] = "0"
         retcode, out, err = run_sandboxed_process(cmd, shell=False, cwd=WORKSPACE, timeout=30, extra_env=git_env)
         return (out or err or f"Git completed with code {retcode}")[:2500]
     except subprocess.TimeoutExpired:
@@ -4079,9 +4090,29 @@ def execute_model_tags(tags, cfg, jid=None, mode="developer", source="pc", is_ta
             except Exception:
                 pass
 
+        # Check Guardian for safety review
+        g_verdict = "NONE"
+        g_reason = ""
+        if guardian_agent:
+            try:
+                verdict_val, g_reason = guardian_agent.review_command_safety(cfg, clean_name, arg, source=source)
+                if verdict_val == guardian_agent.VERDICT_SAFE or verdict_val is True:
+                    g_verdict = guardian_agent.VERDICT_SAFE
+                else:
+                    g_verdict = guardian_agent.VERDICT_DANGEROUS
+            except Exception as e:
+                g_verdict = getattr(guardian_agent, "VERDICT_DANGEROUS", "DANGEROUS")
+                g_reason = f"Guardian classifier failed closed: {e}"
+
         needs_confirm, reason = check_tool_confirmation_required(
             cfg, clean_name, arg, is_tainted=is_tainted, source=source, turn_written_files=turn_written_files
         )
+
+        # Guardian DANGEROUS or classifier failure MUST block every auto-approval path
+        if g_verdict == guardian_agent.VERDICT_DANGEROUS:
+            needs_confirm = True
+            reason = f"Guardian flagged action as DANGEROUS: {g_reason}" if g_reason else "Guardian flagged action as DANGEROUS"
+
         if needs_confirm:
             action_id = secrets.token_hex(8)
             raw_preview = arg or ""
@@ -4100,17 +4131,6 @@ def execute_model_tags(tags, cfg, jid=None, mode="developer", source="pc", is_ta
 
             # 1c. In all previews, escape control and invisible characters
             preview_str, _ = sanitize_preview(preview_str)
-
-            g_verdict = "NONE"
-            if guardian_agent:
-                try:
-                    verdict_val, g_reason = guardian_agent.review_command_safety(cfg, clean_name, arg)
-                    if verdict_val == guardian_agent.VERDICT_SAFE or verdict_val is True:
-                        g_verdict = guardian_agent.VERDICT_SAFE
-                    else:
-                        g_verdict = guardian_agent.VERDICT_DANGEROUS
-                except Exception:
-                    g_verdict = getattr(guardian_agent, "VERDICT_DANGEROUS", "DANGEROUS")
 
             with PENDING_LOCK:
                 if len(PENDING_ACTIONS) >= 20:
@@ -4138,6 +4158,7 @@ def execute_model_tags(tags, cfg, jid=None, mode="developer", source="pc", is_ta
                 "command": arg or "",
                 "prompt": prompt_text,
                 "guardian": g_verdict,
+                "is_tainted": is_tainted,
             }
             actions.append({"skill": clean_name, "arg": arg, "result": f"Awaiting confirmation: {prompt_text}"})
             if audit_logger:
@@ -4167,7 +4188,7 @@ def execute_model_tags(tags, cfg, jid=None, mode="developer", source="pc", is_ta
             )
         if res and any(err_pat in res for err_pat in ("STDERR:", "Traceback (most recent call last)", "Exit code:", "Error:", "failed:")):
             is_tainted = True
-        if clean_name in ("RUN_CODE", "READ_FILE", "CMD", "POWERSHELL", "GIT", "LIST_FILES", "EDIT_FILE", "WRITE_FILE") or (clean_name == "SYSTEM" and "stats" in (arg or "").lower()):
+        if res and str(res).strip():
             feedback_items.append(f"[{clean_name} Output]:\n{res}")
 
     return {
@@ -4327,18 +4348,60 @@ def _chat_inner(user_text, source, jid, mode="developer", is_automation=False):
                 hist.pop()
         raise
 
-    parsed_tags = extract_tags(raw)
-    is_tainted = (source != "pc") or is_automation or (source == "scheduler")
+    is_tainted = (
+        bool(CONVERSATION_TAINT.get(mode, False))
+        or (source != "pc")
+        or is_automation
+        or (source == "scheduler")
+    )
+    if is_tainted:
+        CONVERSATION_TAINT[mode] = True
+        RUN_CODE_TRUST_STATE.reset()
 
-    tag_result = execute_model_tags(parsed_tags, cfg, jid=jid, mode=mode, source=source, is_tainted=is_tainted, is_healing=False)
-    actions = list(tag_result["actions"])
-    feedback_items = list(tag_result["feedback_items"])
-    is_tainted = tag_result["is_tainted"] or is_tainted
-    pending_info = tag_result["pending_info"]
+    # Multi-step tool-feedback loop
+    tool_loop_steps = 0
+    max_tool_steps = 5
+    conversation_chain = list(messages_to_send)
+    actions = []
+    feedback_items = []
+    pending_info = None
+
+    while tool_loop_steps < max_tool_steps:
+        parsed_tags = extract_tags(raw)
+        if not parsed_tags:
+            break
+        tool_loop_steps += 1
+        tag_result = execute_model_tags(
+            parsed_tags, cfg, jid=jid, mode=mode, source=source, is_tainted=is_tainted, is_healing=False
+        )
+        actions.extend(tag_result["actions"])
+        feedback_items = list(tag_result["feedback_items"])
+        if tag_result["is_tainted"]:
+            is_tainted = True
+            CONVERSATION_TAINT[mode] = True
+            RUN_CODE_TRUST_STATE.reset()
+        if tag_result["pending_info"]:
+            pending_info = tag_result["pending_info"]
+            break
+
+        # If tools executed and produced output, feed back to LLM for next step in loop
+        if feedback_items:
+            obs_text = "\n".join(feedback_items)
+            conversation_chain.append({"role": "assistant", "content": raw})
+            conversation_chain.append({
+                "role": "user",
+                "content": f"[Tool Output]:\n{obs_text}\nBased on this output, proceed with next action or answer."
+            })
+            act_phase(jid, "thinking", "Continuing with tool output")
+            try:
+                raw = call_llm(cfg, sys_prompt, conversation_chain)
+            except Exception:
+                break
+        else:
+            break
 
     # Autonomous Self-Healing Loop for coding & command errors
     healing_attempts = 0
-    conversation_chain = list(messages_to_send)
     while healing_attempts < 2 and not pending_info:
         has_error = any(
             ("Exit code: 0" not in item and "Exit code 0" not in item and "Exit code" in item) or
@@ -4372,7 +4435,7 @@ def _chat_inner(user_text, source, jid, mode="developer", is_automation=False):
             break
 
     final_reply = strip_tags(raw)
-    if feedback_items and len(feedback_items) <= 3:
+    if feedback_items and len(feedback_items) <= 3 and not pending_info:
         try:
             obs_prompt = (
                 "Here is the execution output of the requested action:\n"
@@ -4844,6 +4907,8 @@ class Handler(BaseHandler):
                     "presets": PRESETS,
                     "os": OS,
                     "workspace": str(WORKSPACE),
+                    "is_tainted": any(CONVERSATION_TAINT.values()),
+                    "tainted_modes": dict(CONVERSATION_TAINT),
                 },
             )
         if path == "/api/news":
@@ -5224,11 +5289,13 @@ class Handler(BaseHandler):
                 # Validate types and ranges before confirmation gating
                 if "run_code_trusted_minutes" in body:
                     if isinstance(body["run_code_trusted_minutes"], bool):
-                        return self._send(400, {"ok": False, "error": "run_code_trusted_minutes must be an integer >= 0"})
+                        return self._send(400, {"ok": False, "error": "run_code_trusted_minutes must be an integer between 0 and 10"})
                     try:
-                        int(body["run_code_trusted_minutes"])
+                        val_rc = int(body["run_code_trusted_minutes"])
+                        if val_rc < 0 or val_rc > 10:
+                            return self._send(400, {"ok": False, "error": "run_code_trusted_minutes must be an integer between 0 and 10"})
                     except (ValueError, TypeError):
-                        return self._send(400, {"ok": False, "error": "run_code_trusted_minutes must be an integer >= 0"})
+                        return self._send(400, {"ok": False, "error": "run_code_trusted_minutes must be an integer between 0 and 10"})
                 if "port" in body:
                     try:
                         int(body["port"])
@@ -5364,9 +5431,9 @@ class Handler(BaseHandler):
                 if "run_code_trusted_minutes" in body:
                     try:
                         v = int(body["run_code_trusted_minutes"])
-                        if v < 0:
-                            return self._send(400, {"ok": False, "error": "run_code_trusted_minutes must be an integer >= 0"})
-                        cfg["run_code_trusted_minutes"] = max(0, min(1440, v))
+                        if v < 0 or v > 10:
+                            return self._send(400, {"ok": False, "error": "run_code_trusted_minutes must be an integer between 0 and 10"})
+                        cfg["run_code_trusted_minutes"] = max(0, min(10, v))
                     except (ValueError, TypeError):
                         return self._send(400, {"ok": False, "error": "run_code_trusted_minutes must be an integer >= 0"})
 
@@ -5493,10 +5560,31 @@ class Handler(BaseHandler):
                 with LOCK:
                     if reset_mode in HISTORIES:
                         HISTORIES[reset_mode].clear()
+                        CONVERSATION_TAINT[reset_mode] = False
                     else:
                         HISTORIES["developer"].clear()
                         HISTORIES["cyber"].clear()
-                return self._send(200, {"ok": True})
+                        CONVERSATION_TAINT["developer"] = False
+                        CONVERSATION_TAINT["cyber"] = False
+                RUN_CODE_TRUST_STATE.reset()
+                return self._send(200, {"ok": True, "is_tainted": False})
+            if path == "/api/clear_untrusted_context":
+                clear_mode = body.get("mode") if isinstance(body, dict) else "developer"
+                target_modes = [clear_mode] if clear_mode in HISTORIES else ["developer", "cyber"]
+                with LOCK:
+                    for m in target_modes:
+                        hist = HISTORIES.get(m, [])
+                        cleaned = []
+                        for msg in hist:
+                            content = str(msg.get("content", ""))
+                            # Remove tool outputs and confirmation prompts from history
+                            if "[Tool Output]:" in content or "[Action Requires Confirmation:" in content or "Output]:" in content:
+                                continue
+                            cleaned.append(msg)
+                        HISTORIES[m] = cleaned
+                        CONVERSATION_TAINT[m] = False
+                RUN_CODE_TRUST_STATE.reset()
+                return self._send(200, {"ok": True, "is_tainted": False, "mode": clear_mode})
             if path == "/api/workspace/open":
                 WORKSPACE.mkdir(exist_ok=True)
                 if OS == "Windows":

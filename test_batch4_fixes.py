@@ -594,15 +594,15 @@ class TestBatch4AndFollowUps(unittest.TestCase):
             auth_cookie = f"nova_session={server.SESSION_TOKEN}"
             auth_token = server.API_SESSION_TOKEN
             cfg = server.get_config()
-            cfg["run_code_trusted_minutes"] = 15
+            cfg["run_code_trusted_minutes"] = 10
             server.save_config(cfg)
 
             # Initially trust is not active
-            self.assertFalse(server.RUN_CODE_TRUST_STATE.is_trusted(15))
+            self.assertFalse(server.RUN_CODE_TRUST_STATE.is_trusted(10))
 
             # 1. Test conversational approval path ("yes")
             server.RUN_CODE_TRUST_STATE.record_approval()
-            self.assertTrue(server.RUN_CODE_TRUST_STATE.is_trusted(15))
+            self.assertTrue(server.RUN_CODE_TRUST_STATE.is_trusted(10))
 
             # In untainted turn, confirmation is NOT required for RUN_CODE within trust window
             req_untainted, _ = server.check_tool_confirmation_required(cfg, "RUN_CODE", "print(1)", is_tainted=False, source="pc")
@@ -614,7 +614,7 @@ class TestBatch4AndFollowUps(unittest.TestCase):
 
             # 2. Reset on tainted turn
             server.RUN_CODE_TRUST_STATE.reset()
-            self.assertFalse(server.RUN_CODE_TRUST_STATE.is_trusted(15))
+            self.assertFalse(server.RUN_CODE_TRUST_STATE.is_trusted(10))
 
             # 3. Test REAL /api/confirm approval path
             with server.PENDING_LOCK:
@@ -640,11 +640,11 @@ class TestBatch4AndFollowUps(unittest.TestCase):
                 token=auth_token,
             )
             self.assertEqual(code_conf, 200)
-            self.assertTrue(server.RUN_CODE_TRUST_STATE.is_trusted(15), "Approve on /api/confirm must set RUN_CODE_TRUST_STATE")
+            self.assertTrue(server.RUN_CODE_TRUST_STATE.is_trusted(10), "Approve on /api/confirm must set RUN_CODE_TRUST_STATE")
 
             # Tainted turn in execute_model_tags resets trust state
             server.execute_model_tags([("BRIEFING", "news", 0, 10)], cfg, source="pc", is_tainted=True)
-            self.assertFalse(server.RUN_CODE_TRUST_STATE.is_trusted(15), "Tainted turn in execute_model_tags must reset RUN_CODE_TRUST_STATE")
+            self.assertFalse(server.RUN_CODE_TRUST_STATE.is_trusted(10), "Tainted turn in execute_model_tags must reset RUN_CODE_TRUST_STATE")
         finally:
             srv.shutdown()
             srv.server_close()
@@ -673,8 +673,13 @@ class TestBatch4AndFollowUps(unittest.TestCase):
         req_sens, _ = server.check_tool_confirmation_required(cfg, "READ_FILE", str(server.CONFIG_FILE), is_tainted=False, source="pc")
         self.assertTrue(req_sens, "Sensitive READ_FILE must require confirmation even if untainted")
 
-        # Tainted source="pc" -> ALL require confirmation
-        for tool in ["LIST_FILES", "READ_FILE", "SEARCH", "VISION", "OPEN_URL", "BROWSER_OPEN", "GITHUB", "WRITE_FILE"]:
+        # Tainted source="pc" -> ALL require confirmation (SEARCH <= 80 allowed, > 80 requires confirm)
+        req_s_short, _ = server.check_tool_confirmation_required(cfg, "SEARCH", "short query", is_tainted=True, source="pc")
+        self.assertFalse(req_s_short, "SEARCH <= 80 chars should not require confirmation in tainted turn")
+        req_s_long, _ = server.check_tool_confirmation_required(cfg, "SEARCH", "A" * 85, is_tainted=True, source="pc")
+        self.assertTrue(req_s_long, "SEARCH > 80 chars must require confirmation in tainted turn")
+
+        for tool in ["LIST_FILES", "READ_FILE", "VISION", "OPEN_URL", "BROWSER_OPEN", "GITHUB", "WRITE_FILE"]:
             req_t, _ = server.check_tool_confirmation_required(cfg, tool, "arg", is_tainted=True, source="pc")
             self.assertTrue(req_t, f"{tool} in tainted turn must require confirmation")
 

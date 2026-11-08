@@ -136,7 +136,12 @@ class TelegramGateway:
         return True
 
     def process_update(self, update: Dict[str, Any]) -> bool:
-        message = update.get("message")
+        message = (
+            update.get("message")
+            or update.get("edited_message")
+            or update.get("channel_post")
+            or update.get("edited_channel_post")
+        )
         if not message:
             return False
 
@@ -148,6 +153,13 @@ class TelegramGateway:
         chat_type = str(chat_obj.get("type") or "private").strip().lower()
         from_obj = message.get("from") or {}
         user_id = from_obj.get("id")
+
+        # Sender check must not be bypassed by sender_chat or channel posts
+        if message.get("sender_chat") and not user_id:
+            logger.warning(
+                f"[Telegram Security] Rejected message with sender_chat without individual user.id: chat={chat_id_int}"
+            )
+            return False
 
         if not self.is_authorized(chat_id_int, user_id=user_id, chat_type=chat_type):
             logger.warning(
@@ -161,6 +173,17 @@ class TelegramGateway:
 
         # Command: /allow <id>
         if text.startswith("/allow"):
+            # /allow and /deny MUST strictly come from an allowlisted user.id
+            raw_users = self.cfg.get("telegram_allowed_user_ids") or []
+            allowed_uids = [str(x).strip() for x in raw_users if str(x).strip()]
+            raw_chats = self.cfg.get("telegram_allowed_chat_ids") or []
+            allowed_cids = [str(x).strip() for x in raw_chats if str(x).strip()]
+            effective_allowed_users = allowed_uids if allowed_uids else allowed_cids
+            if not user_id or str(user_id) not in effective_allowed_users:
+                logger.warning(f"[Telegram Security] /allow rejected: user {user_id} not in user allowlist")
+                self.send_message(chat_id_int, "❌ Unauthorized: /allow must come from an authorized user ID.")
+                return False
+
             parts = text.split(maxsplit=1)
             action_id = parts[1].strip() if len(parts) > 1 else ""
             if not action_id:
@@ -183,6 +206,17 @@ class TelegramGateway:
 
         # Command: /deny <id>
         if text.startswith("/deny"):
+            # /allow and /deny MUST strictly come from an allowlisted user.id
+            raw_users = self.cfg.get("telegram_allowed_user_ids") or []
+            allowed_uids = [str(x).strip() for x in raw_users if str(x).strip()]
+            raw_chats = self.cfg.get("telegram_allowed_chat_ids") or []
+            allowed_cids = [str(x).strip() for x in raw_chats if str(x).strip()]
+            effective_allowed_users = allowed_uids if allowed_uids else allowed_cids
+            if not user_id or str(user_id) not in effective_allowed_users:
+                logger.warning(f"[Telegram Security] /deny rejected: user {user_id} not in user allowlist")
+                self.send_message(chat_id_int, "❌ Unauthorized: /deny must come from an authorized user ID.")
+                return False
+
             parts = text.split(maxsplit=1)
             action_id = parts[1].strip() if len(parts) > 1 else ""
             if not action_id:
