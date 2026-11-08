@@ -2475,27 +2475,74 @@ def reset_search_counts(target_conv_ids=None):
 
 HEX_CHAR_SET = set("0123456789abcdefABCDEF")
 
+def _shannon_entropy(s: str) -> float:
+    if not s:
+        return 0.0
+    import math
+    from collections import Counter
+    counts = Counter(s)
+    total = len(s)
+    return -sum((c / total) * math.log2(c / total) for c in counts.values())
+
 def has_base64_hex_token(text: str) -> bool:
     """
-    Tightened token detector:
-    Requires 24+ chars with both letters and digits, or 20+ hex-only chars.
-    get_user_authentication_token and internationalization-and-localization must NOT match.
-    ZXhhbXBsZXNlY3JldGtleTEyMzQ= and a 32-char hex string MUST match.
+    Entropy and structure-aware token detector.
+    Negatives: get_user_authentication_token_v2, workspace/project-2024/report-final,
+    internationalization-and-localization-2024, get_user_authentication_token.
+    Positives: ZXhhbXBsZXNlY3JldGtleTEyMzQ=, 32-char hex string, random 40-char mixed-case string.
     """
     if not text:
         return False
-    for match in re.finditer(r"[A-Za-z0-9+/=_-]{20,}", text):
-        tok = match.group(0)
-        stripped = tok.rstrip("=")
-        # 1. 20+ hex-only chars
-        if len(stripped) >= 20 and all(c in HEX_CHAR_SET for c in stripped):
-            return True
-        # 2. 24+ chars with both letters and digits
-        if len(stripped) >= 24:
-            has_letter = any(c.isalpha() for c in stripped)
-            has_digit = any(c.isdigit() for c in stripped)
-            if has_letter and has_digit:
+
+    # 1. Continuous hex-only token (e.g. 24+ hex characters with sufficient entropy/variety)
+    for m in re.finditer(r'(?<![A-Za-z0-9])([0-9a-fA-F]{24,})(?![A-Za-z0-9])', text):
+        tok = m.group(1)
+        if len(set(tok.lower())) >= 6:
+            has_dig = any(c.isdigit() for c in tok)
+            has_alpha = any(c.isalpha() for c in tok)
+            if (has_dig and has_alpha) or len(set(tok.lower())) >= 8:
                 return True
+
+    # 2. Base64 / high-entropy mixed token
+    for m in re.finditer(r'(?<![A-Za-z0-9+/=_-])([A-Za-z0-9+/=_-]{20,})(?![A-Za-z0-9+/=_-])', text):
+        raw_tok = m.group(1)
+        tok = raw_tok.rstrip('=')
+        if len(tok) < 20:
+            continue
+
+        # Reject compound paths/identifiers where segments are natural words or short identifiers
+        if '_' in tok or '-' in tok or '/' in tok:
+            segments = re.split(r'[-_/]', raw_tok)
+            if all(len(seg) <= 18 for seg in segments):
+                continue
+            if all(seg.islower() or seg.isdigit() for seg in segments if seg):
+                continue
+
+        # Reject purely lowercase tokens without digits
+        if tok.islower() and not any(c.isdigit() for c in tok):
+            continue
+
+        # Standard base64 with padding
+        if raw_tok.endswith('=') and len(tok) >= 16:
+            ent = _shannon_entropy(tok)
+            if ent >= 3.0 and len(set(tok)) >= 8:
+                return True
+
+        has_upper = any(c.isupper() for c in tok)
+        has_lower = any(c.islower() for c in tok)
+        has_digit = any(c.isdigit() for c in tok)
+        ent = _shannon_entropy(tok)
+        uniq = len(set(tok))
+
+        if len(tok) >= 24:
+            # Mixed-case random token
+            if has_upper and has_lower and ent >= 3.5 and uniq >= 12:
+                return True
+            # Alpha + digit high-entropy token
+            if (has_upper or has_lower) and has_digit and ent >= 3.6 and uniq >= 10:
+                if not re.match(r'^[a-z]+[0-9]{1,4}$', tok):
+                    return True
+
     return False
 
 def is_text_from_tainted_file(query_text: str) -> bool:
@@ -4243,6 +4290,7 @@ def create_plan_step_runner(plan_info, cfg, source="pc", mode="developer", is_ta
         if needs_confirm:
             rem_steps = all_steps[idx:] if idx < len(all_steps) else []
             plan_state = {
+                "plan_id": plan_info.get("plan_id"),
                 "title": plan_info.get("title", "Execution Plan"),
                 "all_steps": all_steps,
                 "completed": list(completed),
@@ -4254,6 +4302,7 @@ def create_plan_step_runner(plan_info, cfg, source="pc", mode="developer", is_ta
                 "mode": mode,
                 "is_tainted": is_tainted,
                 "conv_id": effective_conv,
+                "active_seconds": plan_info.get("active_seconds", 0.0),
             }
             pending_entry, pending_info, err = create_pending_action(
                 cfg=cfg,
