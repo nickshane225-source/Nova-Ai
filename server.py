@@ -6,6 +6,8 @@ Pure Python standard library (no pip install needed).
 Runs a small web server on 127.0.0.1 and opens the UI in your browser.
 Your API key is stored only in data/config.json on your own machine.
 """
+import collections
+from collections import OrderedDict
 import datetime
 import difflib
 import hashlib
@@ -1579,6 +1581,35 @@ def _resolve_taint_target_path(file_path: str) -> Path:
         return p
 
 
+MAX_TAINTED_SHINGLES = 5000
+TAINTED_SHINGLE_HASHES = set()
+TAINTED_SHINGLE_ORDER = collections.deque()
+TAINTED_SHINGLES_LOCK = threading.Lock()
+
+def _hash_shingle(shingle: str) -> str:
+    return hashlib.sha256(shingle.encode("utf-8", errors="replace")).hexdigest()[:16]
+
+def extract_tainted_shingles(text: str):
+    """Extracts and stores hashed 15-character shingles from tainted file content into a bounded set."""
+    if not text:
+        return
+    clean = " ".join(text.lower().split())
+    if len(clean) < 15:
+        return
+    with TAINTED_SHINGLES_LOCK:
+        max_extract = 500
+        step = max(1, (len(clean) - 15) // max_extract) if len(clean) - 15 > max_extract else 1
+        for i in range(0, len(clean) - 15 + 1, step):
+            shingle = clean[i:i + 15]
+            h = _hash_shingle(shingle)
+            if h not in TAINTED_SHINGLE_HASHES:
+                if len(TAINTED_SHINGLE_HASHES) >= MAX_TAINTED_SHINGLES:
+                    old_h = TAINTED_SHINGLE_ORDER.popleft()
+                    TAINTED_SHINGLE_HASHES.discard(old_h)
+                TAINTED_SHINGLE_HASHES.add(h)
+                TAINTED_SHINGLE_ORDER.append(h)
+
+
 def mark_file_tainted(file_path: str, is_tainted: bool = True, content_override: str | None = None):
     """
     Persist tainted file marks in data/tainted_files.json keyed by resolved path + SHA-256.
@@ -1605,10 +1636,7 @@ def mark_file_tainted(file_path: str, is_tainted: bool = True, content_override:
                 except Exception:
                     pass
             if text_c:
-                for line in text_c.splitlines():
-                    s_line = line.strip().lower()
-                    if len(s_line) >= 15:
-                        TAINTED_FILE_CONTENT_SNIPPETS.add(s_line)
+                extract_tainted_shingles(text_c)
 
         def _updater(data):
             if not isinstance(data, dict):
@@ -2288,34 +2316,78 @@ def is_read_or_list_target_tainted(raw_arg: str, cfg=None) -> bool:
     return False
 
 
-CONVERSATION_SEARCH_COUNTS = {}
+class _BoundedSearchCountDict(OrderedDict):
+    """LRU bounded dictionary for per-conversation unconfirmed search counts (max 500 conversations)."""
+    def __init__(self, maxsize=500, *args, **kwargs):
+        self.maxsize = maxsize
+        super().__init__(*args, **kwargs)
+
+    def __setitem__(self, key, value):
+        if key in self:
+            self.move_to_end(key)
+        super().__setitem__(key, value)
+        if len(self) > self.maxsize:
+            self.popitem(last=False)
+
+CONVERSATION_SEARCH_COUNTS = _BoundedSearchCountDict(maxsize=500)
 CONVERSATION_SEARCH_LOCK = threading.Lock()
-TAINTED_FILE_CONTENT_SNIPPETS = set()
+
+def record_unconfirmed_search(conv_id: str):
+    """Increments search count only for executed unconfirmed searches."""
+    with CONVERSATION_SEARCH_LOCK:
+        CONVERSATION_SEARCH_COUNTS[conv_id] = CONVERSATION_SEARCH_COUNTS.get(conv_id, 0) + 1
+
+def reset_search_counts(target_conv_ids=None):
+    """Resets search count on conversation reset or 'Clear untrusted context'."""
+    with CONVERSATION_SEARCH_LOCK:
+        if not target_conv_ids:
+            CONVERSATION_SEARCH_COUNTS.clear()
+        else:
+            for cid in target_conv_ids:
+                CONVERSATION_SEARCH_COUNTS.pop(cid, None)
+
+HEX_CHAR_SET = set("0123456789abcdefABCDEF")
 
 def has_base64_hex_token(text: str) -> bool:
-    """Detects unbroken 20+ character tokens of base64 or hex characters."""
+    """
+    Tightened token detector:
+    Requires 24+ chars with both letters and digits, or 20+ hex-only chars.
+    get_user_authentication_token and internationalization-and-localization must NOT match.
+    ZXhhbXBsZXNlY3JldGtleTEyMzQ= and a 32-char hex string MUST match.
+    """
     if not text:
         return False
     for match in re.finditer(r"[A-Za-z0-9+/=_-]{20,}", text):
-        tok = match.group(0).strip("=")
-        if len(tok) >= 20:
+        tok = match.group(0)
+        stripped = tok.rstrip("=")
+        # 1. 20+ hex-only chars
+        if len(stripped) >= 20 and all(c in HEX_CHAR_SET for c in stripped):
             return True
+        # 2. 24+ chars with both letters and digits
+        if len(stripped) >= 24:
+            has_letter = any(c.isalpha() for c in stripped)
+            has_digit = any(c.isdigit() for c in stripped)
+            if has_letter and has_digit:
+                return True
     return False
 
 def is_text_from_tainted_file(query_text: str) -> bool:
-    """Returns True if the query references a tainted file or contains content from one."""
-    q = str(query_text or "").strip().lower()
+    """Returns True if the query references a tainted file or matches a hashed 15-character shingle."""
+    q = str(query_text or "").strip()
     if not q:
         return False
     prov_tainted, _ = is_file_tainted_provenance(q)
     if prov_tainted:
         return True
-    for snippet in list(TAINTED_FILE_CONTENT_SNIPPETS):
-        if snippet in q or (len(q) >= 15 and q in snippet):
-            return True
-        if len(snippet) >= 15 and len(q) >= 15:
-            match = difflib.SequenceMatcher(None, snippet, q).find_longest_match(0, len(snippet), 0, len(q))
-            if match.size >= 15:
+    clean_q = " ".join(q.lower().split())
+    if len(clean_q) < 15:
+        return False
+    with TAINTED_SHINGLES_LOCK:
+        if not TAINTED_SHINGLE_HASHES:
+            return False
+        for i in range(len(clean_q) - 15 + 1):
+            shingle = clean_q[i:i + 15]
+            if _hash_shingle(shingle) in TAINTED_SHINGLE_HASHES:
                 return True
     return False
 
@@ -3249,6 +3321,11 @@ def skill_read_file(raw_path, cfg=None):
     if target.is_dir():
         return f"{target} is a directory. Use LIST_FILES instead."
     text = target.read_text(encoding="utf-8", errors="replace")
+    is_tainted_target, _ = is_file_tainted_provenance(str(target))
+    if not is_tainted_target:
+        is_tainted_target = is_read_or_list_target_tainted(str(target), cfg=cfg)
+    if is_tainted_target and text:
+        extract_tainted_shingles(text)
     lines = text.splitlines()
     if len(lines) > 200:
         return f"File {target.name} ({len(lines)} lines):\n" + "\n".join(lines[:200]) + f"\n... [Truncated: {len(lines) - 200} more lines]"
@@ -4724,11 +4801,6 @@ def execute_model_tags(tags, cfg, jid=None, mode="developer", source="pc", is_ta
             needs_confirm = True
             reason = f"Guardian flagged action as DANGEROUS: {g_reason}" if g_reason else "Guardian flagged action as DANGEROUS"
 
-        if clean_name == "SEARCH" and not needs_confirm:
-            effective_conv = conv_id or (f"{source}:{mode}" if source == "pc" else f"{source}:{jid}")
-            with CONVERSATION_SEARCH_LOCK:
-                CONVERSATION_SEARCH_COUNTS[effective_conv] = CONVERSATION_SEARCH_COUNTS.get(effective_conv, 0) + 1
-
         if needs_confirm:
             pending_entry, pending_info, err = create_pending_action(
                 cfg=cfg,
@@ -4761,6 +4833,9 @@ def execute_model_tags(tags, cfg, jid=None, mode="developer", source="pc", is_ta
             break
         act_step(jid, f"{'HEAL_' if is_healing else ''}{clean_name}", arg, time.time() - _t0)
         actions.append({"skill": clean_name, "arg": arg, "result": res})
+        if clean_name == "SEARCH" and not needs_confirm:
+            effective_conv = conv_id or (f"{source}:{mode}" if source == "pc" else f"{source}:{jid}")
+            record_unconfirmed_search(effective_conv)
         if audit_logger:
             audit_logger.log_audit_event(
                 channel=source,
@@ -6221,6 +6296,7 @@ class Handler(BaseHandler):
                         HISTORIES[reset_mode].clear()
                         CONVERSATION_TAINT[reset_mode] = False
                         CONVERSATION_TAINT[f"pc:{reset_mode}"] = False
+                        reset_search_counts([reset_mode, f"pc:{reset_mode}"])
                     else:
                         HISTORIES["developer"].clear()
                         HISTORIES["cyber"].clear()
@@ -6228,9 +6304,8 @@ class Handler(BaseHandler):
                         CONVERSATION_HISTORIES.clear()
                         CONVERSATION_HISTORIES["pc:developer"] = HISTORIES["developer"]
                         CONVERSATION_HISTORIES["pc:cyber"] = HISTORIES["cyber"]
+                        reset_search_counts()
                 RUN_CODE_TRUST_STATE.reset()
-                with CONVERSATION_SEARCH_LOCK:
-                    CONVERSATION_SEARCH_COUNTS.clear()
                 return self._send(200, {"ok": True, "is_tainted": False})
             if path == "/api/clear_untrusted_context":
                 clear_mode = body.get("mode") if isinstance(body, dict) else "developer"
@@ -6263,6 +6338,7 @@ class Handler(BaseHandler):
                             hist.clear()
                             hist.extend(cleaned)
                         CONVERSATION_TAINT[cid] = False
+                reset_search_counts(target_conv_ids)
                 RUN_CODE_TRUST_STATE.reset()
                 return self._send(200, {"ok": True, "is_tainted": False, "mode": clear_mode})
             if path == "/api/workspace/open":

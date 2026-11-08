@@ -350,6 +350,40 @@ class TestPlanMode(unittest.TestCase):
             self.assertIn("aborted", res_exhausted)
             self.assertIn("Monthly budget limit reached ($15.75 spent)", res_exhausted)
 
+    def test_search_hardening_token_shingles_and_bounded_counts(self):
+        import server
+
+        # 7c. has_base64_hex_token checks
+        self.assertFalse(server.has_base64_hex_token("get_user_authentication_token"))
+        self.assertFalse(server.has_base64_hex_token("internationalization-and-localization"))
+        self.assertTrue(server.has_base64_hex_token("ZXhhbXBsZXNlY3JldGtleTEyMzQ="))
+        self.assertTrue(server.has_base64_hex_token("4a5b6c7d8e9f0123456789abcdef0123"))
+
+        # 7b. Hashed 15-character shingles check
+        tainted_sample = "Confidential super secret project database key credentials"
+        server.extract_tainted_shingles(tainted_sample)
+
+        # 15+ char matching substring
+        self.assertTrue(server.is_text_from_tainted_file("find super secret proj"))
+        self.assertFalse(server.is_text_from_tainted_file("completely unrelated text query"))
+
+        # 7a. Bounded CONVERSATION_SEARCH_COUNTS and reset
+        server.reset_search_counts()
+        for i in range(550):
+            server.record_unconfirmed_search(f"conv_{i}")
+
+        self.assertLessEqual(len(server.CONVERSATION_SEARCH_COUNTS), 500)
+        self.assertIn("conv_549", server.CONVERSATION_SEARCH_COUNTS)
+        self.assertNotIn("conv_0", server.CONVERSATION_SEARCH_COUNTS)
+
+        # Reset specific conv
+        server.reset_search_counts(["conv_549"])
+        self.assertNotIn("conv_549", server.CONVERSATION_SEARCH_COUNTS)
+
+        # Full reset
+        server.reset_search_counts()
+        self.assertEqual(len(server.CONVERSATION_SEARCH_COUNTS), 0)
+
 
 if __name__ == "__main__":
     unittest.main()
