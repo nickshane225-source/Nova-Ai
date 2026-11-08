@@ -250,7 +250,22 @@ class DiscordGateway:
                 return
             if self.confirm_handler:
                 approved = action == "allow"
-                result = self.confirm_handler(token, approved)
+
+                def _disc_notify(event_dict):
+                    st = event_dict.get("status")
+                    if st == "paused":
+                        p_info = event_dict.get("pending_info")
+                        if p_info:
+                            self.send_approval_announcement(channel_id, p_info, prefix_text=event_dict.get("message"))
+                        else:
+                            self.send_message(channel_id, event_dict.get("message", "Plan paused."))
+                    elif st in ("completed", "failed", "timeout", "error"):
+                        self.send_message(channel_id, event_dict.get("message", ""))
+
+                try:
+                    result = self.confirm_handler(token, approved, notify=_disc_notify)
+                except TypeError:
+                    result = self.confirm_handler(token, approved)
                 if result.get("ok"):
                     res_detail = result.get("result")
                     res_str = f"\nResult: {res_detail}" if res_detail else ""
@@ -352,7 +367,7 @@ class DiscordGateway:
             self._thread.join(timeout=3.0)
 
 
-def handle_remote_confirm(action_id: str, approve: bool) -> dict[str, Any]:
+def handle_remote_confirm(action_id: str, approve: bool, notify: Any = None) -> dict[str, Any]:
     """Invokes pending action confirmation in Nova AI server."""
     try:
         import server
@@ -396,7 +411,7 @@ def handle_remote_confirm(action_id: str, approve: bool) -> dict[str, Any]:
             conv_id=p_conv,
         )
         if pending.get("plan_state") and hasattr(server, "resume_plan_execution"):
-            plan_res = server.resume_plan_execution(pending["plan_state"], last_result=res, cfg=cfg)
+            plan_res = server.resume_plan_execution(pending["plan_state"], last_result=res, cfg=cfg, notify=notify)
             if isinstance(plan_res, dict) and plan_res.get("paused"):
                 return {
                     "ok": True,

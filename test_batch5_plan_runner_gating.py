@@ -138,7 +138,9 @@ class TestBatch5PlanRunnerGating(unittest.TestCase):
 
             # Resume plan execution
             final_res = server.resume_plan_execution(plan_st, last_result=approved_res, cfg=self.cfg)
-            if isinstance(final_res, dict) and final_res.get("worker"):
+            if hasattr(server, "wait_for_plan_worker"):
+                server.wait_for_plan_worker(plan_st.get("conv_id", "pc:developer"), timeout=5.0)
+            elif isinstance(final_res, dict) and final_res.get("worker"):
                 final_res["worker"].join(timeout=3.0)
             self.assertTrue("resumed in background" in str(final_res) or "executed successfully" in str(final_res))
 

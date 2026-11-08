@@ -17,7 +17,7 @@ from typing import Any, Callable, Dict, List, Optional
 logger = logging.getLogger("telegram_gateway")
 
 
-def handle_remote_confirm(action_id: str, approve: bool) -> Dict[str, Any]:
+def handle_remote_confirm(action_id: str, approve: bool, notify: Optional[Callable] = None) -> Dict[str, Any]:
     """
     Invokes pending action confirmation in Nova AI server.
     """
@@ -63,7 +63,7 @@ def handle_remote_confirm(action_id: str, approve: bool) -> Dict[str, Any]:
             conv_id=p_conv,
         )
         if pending.get("plan_state") and hasattr(server, "resume_plan_execution"):
-            plan_res = server.resume_plan_execution(pending["plan_state"], last_result=res, cfg=cfg)
+            plan_res = server.resume_plan_execution(pending["plan_state"], last_result=res, cfg=cfg, notify=notify)
             if isinstance(plan_res, dict) and plan_res.get("paused"):
                 return {
                     "ok": True,
@@ -245,7 +245,19 @@ class TelegramGateway:
             if not action_id:
                 self.send_message(chat_id_int, "Usage: /allow <action_id>")
                 return True
-            res = handle_remote_confirm(action_id, approve=True)
+
+            def _tg_notify(event_dict):
+                st = event_dict.get("status")
+                if st == "paused":
+                    p_info = event_dict.get("pending_info")
+                    if p_info:
+                        self.send_approval_announcement(chat_id_int, p_info, prefix_text=event_dict.get("message"))
+                    else:
+                        self.send_message(chat_id_int, event_dict.get("message", "Plan paused."))
+                elif st in ("completed", "failed", "timeout", "error"):
+                    self.send_message(chat_id_int, event_dict.get("message", ""))
+
+            res = handle_remote_confirm(action_id, approve=True, notify=_tg_notify)
             if res.get("ok"):
                 cmd_raw = res.get("command") or ""
                 cmd_info = ""

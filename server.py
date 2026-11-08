@@ -4221,12 +4221,24 @@ def create_plan_step_runner(plan_info, cfg, source="pc", mode="developer", is_ta
     return step_runner
 
 
-def resume_plan_execution(plan_state: dict, last_result=None, cfg=None, turn_tool_executions=None, async_run=True):
+PLAN_RESUME_WORKERS = {}
+PLAN_RESUME_LOCK = threading.Lock()
+
+def wait_for_plan_worker(conv_id="pc:developer", timeout=5.0):
+    with PLAN_RESUME_LOCK:
+        worker = PLAN_RESUME_WORKERS.get(conv_id)
+    if worker and worker.is_alive():
+        worker.join(timeout=timeout)
+    return worker
+
+
+def resume_plan_execution(plan_state: dict, last_result=None, cfg=None, turn_tool_executions=None, async_run=True, notify=None):
     """
     Resumes execution of a paused plan after the user approves a gated step.
     Runs remaining steps in a worker thread to prevent blocking the HTTP handler.
-    Exposes progress through activity tracking and /api/events.
+    Exposes progress through activity tracking, /api/events, and optional notify callback.
     Enforces a 5-minute total plan runtime.
+    All return values are strictly JSON-serializable.
     """
     if not plan_mode:
         return "Plan Mode coordinator not available."
@@ -4279,38 +4291,103 @@ def resume_plan_execution(plan_state: dict, last_result=None, cfg=None, turn_too
                 add_event(type="plan_step_start", title=plan_title, step=step)
                 res = step_runner(step, *args)
                 act_step(jid, "PLAN_STEP", step, 0.05)
-                add_event(type="plan_step_done", title=plan_title, step=step, res=str(res)[:100])
+                clean_res = mask_secrets(str(res))[:100]
+                add_event(type="plan_step_done", title=plan_title, step=step, res=clean_res)
+                if notify:
+                    try:
+                        notify({
+                            "status": "step_done",
+                            "plan_title": plan_title,
+                            "message": f"Step '{step}' completed.",
+                            "step": step,
+                            "result": clean_res,
+                        })
+                    except Exception:
+                        pass
                 return res
 
             batch_res = plan_mode.execute_plan_batch(plan_data, cfg=cfg, runner=_progress_runner)
             if batch_res.get("paused"):
+                p_info = batch_res.get("pending_info") or {}
+                p_id = p_info.get("id")
+                p_prompt = p_info.get("prompt") or f"Step '{batch_res.get('paused_step')}' requires user approval."
+                clean_prompt, _ = sanitize_preview(p_prompt)
                 act_phase(jid, "paused", f"Waiting for user confirmation on step: {batch_res.get('paused_step')}")
-                add_event(type="plan_paused", title=plan_title, paused_step=batch_res.get("paused_step"))
+                add_event(type="plan_paused", title=plan_title, paused_step=batch_res.get("paused_step"), pending_id=p_id, pending_info=p_info)
+                if notify:
+                    try:
+                        notify({
+                            "status": "paused",
+                            "plan_title": plan_title,
+                            "message": f"Plan paused: {clean_prompt}",
+                            "paused_step": batch_res.get("paused_step"),
+                            "pending_id": p_id,
+                            "pending_info": p_info,
+                        })
+                    except Exception:
+                        pass
                 return batch_res
             if batch_res.get("ok"):
                 c_count = len(batch_res.get("completed", []))
                 act_end(jid, ok=True)
+                msg = f"Plan '{plan_title}' executed successfully ({c_count} steps completed)."
                 add_event(type="plan_completed", title=plan_title, completed_count=c_count)
-                return f"Plan '{plan_title}' executed successfully ({c_count} steps completed)."
+                if notify:
+                    try:
+                        notify({
+                            "status": "completed",
+                            "plan_title": plan_title,
+                            "message": msg,
+                            "completed_count": c_count,
+                        })
+                    except Exception:
+                        pass
+                return msg
             else:
                 err_msg = batch_res.get("error", "Unknown error")
                 act_end(jid, ok=False, error=err_msg)
-                add_event(type="plan_failed", title=plan_title, error=err_msg, failed_step=batch_res.get("failed_step"))
-                return f"Plan '{plan_title}' aborted at step '{batch_res.get('failed_step')}': {err_msg}"
+                is_timeout = bool(batch_res.get("timed_out"))
+                ev_type = "plan_timeout" if is_timeout else "plan_failed"
+                status_type = "timeout" if is_timeout else "failed"
+                msg = f"Plan '{plan_title}' {'timed out' if is_timeout else 'aborted at step ' + str(batch_res.get('failed_step'))}: {err_msg}"
+                add_event(type=ev_type, title=plan_title, error=err_msg, failed_step=batch_res.get("failed_step"))
+                if notify:
+                    try:
+                        notify({
+                            "status": status_type,
+                            "plan_title": plan_title,
+                            "message": msg,
+                            "failed_step": batch_res.get("failed_step"),
+                            "error": err_msg,
+                        })
+                    except Exception:
+                        pass
+                return msg
         except Exception as exc:
             act_end(jid, ok=False, error=str(exc))
             add_event(type="plan_error", title=plan_title, error=str(exc))
+            if notify:
+                try:
+                    notify({
+                        "status": "error",
+                        "plan_title": plan_title,
+                        "message": f"Plan '{plan_title}' execution error: {exc}",
+                        "error": str(exc),
+                    })
+                except Exception:
+                    pass
             return f"Plan '{plan_title}' execution error: {exc}"
 
     if async_run:
         worker = threading.Thread(target=_execute_worker, name="PlanResumeWorker", daemon=True)
+        with PLAN_RESUME_LOCK:
+            PLAN_RESUME_WORKERS[conv_id] = worker
         worker.start()
         add_event(type="plan_resumed_async", title=plan_title, remaining=len(remaining))
         return {
             "ok": True,
             "resumed": True,
             "message": f"Plan '{plan_title}' resumed in background.",
-            "worker": worker,
         }
     else:
         return _execute_worker()

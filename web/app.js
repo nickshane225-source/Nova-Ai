@@ -2034,8 +2034,26 @@ async function handlePhone(ev) {
 async function pollEvents() {
   try {
     const r = await api("/api/events?after=" + (lastEvent == null ? 0 : lastEvent));
-    if (lastEvent == null) lastEvent = r.last; // first poll: skip history
-    else for (const ev of r.events) { lastEvent = ev.id; await handlePhone(ev); }
+    if (lastEvent == null) {
+      lastEvent = r.last; // first poll: skip history
+    } else {
+      for (const ev of r.events) {
+        lastEvent = ev.id;
+        if (ev.type === "plan_paused") {
+          if (ev.pending_info && ev.pending_info.id) {
+            showConfirmModal(ev.pending_info);
+          } else if (ev.pending_id) {
+            showConfirmModal({
+              id: ev.pending_id,
+              action: ev.paused_step || "PLAN_STEP",
+              prompt: `Step '${ev.paused_step}' requires confirmation:`,
+              preview: ev.title || "Plan step awaiting approval"
+            });
+          }
+        }
+        await handlePhone(ev);
+      }
+    }
   } catch {}
   setTimeout(pollEvents, 1500);
 }
