@@ -292,6 +292,13 @@ class DiscordGateway:
             self.send_message(channel_id, reply)
             return
 
+        # Stop active plan: /stopplan (sender allowlist checked in is_authorized)
+        if cmd == "/stopplan" or cmd.startswith("/stopplan "):
+            import server
+            res = server.cancel_plan(conv_id=f"discord:{channel_id}", source="discord")
+            self.send_message(channel_id, f"🛑 {res.get('message', 'plan cancelled')}")
+            return
+
         # Status command
         if cmd == "/status":
             self.send_message(channel_id, "🐾 Nova AI is online and operational. Voice mode is silent on remote.")

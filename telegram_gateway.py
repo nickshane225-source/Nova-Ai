@@ -312,6 +312,23 @@ class TelegramGateway:
                 self.send_message(chat_id_int, f"❌ Failed to deny: {res.get('error')}")
             return True
 
+        # Command: /stopplan or /stopplan@botname (sender allowlist applies)
+        is_stopplan_cmd = (first_word == "/stopplan" or (first_word.startswith("/stopplan@") and len(first_word) > 10))
+        if is_stopplan_cmd:
+            raw_users = self.cfg.get("telegram_allowed_user_ids") or []
+            allowed_uids = [str(x).strip() for x in raw_users if str(x).strip()]
+            raw_chats = self.cfg.get("telegram_allowed_chat_ids") or []
+            allowed_cids = [str(x).strip() for x in raw_chats if str(x).strip()]
+            effective_allowed_users = allowed_uids if allowed_uids else allowed_cids
+            if not user_id or str(user_id) not in effective_allowed_users:
+                logger.warning(f"[Telegram Security] /stopplan rejected: user {user_id} not in user allowlist")
+                self.send_message(chat_id_int, "❌ Unauthorized: /stopplan must come from an authorized user ID.")
+                return False
+            import server
+            res = server.cancel_plan(conv_id=f"telegram:{chat_id_int}", source="telegram")
+            self.send_message(chat_id_int, f"🛑 {res.get('message', 'plan cancelled')}")
+            return True
+
         if text in ("/start", "/help"):
             self.send_message(
                 chat_id_int,

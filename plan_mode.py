@@ -87,6 +87,26 @@ def execute_plan_batch(
         if idx > 10:
             break
 
+        # Check cancel flag between steps
+        is_canc = False
+        if plan.get("cancelled"):
+            is_canc = True
+        elif callable(plan.get("is_cancelled")):
+            try:
+                is_canc = bool(plan["is_cancelled"]())
+            except Exception:
+                pass
+        if is_canc:
+            return {
+                "ok": False,
+                "error": "Plan was cancelled by user.",
+                "cancelled": True,
+                "failed_step": step,
+                "completed": completed,
+                "results": step_results,
+                "active_seconds": accumulated_active,
+            }
+
         if accumulated_active >= timeout:
             return {
                 "ok": False,

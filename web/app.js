@@ -2321,6 +2321,18 @@ async function resolveConfirmation(approve) {
 
 if ($("#confirmAllowBtn")) $("#confirmAllowBtn").onclick = () => resolveConfirmation(true);
 if ($("#confirmDenyBtn")) $("#confirmDenyBtn").onclick = () => resolveConfirmation(false);
+if ($("#confirmCancelPlanBtn")) {
+  $("#confirmCancelPlanBtn").onclick = async () => {
+    try {
+      const res = await api("/api/plan/cancel", {});
+      closeModal();
+      showToast("Plan Cancelled", res.message || "Plan cancelled.", "info");
+      subtitle("", "Plan cancelled.");
+    } catch (err) {
+      showToast("Error", err.message || "Failed to cancel plan", "error");
+    }
+  };
+}
 
 // Initialize Mode Manager
 ModeManager.init();

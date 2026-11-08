@@ -4290,8 +4290,129 @@ def create_plan_step_runner(plan_info, cfg, source="pc", mode="developer", is_ta
 
 PLAN_RESUME_WORKERS = {}
 PLAN_RESUME_LOCK = threading.Lock()
-ACTIVE_PLANS = {}
+
+class ActivePlansDict(dict):
+    """
+    Map of active plans keyed by random plan_id.
+    Maintains full compatibility with conv_id lookups:
+    - get(conv_id) or [conv_id] returns the active plan for that conv_id if key is not found directly.
+    - key in dict returns True if key is plan_id or matching conv_id.
+    - pop(conv_id) pops the plan matching that conv_id if not a direct key.
+    """
+    def __contains__(self, key):
+        if super().__contains__(key):
+            return True
+        for p in self.values():
+            if isinstance(p, dict) and p.get("conv_id") == key:
+                return True
+        return False
+
+    def __getitem__(self, key):
+        if super().__contains__(key):
+            return super().__getitem__(key)
+        for p in self.values():
+            if isinstance(p, dict) and p.get("conv_id") == key:
+                return p
+        raise KeyError(key)
+
+    def get(self, key, default=None):
+        if super().__contains__(key):
+            return super().get(key, default)
+        for p in self.values():
+            if isinstance(p, dict) and p.get("conv_id") == key:
+                return p
+        return default
+
+    def pop(self, key, default=None):
+        if super().__contains__(key):
+            return super().pop(key, default)
+        match_pid = None
+        for pid, p in self.items():
+            if isinstance(p, dict) and p.get("conv_id") == key:
+                match_pid = pid
+                break
+        if match_pid is not None:
+            return super().pop(match_pid, default)
+        return default
+
+ACTIVE_PLANS = ActivePlansDict()
 ACTIVE_PLANS_LOCK = threading.Lock()
+
+def cleanup_active_plan(plan_id: str = None, conv_id: str = None, pending_id: str = None) -> None:
+    """Clean up ACTIVE_PLANS entries matching plan_id, conv_id, or pending_id."""
+    with ACTIVE_PLANS_LOCK:
+        to_pop = []
+        for pid, p in list(ACTIVE_PLANS.items()):
+            if not isinstance(p, dict):
+                continue
+            if plan_id and pid == plan_id:
+                to_pop.append(pid)
+            elif conv_id and p.get("conv_id") == conv_id:
+                to_pop.append(pid)
+            elif pending_id and p.get("pending_id") == pending_id:
+                to_pop.append(pid)
+        for pid in to_pop:
+            ACTIVE_PLANS.pop(pid, None)
+
+def cancel_plan(plan_id: str = None, conv_id: str = None, source: str = "pc") -> dict:
+    """
+    Cancels an active or paused plan.
+    Sets cancel flag, clears associated pending actions, and logs 'plan cancelled'.
+    """
+    cancelled_any = False
+    affected_titles = []
+    affected_plan_ids = []
+    with ACTIVE_PLANS_LOCK:
+        for pid, p in list(ACTIVE_PLANS.items()):
+            if not isinstance(p, dict):
+                continue
+            matches = False
+            if plan_id and pid == plan_id:
+                matches = True
+            elif conv_id and (p.get("conv_id") == conv_id or pid == conv_id):
+                matches = True
+            elif not plan_id and not conv_id:
+                matches = True
+            if matches:
+                p["cancelled"] = True
+                p["status"] = "cancelled"
+                cancelled_any = True
+                affected_titles.append(p.get("title", "Plan"))
+                affected_plan_ids.append(pid)
+
+    if cancelled_any:
+        # Cancelled plans clear their pending actions
+        with PENDING_LOCK:
+            to_remove = []
+            for k, p in PENDING_ACTIONS.items():
+                if p.get("plan_state"):
+                    p_state = p.get("plan_state", {})
+                    p_pid = p_state.get("plan_id")
+                    p_cid = p.get("conv_id") or p_state.get("conv_id")
+                    if not plan_id and not conv_id:
+                        to_remove.append(k)
+                    elif plan_id and p_pid == plan_id:
+                        to_remove.append(k)
+                    elif conv_id and p_cid == conv_id:
+                        to_remove.append(k)
+                    elif p_pid in affected_plan_ids:
+                        to_remove.append(k)
+            for k in to_remove:
+                PENDING_ACTIONS.pop(k, None)
+
+        # Log "plan cancelled"
+        if audit_logger:
+            audit_logger.log_audit_event(
+                channel=source,
+                tool="PLAN",
+                preview="plan cancelled",
+                guardian_verdict="SAFE",
+                status="CANCELLED",
+                cfg=get_config(),
+            )
+        add_event(type="plan_cancelled", message="plan cancelled", titles=affected_titles)
+        return {"ok": True, "message": "plan cancelled"}
+    return {"ok": False, "message": "No active plan found to cancel."}
 
 def wait_for_plan_worker(conv_id="pc:developer", timeout=5.0):
     with PLAN_RESUME_LOCK:
@@ -4329,20 +4450,30 @@ def resume_plan_execution(plan_state: dict, last_result=None, cfg=None, turn_too
         RUN_CODE_TRUST_STATE.invalidate()
 
     plan_title = plan_state.get("title", "Execution Plan")
+    plan_id = plan_state.get("plan_id")
+    if not plan_id:
+        plan_id = secrets.token_hex(6)
+        plan_state["plan_id"] = plan_id
 
     with ACTIVE_PLANS_LOCK:
-        existing_active = ACTIVE_PLANS.get(conv_id)
-        if existing_active and existing_active.get("status") == "running":
-            wrk = existing_active.get("worker")
-            if wrk and wrk.is_alive() and existing_active.get("title") != plan_title:
-                return {"ok": False, "error": f"Refused: Plan '{existing_active.get('title')}' is currently running for this conversation."}
+        # Rule: Two plans with the same title must not run concurrently
+        for pid, existing in ACTIVE_PLANS.items():
+            if not isinstance(existing, dict):
+                continue
+            if pid != plan_id and existing.get("status") in ("running", "paused"):
+                if existing.get("title", "").strip().lower() == plan_title.strip().lower():
+                    return {"ok": False, "error": f"Refused: A plan with title '{plan_title}' is already active. Two plans with the same title cannot run concurrently."}
+                if existing.get("conv_id") == conv_id:
+                    wrk = existing.get("worker")
+                    if wrk and wrk.is_alive():
+                        return {"ok": False, "error": f"Refused: Plan '{existing.get('title')}' is currently running for this conversation."}
 
     if not remaining:
-        with ACTIVE_PLANS_LOCK:
-            ACTIVE_PLANS.pop(conv_id, None)
+        cleanup_active_plan(plan_id=plan_id)
         return f"Plan '{plan_title}' executed successfully ({len(completed)} steps completed)."
 
     plan_data = {
+        "plan_id": plan_id,
         "title": plan_title,
         "steps": plan_state.get("all_steps", []),
         "completed": completed,
@@ -4350,6 +4481,7 @@ def resume_plan_execution(plan_state: dict, last_result=None, cfg=None, turn_too
         "remaining_steps": remaining,
         "started_at": plan_state.get("started_at", time.time()),
         "active_seconds": plan_state.get("active_seconds", 0.0),
+        "is_cancelled": lambda: ACTIVE_PLANS.get(plan_id, {}).get("cancelled", False),
     }
 
     def _execute_worker():
@@ -4389,10 +4521,18 @@ def resume_plan_execution(plan_state: dict, last_result=None, cfg=None, turn_too
 
             batch_res = plan_mode.execute_plan_batch(plan_data, cfg=cfg, runner=_progress_runner)
             if batch_res.get("paused"):
-                with ACTIVE_PLANS_LOCK:
-                    ACTIVE_PLANS[conv_id] = {"title": plan_title, "status": "paused", "worker": None}
                 p_info = batch_res.get("pending_info") or {}
                 p_id = p_info.get("id")
+                with ACTIVE_PLANS_LOCK:
+                    ACTIVE_PLANS[plan_id] = {
+                        "plan_id": plan_id,
+                        "title": plan_title,
+                        "conv_id": conv_id,
+                        "status": "paused",
+                        "worker": None,
+                        "cancelled": False,
+                        "pending_id": p_id,
+                    }
                 p_prompt = p_info.get("prompt") or f"Step '{batch_res.get('paused_step')}' requires user approval."
                 clean_prompt, _ = sanitize_preview(p_prompt)
                 clean_paused_step = (audit_logger.mask_secrets(str(batch_res.get("paused_step") or "")) if audit_logger else mask_secrets(str(batch_res.get("paused_step") or "")))[:100]
@@ -4411,9 +4551,17 @@ def resume_plan_execution(plan_state: dict, last_result=None, cfg=None, turn_too
                     except Exception:
                         pass
                 return batch_res
+            cleanup_active_plan(plan_id=plan_id)
+            if batch_res.get("cancelled"):
+                act_end(jid, ok=False, error="plan cancelled")
+                add_event(type="plan_cancelled", title=clean_title, message="plan cancelled")
+                if notify:
+                    try:
+                        notify({"status": "cancelled", "plan_title": clean_title, "message": "plan cancelled"})
+                    except Exception:
+                        pass
+                return f"Plan '{clean_title}' was cancelled by user."
             if batch_res.get("ok"):
-                with ACTIVE_PLANS_LOCK:
-                    ACTIVE_PLANS.pop(conv_id, None)
                 c_count = len(batch_res.get("completed", []))
                 act_end(jid, ok=True)
                 msg = f"Plan '{clean_title}' executed successfully ({c_count} steps completed)."
@@ -4430,8 +4578,6 @@ def resume_plan_execution(plan_state: dict, last_result=None, cfg=None, turn_too
                         pass
                 return msg
             else:
-                with ACTIVE_PLANS_LOCK:
-                    ACTIVE_PLANS.pop(conv_id, None)
                 err_msg = batch_res.get("error", "Unknown error")
                 act_end(jid, ok=False, error=err_msg)
                 is_timeout = bool(batch_res.get("timed_out"))
@@ -4454,8 +4600,7 @@ def resume_plan_execution(plan_state: dict, last_result=None, cfg=None, turn_too
                         pass
                 return msg
         except Exception as exc:
-            with ACTIVE_PLANS_LOCK:
-                ACTIVE_PLANS.pop(conv_id, None)
+            cleanup_active_plan(plan_id=plan_id)
             act_end(jid, ok=False, error=str(exc))
             clean_exc = (audit_logger.mask_secrets(str(exc)) if audit_logger else mask_secrets(str(exc)))[:100]
             add_event(type="plan_error", title=clean_title, error=clean_exc)
@@ -4476,7 +4621,22 @@ def resume_plan_execution(plan_state: dict, last_result=None, cfg=None, turn_too
         with PLAN_RESUME_LOCK:
             PLAN_RESUME_WORKERS[conv_id] = worker
         with ACTIVE_PLANS_LOCK:
-            ACTIVE_PLANS[conv_id] = {"title": plan_title, "status": "running", "worker": worker}
+            ACTIVE_PLANS[plan_id] = {
+                "plan_id": plan_id,
+                "title": plan_title,
+                "conv_id": conv_id,
+                "status": "running",
+                "worker": worker,
+                "cancelled": False,
+                "pending_id": None,
+            }
+        worker.start()
+        add_event(type="plan_resumed_async", title=plan_title, remaining=len(remaining))
+        return {
+            "ok": True,
+            "resumed": True,
+            "message": f"Plan '{plan_title}' resumed in background.",
+        }
         worker.start()
         add_event(type="plan_resumed_async", title=plan_title, remaining=len(remaining))
         return {
@@ -4568,29 +4728,57 @@ def run_skill(cfg, name, arg, source="pc", is_confirmed=False, mode="developer",
             if not parsed.get("steps"):
                 return f"Plan '{parsed.get('title', 'Execution Plan')}' has no steps."
             effective_conv = conv_id or (f"{source}:{mode}" if source == "pc" else f"{source}:general")
+            plan_title = parsed.get("title", "Execution Plan")
+
             with ACTIVE_PLANS_LOCK:
-                existing_p = ACTIVE_PLANS.get(effective_conv)
-                if existing_p:
-                    st = existing_p.get("status")
-                    wrk = existing_p.get("worker")
-                    if st == "running" and wrk and wrk.is_alive():
-                        return f"Refused: Plan '{existing_p.get('title')}' is currently running in the background for this conversation. Only one active plan is allowed."
-                    elif st == "paused":
-                        with PENDING_LOCK:
-                            has_pending = any(p.get("plan_state") for p in PENDING_ACTIONS.values())
-                        if has_pending:
-                            return f"Refused: Plan '{existing_p.get('title')}' is currently paused awaiting confirmation. Approve or deny it before starting a new plan."
-                        else:
-                            ACTIVE_PLANS.pop(effective_conv, None)
+                # Two plans with the same title must not run concurrently
+                for pid, p in ACTIVE_PLANS.items():
+                    if isinstance(p, dict) and p.get("status") in ("running", "paused"):
+                        if p.get("title", "").strip().lower() == plan_title.strip().lower():
+                            return f"Refused: A plan with title '{p.get('title')}' is currently active ({p.get('status')}). Two plans with the same title cannot run concurrently."
+                # One active plan per conversation
+                for pid, p in ACTIVE_PLANS.items():
+                    if isinstance(p, dict) and p.get("status") in ("running", "paused") and (p.get("conv_id") == effective_conv or pid == effective_conv):
+                        wrk = p.get("worker")
+                        if p.get("status") == "running" and wrk and wrk.is_alive():
+                            return f"Refused: Plan '{p.get('title')}' is currently running in the background for this conversation. Only one active plan is allowed."
+                        elif p.get("status") == "paused":
+                            with PENDING_LOCK:
+                                has_pending = any(pend.get("plan_state") for pend in PENDING_ACTIONS.values())
+                            if has_pending:
+                                return f"Refused: Plan '{p.get('title')}' is currently paused awaiting confirmation. Approve or deny it before starting a new plan."
+                            else:
+                                ACTIVE_PLANS.pop(pid, None)
+
+            plan_id = secrets.token_hex(6)
+            parsed["plan_id"] = plan_id
             parsed["started_at"] = time.time()
+            parsed["is_cancelled"] = lambda: ACTIVE_PLANS.get(plan_id, {}).get("cancelled", False)
             with ACTIVE_PLANS_LOCK:
-                ACTIVE_PLANS[effective_conv] = {"title": parsed.get("title", "Execution Plan"), "status": "running", "worker": None}
+                ACTIVE_PLANS[plan_id] = {
+                    "plan_id": plan_id,
+                    "title": plan_title,
+                    "conv_id": effective_conv,
+                    "status": "running",
+                    "worker": None,
+                    "cancelled": False,
+                    "pending_id": None,
+                }
             step_runner = create_plan_step_runner(parsed, cfg, source=source, mode=mode, is_tainted=is_tainted, conv_id=effective_conv, turn_tool_executions=turn_tool_executions)
             batch_res = plan_mode.execute_plan_batch(parsed, cfg=cfg, runner=step_runner)
             if batch_res.get("paused"):
-                with ACTIVE_PLANS_LOCK:
-                    ACTIVE_PLANS[effective_conv] = {"title": parsed.get("title", "Execution Plan"), "status": "paused", "worker": None}
                 pending = batch_res.get("pending_info")
+                p_id = pending.get("id") if pending else None
+                with ACTIVE_PLANS_LOCK:
+                    ACTIVE_PLANS[plan_id] = {
+                        "plan_id": plan_id,
+                        "title": plan_title,
+                        "conv_id": effective_conv,
+                        "status": "paused",
+                        "worker": None,
+                        "cancelled": False,
+                        "pending_id": p_id,
+                    }
                 p_prompt = pending.get("prompt") if pending else "Step requires approval"
                 return {
                     "ok": True,
@@ -4598,8 +4786,9 @@ def run_skill(cfg, name, arg, source="pc", is_confirmed=False, mode="developer",
                     "pending_info": pending,
                     "result": f"Plan '{parsed['title']}' paused: {p_prompt}",
                 }
-            with ACTIVE_PLANS_LOCK:
-                ACTIVE_PLANS.pop(effective_conv, None)
+            cleanup_active_plan(plan_id=plan_id)
+            if batch_res.get("cancelled"):
+                return f"Plan '{parsed['title']}' was cancelled by user."
             if batch_res.get("ok"):
                 completed_count = len(batch_res.get("completed", []))
                 return f"Plan '{parsed['title']}' executed successfully ({completed_count} steps completed)."
@@ -5189,7 +5378,10 @@ def _chat_inner(user_text, source, jid, mode="developer", is_automation=False, c
     with PENDING_LOCK:
         expired = [k for k, v in PENDING_ACTIONS.items() if v.get("expires_at", 0) < now_t]
         for k in expired:
-            PENDING_ACTIONS.pop(k, None)
+            exp_item = PENDING_ACTIONS.pop(k, None)
+            if exp_item and exp_item.get("plan_state"):
+                p_state = exp_item.get("plan_state", {})
+                cleanup_active_plan(plan_id=p_state.get("plan_id"), conv_id=exp_item.get("conv_id") or p_state.get("conv_id"), pending_id=k)
 
         pending_for_mode = [p for p in PENDING_ACTIONS.values() if p.get("mode") == mode]
 
@@ -5277,13 +5469,11 @@ def _chat_inner(user_text, source, jid, mode="developer", is_automation=False, c
                             cfg=cfg,
                         )
                     if pending.get("plan_state"):
-                        with ACTIVE_PLANS_LOCK:
-                            ACTIVE_PLANS.pop(conv_id, None)
-                            if pending.get("conv_id"):
-                                ACTIVE_PLANS.pop(pending.get("conv_id"), None)
-                            p_conv = pending.get("plan_state", {}).get("conv_id")
-                            if p_conv:
-                                ACTIVE_PLANS.pop(p_conv, None)
+                        cleanup_active_plan(
+                            plan_id=pending.get("plan_state", {}).get("plan_id"),
+                            conv_id=pending.get("conv_id") or conv_id,
+                            pending_id=pending.get("id"),
+                        )
                         plan_title = pending["plan_state"].get("title", "Plan")
                         reply = f"Action {pending['name']} was cancelled. Plan '{plan_title}' aborted."
                     else:
@@ -6178,6 +6368,12 @@ class Handler(BaseHandler):
                 if not pending:
                     return self._send(404, {"ok": False, "error": "Pending action not found or expired"})
                 if pending.get("expires_at", 0) < time.time():
+                    if pending.get("plan_state"):
+                        cleanup_active_plan(
+                            plan_id=pending.get("plan_state", {}).get("plan_id"),
+                            conv_id=pending.get("conv_id"),
+                            pending_id=action_id,
+                        )
                     return self._send(400, {"ok": False, "error": "Pending action expired"})
                 cfg = get_config()
                 if not approve:
@@ -6192,15 +6388,21 @@ class Handler(BaseHandler):
                         )
                     res_body = {"ok": True, "approved": False, "action": pending["name"], "command": pending.get("arg", ""), "guardian": pending.get("guardian", "NONE")}
                     if pending.get("plan_state"):
-                        with ACTIVE_PLANS_LOCK:
-                            ACTIVE_PLANS.pop(pending.get("conv_id"), None)
-                            p_conv = pending.get("plan_state", {}).get("conv_id")
-                            if p_conv:
-                                ACTIVE_PLANS.pop(p_conv, None)
+                        cleanup_active_plan(
+                            plan_id=pending.get("plan_state", {}).get("plan_id"),
+                            conv_id=pending.get("conv_id"),
+                            pending_id=action_id,
+                        )
                         plan_title = pending["plan_state"].get("title", "Plan")
                         res_body["plan_aborted"] = True
                         res_body["message"] = f"Plan '{plan_title}' aborted."
                     return self._send(200, res_body)
+
+            if path == "/api/plan/cancel":
+                target_pid = body.get("plan_id")
+                target_conv = body.get("conv_id")
+                res = cancel_plan(plan_id=target_pid, conv_id=target_conv, source="pc")
+                return self._send(200, res)
                 if pending.get("name") == "RUN_CODE":
                     if pending.get("is_tainted") or is_file_tainted_provenance(pending.get("arg", ""))[0]:
                         RUN_CODE_TRUST_STATE.invalidate()
