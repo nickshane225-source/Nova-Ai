@@ -2150,17 +2150,35 @@ def create_pending_action(
         "preview": clean_preview,
         "prompt": clean_prompt,
         "guardian": g_verdict,
+        "conv_id": conv_id or (f"{source}:{mode}" if source == "pc" else f"{source}:general"),
     }
     if pc_only:
         pending_entry["pc_only"] = True
     if plan_state is not None:
         pending_entry["plan_state"] = plan_state
 
-    # 8. Store in PENDING_ACTIONS with bounded cap
+    # 8. Store in PENDING_ACTIONS with bounded cap: refuse when 20 are pending, write audit entry, never evict silently
+    now_t = time.time()
     with PENDING_LOCK:
+        expired = [k for k, v in PENDING_ACTIONS.items() if v.get("expires_at", 0) < now_t]
+        for k in expired:
+            ev = PENDING_ACTIONS.pop(k, None)
+            if ev and ev.get("plan_state"):
+                p_state = ev.get("plan_state", {})
+                cleanup_active_plan(plan_id=p_state.get("plan_id"), conv_id=ev.get("conv_id") or p_state.get("conv_id"), pending_id=k)
+
         if len(PENDING_ACTIONS) >= 20:
-            oldest_id = next(iter(PENDING_ACTIONS))
-            PENDING_ACTIONS.pop(oldest_id, None)
+            if audit_logger:
+                audit_logger.log_audit_event(
+                    channel=source,
+                    tool=clean_name,
+                    preview=clean_preview,
+                    guardian_verdict=g_verdict,
+                    status="REFUSED_PENDING_QUEUE_FULL",
+                    cfg=cfg,
+                )
+            return None, None, "Refused: Confirmation queue is full (maximum 20 pending actions). Please approve or deny existing pending actions before creating new ones."
+
         PENDING_ACTIONS[action_id] = pending_entry
 
     # 9. Construct pending_info for response / UI
@@ -4515,13 +4533,36 @@ def resume_plan_execution(plan_state: dict, last_result=None, cfg=None, turn_too
             )
             clean_title = (audit_logger.mask_secrets(plan_title) if audit_logger else mask_secrets(plan_title))[:100]
             def _progress_runner(step, *args):
-                clean_step = (audit_logger.mask_secrets(step) if audit_logger else mask_secrets(step))[:100]
+                tag_name, tag_arg = parse_step_to_tag(step)
+                clean_step, _ = sanitize_preview(tag_arg if tag_arg else step)
+                clean_step = (audit_logger.mask_secrets(clean_step) if audit_logger else mask_secrets(clean_step))[:200]
                 act_phase(jid, "executing", f"Step: {clean_step}")
-                add_event(type="plan_step_start", title=clean_title, step=clean_step)
+                add_event(
+                    type="plan_step_start",
+                    source=source,
+                    plan_id=plan_id,
+                    title=clean_title,
+                    pending_id=None,
+                    action=tag_name,
+                    preview=clean_step,
+                    pc_only=False,
+                    guardian="NONE",
+                )
                 res = step_runner(step, *args)
                 act_step(jid, "PLAN_STEP", clean_step, 0.05)
-                clean_res = (audit_logger.mask_secrets(str(res)) if audit_logger else mask_secrets(str(res)))[:100]
-                add_event(type="plan_step_done", title=clean_title, step=clean_step, res=clean_res)
+                clean_res, _ = sanitize_preview(str(res))
+                clean_res = (audit_logger.mask_secrets(clean_res) if audit_logger else mask_secrets(clean_res))[:200]
+                add_event(
+                    type="plan_step_done",
+                    source=source,
+                    plan_id=plan_id,
+                    title=clean_title,
+                    pending_id=None,
+                    action=tag_name,
+                    preview=clean_res,
+                    pc_only=False,
+                    guardian="NONE",
+                )
                 if notify:
                     try:
                         notify({
@@ -4549,20 +4590,36 @@ def resume_plan_execution(plan_state: dict, last_result=None, cfg=None, turn_too
                         "cancelled": False,
                         "pending_id": p_id,
                     }
-                p_prompt = p_info.get("prompt") or f"Step '{batch_res.get('paused_step')}' requires user approval."
-                clean_prompt, _ = sanitize_preview(p_prompt)
-                clean_paused_step = (audit_logger.mask_secrets(str(batch_res.get("paused_step") or "")) if audit_logger else mask_secrets(str(batch_res.get("paused_step") or "")))[:100]
-                act_phase(jid, "paused", f"Waiting for user confirmation on step: {clean_paused_step}")
-                add_event(type="plan_paused", title=clean_title, paused_step=clean_paused_step, pending_id=p_id, pending_info=p_info)
+                p_act = p_info.get("action") or p_info.get("name") or "PLAN_STEP"
+                raw_paused_prev = p_info.get("preview") or p_info.get("prompt") or str(batch_res.get("paused_step") or "")
+                clean_paused_prev, _ = sanitize_preview(raw_paused_prev)
+                clean_paused_prev = (audit_logger.mask_secrets(clean_paused_prev) if audit_logger else mask_secrets(clean_paused_prev))[:200]
+                p_pc_only = bool(p_info.get("pc_only", False))
+                p_guardian = p_info.get("guardian", "NONE")
+                act_phase(jid, "paused", f"Waiting for user confirmation on step: {clean_paused_prev}")
+                add_event(
+                    type="plan_paused",
+                    source=source,
+                    plan_id=plan_id,
+                    title=clean_title,
+                    pending_id=p_id,
+                    action=p_act,
+                    preview=clean_paused_prev,
+                    pc_only=p_pc_only,
+                    guardian=p_guardian,
+                )
                 if notify:
                     try:
                         notify({
                             "status": "paused",
                             "plan_title": clean_title,
-                            "message": f"Plan paused: {clean_prompt}",
-                            "paused_step": clean_paused_step,
+                            "message": f"Plan paused: {clean_paused_prev}",
+                            "paused_step": clean_paused_prev,
                             "pending_id": p_id,
-                            "pending_info": p_info,
+                            "action": p_act,
+                            "preview": clean_paused_prev,
+                            "pc_only": p_pc_only,
+                            "guardian": p_guardian,
                         })
                     except Exception:
                         pass
@@ -4795,6 +4852,24 @@ def run_skill(cfg, name, arg, source="pc", is_confirmed=False, mode="developer",
                         "cancelled": False,
                         "pending_id": p_id,
                     }
+                p_act = pending.get("action") or pending.get("name") or "PLAN_STEP" if pending else "PLAN_STEP"
+                raw_paused_prev = pending.get("preview") or pending.get("prompt") or str(batch_res.get("paused_step") or "") if pending else ""
+                clean_paused_prev, _ = sanitize_preview(raw_paused_prev)
+                clean_paused_prev = (audit_logger.mask_secrets(clean_paused_prev) if audit_logger else mask_secrets(clean_paused_prev))[:200]
+                p_pc_only = bool(pending.get("pc_only", False)) if pending else False
+                p_guardian = pending.get("guardian", "NONE") if pending else "NONE"
+                clean_title = (audit_logger.mask_secrets(plan_title) if audit_logger else mask_secrets(plan_title))[:100]
+                add_event(
+                    type="plan_paused",
+                    source=source,
+                    plan_id=plan_id,
+                    title=clean_title,
+                    pending_id=p_id,
+                    action=p_act,
+                    preview=clean_paused_prev,
+                    pc_only=p_pc_only,
+                    guardian=p_guardian,
+                )
                 p_prompt = pending.get("prompt") if pending else "Step requires approval"
                 return {
                     "ok": True,
@@ -5743,6 +5818,25 @@ def remote_state(reveal=True):
         "seconds_since_phone": ago,
     }
 
+def is_phone_remote_request(handler) -> bool:
+    """Checks whether the incoming request originated from a paired phone/remote client."""
+    if getattr(handler, "is_remote_handler", False):
+        return True
+    headers = getattr(handler, "headers", None)
+    if not headers:
+        return False
+    auth_hdr = headers.get("Authorization", "")
+    tok = auth_hdr[7:].strip() if auth_hdr.lower().startswith("bearer ") else (headers.get("X-Nova-Token") or "").strip()
+    if tok and tok != API_SESSION_TOKEN:
+        with PAIRED_DEVICES_LOCK:
+            for d in PAIRED_DEVICES.values():
+                if secrets.compare_digest(d.get("token", ""), tok):
+                    return True
+        legacy_token = get_config().get("remote_token", "")
+        if legacy_token and secrets.compare_digest(tok, legacy_token):
+            return True
+    return False
+
 
 def start_remote():
     cfg = get_config()
@@ -5977,6 +6071,11 @@ def check_session_auth(handler) -> bool:
     headers = getattr(handler, "headers", None)
     if headers is None:
         return False
+
+    # Allow authenticated paired phone/remote device requests
+    if is_phone_remote_request(handler):
+        return True
+
     cookie_hdr = headers.get("Cookie", "") if hasattr(headers, "get") else ""
     if not cookie_hdr:
         return False
@@ -6164,8 +6263,58 @@ class Handler(BaseHandler):
                 after = int((q.get("after") or ["0"])[0])
             except ValueError:
                 after = 0
+            is_phone = is_phone_remote_request(self)
             with LOCK:
-                return self._send(200, {"last": EVENT_ID[0], "events": [e for e in EVENTS if e["id"] > after]})
+                ev_list = []
+                for e in EVENTS:
+                    if e["id"] <= after:
+                        continue
+                    # Do not deliver plan events to phone-remote clients unless that remote started the plan
+                    if is_phone and e.get("type", "").startswith("plan_") and e.get("source") not in ("phone", "remote"):
+                        continue
+                    ev_list.append(e)
+                return self._send(200, {"last": EVENT_ID[0], "events": ev_list})
+
+        if path == "/api/pending":
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            target_conv = qs.get("conv_id", [None])[0]
+            now_t = time.time()
+            with PENDING_LOCK:
+                expired = [k for k, v in PENDING_ACTIONS.items() if v.get("expires_at", 0) < now_t]
+                for k in expired:
+                    ev = PENDING_ACTIONS.pop(k, None)
+                    if ev and ev.get("plan_state"):
+                        p_state = ev.get("plan_state", {})
+                        cleanup_active_plan(plan_id=p_state.get("plan_id"), conv_id=ev.get("conv_id") or p_state.get("conv_id"), pending_id=k)
+
+                pending_list = []
+                for k, p in PENDING_ACTIONS.items():
+                    if p.get("expires_at", 0) < now_t:
+                        continue
+                    p_conv = p.get("conv_id") or p.get("plan_state", {}).get("conv_id") or ""
+                    if target_conv and p_conv != target_conv:
+                        continue
+
+                    raw_prev = p.get("preview") or p.get("prompt") or p.get("arg") or ""
+                    s_prev, _ = sanitize_preview(raw_prev)
+                    s_prev = (audit_logger.mask_secrets(s_prev) if audit_logger else mask_secrets(s_prev))[:200]
+
+                    s_prompt, _ = sanitize_preview(p.get("prompt", ""))
+                    s_prompt = (audit_logger.mask_secrets(s_prompt) if audit_logger else mask_secrets(s_prompt))[:200]
+
+                    entry = {
+                        "id": p.get("id", k),
+                        "action": p.get("name", "ACTION"),
+                        "preview": s_prev,
+                        "prompt": s_prompt or f"Action {p.get('name', '')} requires confirmation:",
+                        "guardian": p.get("guardian", "NONE"),
+                        "is_tainted": bool(p.get("is_tainted", False)),
+                        "pc_only": bool(p.get("pc_only", False)),
+                        "expires_at": p.get("expires_at", 0),
+                        "conv_id": p_conv,
+                    }
+                    pending_list.append(entry)
+                return self._send(200, {"ok": True, "pending": pending_list})
         if path == "/api/notifications":
             items = scheduler_engine.SCHEDULER.get_pending_notifications() if scheduler_engine else []
             return self._send(200, {"notifications": items})

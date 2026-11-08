@@ -2040,14 +2040,29 @@ async function pollEvents() {
       for (const ev of r.events) {
         lastEvent = ev.id;
         if (ev.type === "plan_paused") {
-          if (ev.pending_info && ev.pending_info.id) {
-            showConfirmModal(ev.pending_info);
-          } else if (ev.pending_id) {
+          try {
+            const pRes = await api("/api/pending");
+            const match = (pRes && pRes.pending) ? pRes.pending.find(p => p.id === ev.pending_id) : null;
+            if (match) {
+              showConfirmModal(match);
+            } else {
+              showConfirmModal({
+                id: ev.pending_id,
+                action: ev.action || ev.paused_step || "PLAN_STEP",
+                prompt: `Step requires confirmation:`,
+                preview: ev.preview || ev.title || "Plan step awaiting approval",
+                pc_only: ev.pc_only,
+                guardian: ev.guardian
+              });
+            }
+          } catch {
             showConfirmModal({
               id: ev.pending_id,
-              action: ev.paused_step || "PLAN_STEP",
-              prompt: `Step '${ev.paused_step}' requires confirmation:`,
-              preview: ev.title || "Plan step awaiting approval"
+              action: ev.action || ev.paused_step || "PLAN_STEP",
+              prompt: `Step requires confirmation:`,
+              preview: ev.preview || ev.title || "Plan step awaiting approval",
+              pc_only: ev.pc_only,
+              guardian: ev.guardian
             });
           }
         }
@@ -2059,7 +2074,18 @@ async function pollEvents() {
 }
 pollEvents();
 
-loadState().then(() => { if (!state.config.has_key) subtitle("", "Open Settings and add your AI key to begin."); });
+async function checkPendingActionsOnLoad() {
+  try {
+    const pRes = await api("/api/pending");
+    if (pRes && pRes.pending && pRes.pending.length > 0) {
+      showConfirmModal(pRes.pending[0]);
+    }
+  } catch {}
+}
+loadState().then(() => {
+  if (!state.config.has_key) subtitle("", "Open Settings and add your AI key to begin.");
+  checkPendingActionsOnLoad();
+});
 setMode("idle");
 
 
