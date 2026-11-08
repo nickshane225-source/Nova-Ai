@@ -25,6 +25,10 @@ import subprocess
 import shlex
 import signal
 import sys
+if sys.version_info < (3, 10):
+    sys.exit(
+        f"Error: Nova AI requires Python 3.10 or higher (found Python {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro})."
+    )
 import threading
 import time
 import urllib.error
@@ -5838,6 +5842,11 @@ class Handler(BaseHandler):
                 cfg = get_config()
                 port = int(cfg.get("port", 8765))
                 reauth_url = f"http://127.0.0.1:{port}/?boot={fresh_boot}"
+                try:
+                    import tempfile
+                    (Path(tempfile.gettempdir()) / "nova_boot_url.txt").write_text(reauth_url, encoding="utf-8")
+                except Exception:
+                    pass
                 if sys.stdout:
                     print(f"\n[Nova Security] Unauthorized /api request. Re-authenticate via: {reauth_url}\n")
                 return self._send(401, {"ok": False, "error": "Unauthorized: valid nova_session cookie required."})
@@ -6053,6 +6062,11 @@ class Handler(BaseHandler):
                 cfg = get_config()
                 port = int(cfg.get("port", 8765))
                 reauth_url = f"http://127.0.0.1:{port}/?boot={fresh_boot}"
+                try:
+                    import tempfile
+                    (Path(tempfile.gettempdir()) / "nova_boot_url.txt").write_text(reauth_url, encoding="utf-8")
+                except Exception:
+                    pass
                 if sys.stdout:
                     print(f"\n[Nova Security] Unauthorized /api request. Re-authenticate via: {reauth_url}\n")
                 return self._send(401, {"ok": False, "error": "Unauthorized: valid nova_session cookie required."})
@@ -6116,6 +6130,11 @@ class Handler(BaseHandler):
                 cfg = get_config()
                 port = int(cfg.get("port", 8765))
                 reauth_url = f"http://127.0.0.1:{port}/?boot={fresh_boot}"
+                try:
+                    import tempfile
+                    (Path(tempfile.gettempdir()) / "nova_boot_url.txt").write_text(reauth_url, encoding="utf-8")
+                except Exception:
+                    pass
                 if sys.stdout:
                     print(f"\n[Nova Security] Unauthorized /api request. Re-authenticate via: {reauth_url}\n")
                 return self._send(401, {"ok": False, "error": "Unauthorized: valid nova_session cookie required."})
@@ -6914,6 +6933,11 @@ def main():
         return
     boot_code = generate_boot_code(60)
     boot_url = f"http://127.0.0.1:{port}/?boot={boot_code}"
+    try:
+        import tempfile
+        (Path(tempfile.gettempdir()) / "nova_boot_url.txt").write_text(boot_url, encoding="utf-8")
+    except Exception:
+        pass
     url = f"http://127.0.0.1:{port}"
     if sys.stdout:
         print(f"\n  NOVA AI is running at {url}\n  Boot URL: {boot_url}\n  Use Chrome or Edge for voice. Press Ctrl+C to stop.\n")

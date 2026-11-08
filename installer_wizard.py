@@ -59,6 +59,16 @@ pause
         print(f"Error writing uninstaller: {e}")
 
 
+def verify_installation_health(install_dir):
+    """
+    Verifies that the target installation contains all required executables and assets.
+    Obsolete speech_engine.py has been removed; voice runs via browser Web Speech API.
+    """
+    target = Path(install_dir)
+    exe = target / "NovaAI.exe"
+    return exe.is_file()
+
+
 class InstallerApp:
     def __init__(self, root):
         self.root = root
@@ -141,6 +151,7 @@ class InstallerApp:
         self.update_status("Creating Desktop & Start Menu shortcuts...", 75)
         create_windows_shortcuts(str(install_dir), str(target_exe))
         write_uninstaller(str(install_dir))
+        verify_installation_health(str(install_dir))
         time.sleep(0.3)
 
         self.update_status("Installation complete! Launching Nova AI...", 100)

@@ -107,7 +107,7 @@ flowchart TD
 ## 🚀 Quick Start
 
 ### 1. Prerequisites
-- **Python 3.8+** (Windows, macOS, or Linux). Ensure *"Add Python to PATH"* is checked during installation.
+- **Python 3.10+** (Windows, macOS, or Linux). Ensure *"Add Python to PATH"* is checked during installation.
 - Recommended browser: **Google Chrome** or **Microsoft Edge** (for HTML5 Speech Recognition and CDP automation).
 
 ### 2. Launch Nova AI

@@ -13,12 +13,18 @@ import sys
 import threading
 from pathlib import Path
 
-if getattr(sys, "frozen", False):
+if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+    ROOT = Path(sys._MEIPASS)
+elif getattr(sys, "frozen", False):
     ROOT = Path(sys.executable).resolve().parent
 else:
     ROOT = Path(__file__).resolve().parent
 
 SKILLS_DIR = ROOT / "skills"
+if not SKILLS_DIR.exists() and getattr(sys, "frozen", False):
+    exe_skills = Path(sys.executable).resolve().parent / "skills"
+    if exe_skills.exists():
+        SKILLS_DIR = exe_skills
 
 # Attempt to reuse tokenizer from memory_engine if present, else fallback
 try:

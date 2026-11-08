@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import urllib.error
 import urllib.parse
@@ -19,7 +20,10 @@ from typing import Any, Dict
 from integrations import BaseIntegration
 
 WORKSPACE_DIR = Path(__file__).resolve().parent.parent / "workspace"
-SKILLS_DIR = Path(__file__).resolve().parent.parent / "skills"
+if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+    SKILLS_DIR = Path(sys._MEIPASS) / "skills"
+else:
+    SKILLS_DIR = Path(__file__).resolve().parent.parent / "skills"
 
 
 class GitHubConnector(BaseIntegration):
