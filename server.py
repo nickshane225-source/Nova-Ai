@@ -4223,6 +4223,8 @@ def create_plan_step_runner(plan_info, cfg, source="pc", mode="developer", is_ta
 
 PLAN_RESUME_WORKERS = {}
 PLAN_RESUME_LOCK = threading.Lock()
+ACTIVE_PLANS = {}
+ACTIVE_PLANS_LOCK = threading.Lock()
 
 def wait_for_plan_worker(conv_id="pc:developer", timeout=5.0):
     with PLAN_RESUME_LOCK:
@@ -4261,7 +4263,16 @@ def resume_plan_execution(plan_state: dict, last_result=None, cfg=None, turn_too
 
     plan_title = plan_state.get("title", "Execution Plan")
 
+    with ACTIVE_PLANS_LOCK:
+        existing_active = ACTIVE_PLANS.get(conv_id)
+        if existing_active and existing_active.get("status") == "running":
+            wrk = existing_active.get("worker")
+            if wrk and wrk.is_alive() and existing_active.get("title") != plan_title:
+                return {"ok": False, "error": f"Refused: Plan '{existing_active.get('title')}' is currently running for this conversation."}
+
     if not remaining:
+        with ACTIVE_PLANS_LOCK:
+            ACTIVE_PLANS.pop(conv_id, None)
         return f"Plan '{plan_title}' executed successfully ({len(completed)} steps completed)."
 
     plan_data = {
@@ -4308,6 +4319,8 @@ def resume_plan_execution(plan_state: dict, last_result=None, cfg=None, turn_too
 
             batch_res = plan_mode.execute_plan_batch(plan_data, cfg=cfg, runner=_progress_runner)
             if batch_res.get("paused"):
+                with ACTIVE_PLANS_LOCK:
+                    ACTIVE_PLANS[conv_id] = {"title": plan_title, "status": "paused", "worker": None}
                 p_info = batch_res.get("pending_info") or {}
                 p_id = p_info.get("id")
                 p_prompt = p_info.get("prompt") or f"Step '{batch_res.get('paused_step')}' requires user approval."
@@ -4328,6 +4341,8 @@ def resume_plan_execution(plan_state: dict, last_result=None, cfg=None, turn_too
                         pass
                 return batch_res
             if batch_res.get("ok"):
+                with ACTIVE_PLANS_LOCK:
+                    ACTIVE_PLANS.pop(conv_id, None)
                 c_count = len(batch_res.get("completed", []))
                 act_end(jid, ok=True)
                 msg = f"Plan '{plan_title}' executed successfully ({c_count} steps completed)."
@@ -4344,6 +4359,8 @@ def resume_plan_execution(plan_state: dict, last_result=None, cfg=None, turn_too
                         pass
                 return msg
             else:
+                with ACTIVE_PLANS_LOCK:
+                    ACTIVE_PLANS.pop(conv_id, None)
                 err_msg = batch_res.get("error", "Unknown error")
                 act_end(jid, ok=False, error=err_msg)
                 is_timeout = bool(batch_res.get("timed_out"))
@@ -4364,6 +4381,8 @@ def resume_plan_execution(plan_state: dict, last_result=None, cfg=None, turn_too
                         pass
                 return msg
         except Exception as exc:
+            with ACTIVE_PLANS_LOCK:
+                ACTIVE_PLANS.pop(conv_id, None)
             act_end(jid, ok=False, error=str(exc))
             add_event(type="plan_error", title=plan_title, error=str(exc))
             if notify:
@@ -4382,6 +4401,8 @@ def resume_plan_execution(plan_state: dict, last_result=None, cfg=None, turn_too
         worker = threading.Thread(target=_execute_worker, name="PlanResumeWorker", daemon=True)
         with PLAN_RESUME_LOCK:
             PLAN_RESUME_WORKERS[conv_id] = worker
+        with ACTIVE_PLANS_LOCK:
+            ACTIVE_PLANS[conv_id] = {"title": plan_title, "status": "running", "worker": worker}
         worker.start()
         add_event(type="plan_resumed_async", title=plan_title, remaining=len(remaining))
         return {
@@ -4472,11 +4493,24 @@ def run_skill(cfg, name, arg, source="pc", is_confirmed=False, mode="developer",
             parsed = plan_mode.parse_plan_tag(raw_arg)
             if not parsed.get("steps"):
                 return f"Plan '{parsed.get('title', 'Execution Plan')}' has no steps."
-            parsed["started_at"] = time.time()
             effective_conv = conv_id or (f"{source}:{mode}" if source == "pc" else f"{source}:general")
+            with ACTIVE_PLANS_LOCK:
+                existing_p = ACTIVE_PLANS.get(effective_conv)
+                if existing_p:
+                    st = existing_p.get("status")
+                    wrk = existing_p.get("worker")
+                    if st == "running" and wrk and wrk.is_alive():
+                        return f"Refused: Plan '{existing_p.get('title')}' is currently running in the background for this conversation. Only one active plan is allowed."
+                    elif st == "paused":
+                        return f"Refused: Plan '{existing_p.get('title')}' is currently paused awaiting confirmation. Approve or deny it before starting a new plan."
+            parsed["started_at"] = time.time()
+            with ACTIVE_PLANS_LOCK:
+                ACTIVE_PLANS[effective_conv] = {"title": parsed.get("title", "Execution Plan"), "status": "running", "worker": None}
             step_runner = create_plan_step_runner(parsed, cfg, source=source, mode=mode, is_tainted=is_tainted, conv_id=effective_conv, turn_tool_executions=turn_tool_executions)
             batch_res = plan_mode.execute_plan_batch(parsed, cfg=cfg, runner=step_runner)
             if batch_res.get("paused"):
+                with ACTIVE_PLANS_LOCK:
+                    ACTIVE_PLANS[effective_conv] = {"title": parsed.get("title", "Execution Plan"), "status": "paused", "worker": None}
                 pending = batch_res.get("pending_info")
                 p_prompt = pending.get("prompt") if pending else "Step requires approval"
                 return {
@@ -4485,6 +4519,8 @@ def run_skill(cfg, name, arg, source="pc", is_confirmed=False, mode="developer",
                     "pending_info": pending,
                     "result": f"Plan '{parsed['title']}' paused: {p_prompt}",
                 }
+            with ACTIVE_PLANS_LOCK:
+                ACTIVE_PLANS.pop(effective_conv, None)
             if batch_res.get("ok"):
                 completed_count = len(batch_res.get("completed", []))
                 return f"Plan '{parsed['title']}' executed successfully ({completed_count} steps completed)."
@@ -5162,6 +5198,13 @@ def _chat_inner(user_text, source, jid, mode="developer", is_automation=False, c
                             cfg=cfg,
                         )
                     if pending.get("plan_state"):
+                        with ACTIVE_PLANS_LOCK:
+                            ACTIVE_PLANS.pop(conv_id, None)
+                            if pending.get("conv_id"):
+                                ACTIVE_PLANS.pop(pending.get("conv_id"), None)
+                            p_conv = pending.get("plan_state", {}).get("conv_id")
+                            if p_conv:
+                                ACTIVE_PLANS.pop(p_conv, None)
                         plan_title = pending["plan_state"].get("title", "Plan")
                         reply = f"Action {pending['name']} was cancelled. Plan '{plan_title}' aborted."
                     else:
@@ -5172,6 +5215,19 @@ def _chat_inner(user_text, source, jid, mode="developer", is_automation=False, c
                     if source != "pc":
                         add_event(source=source, text=user_text, reply=reply, actions=[])
                     return {"reply": reply, "actions": []}
+
+    with ACTIVE_PLANS_LOCK:
+        active_p = ACTIVE_PLANS.get(conv_id)
+    if active_p and active_p.get("status") == "running":
+        wrk = active_p.get("worker")
+        if wrk and wrk.is_alive():
+            busy_reply = f"Plan '{active_p.get('title')}' is currently running in the background. Please wait for it to complete or pause before sending new requests."
+            with LOCK:
+                hist.append(user_msg)
+                hist.append({"role": "assistant", "content": busy_reply})
+            if source != "pc":
+                add_event(source=source, text=user_text, reply=busy_reply, actions=[])
+            return {"reply": busy_reply, "actions": []}
 
     with LOCK:
         hist.append(user_msg)
@@ -6042,6 +6098,11 @@ class Handler(BaseHandler):
                         )
                     res_body = {"ok": True, "approved": False, "action": pending["name"], "command": pending.get("arg", ""), "guardian": pending.get("guardian", "NONE")}
                     if pending.get("plan_state"):
+                        with ACTIVE_PLANS_LOCK:
+                            ACTIVE_PLANS.pop(pending.get("conv_id"), None)
+                            p_conv = pending.get("plan_state", {}).get("conv_id")
+                            if p_conv:
+                                ACTIVE_PLANS.pop(p_conv, None)
                         plan_title = pending["plan_state"].get("title", "Plan")
                         res_body["plan_aborted"] = True
                         res_body["message"] = f"Plan '{plan_title}' aborted."
