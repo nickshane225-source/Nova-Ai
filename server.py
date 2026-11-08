@@ -5864,7 +5864,21 @@ class Handler(BaseHandler):
                 safe[f"{sec}_set"] = bool(cfg.get(sec))
             qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             state_mode = qs.get("mode", ["developer"])[0]
-            is_tainted = bool(CONVERSATION_TAINT.get(f"pc:{state_mode}", False) or CONVERSATION_TAINT.get(state_mode, False))
+            req_conv_id = qs.get("conv_id", [None])[0]
+            req_source = qs.get("source", [None])[0]
+            req_jid = qs.get("jid", [None])[0]
+            if req_conv_id:
+                target_conv = req_conv_id
+            elif req_source and req_jid:
+                target_conv = f"{req_source}:{req_jid}"
+            elif req_source:
+                target_conv = f"{req_source}:{state_mode}"
+            else:
+                target_conv = f"pc:{state_mode}"
+            is_tainted = bool(
+                CONVERSATION_TAINT.get(target_conv, False)
+                or (target_conv == f"pc:{state_mode}" and CONVERSATION_TAINT.get(state_mode, False))
+            )
             return self._send(
                 200,
                 {
@@ -5875,6 +5889,7 @@ class Handler(BaseHandler):
                     "os": OS,
                     "workspace": str(WORKSPACE),
                     "is_tainted": is_tainted,
+                    "conv_id": target_conv,
                     "tainted_modes": dict(CONVERSATION_TAINT),
                     "tainted_conversations": dict(CONVERSATION_TAINT),
                 },
