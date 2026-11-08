@@ -154,6 +154,27 @@ def check_database_integrity() -> dict:
         }
 
 
+def _detect_provider_from_cfg(cfg: dict) -> str:
+    prov = (cfg.get("provider") or "").lower()
+    base = (cfg.get("base_url") or "").lower()
+    model = (cfg.get("model") or "").lower()
+    if prov == "anthropic" or "anthropic" in base or "claude" in model:
+        return "Anthropic Claude"
+    if "generativelanguage" in base or prov == "gemini" or "gemini" in model:
+        return "Google Gemini"
+    if "groq" in base:
+        return "Groq"
+    if "openrouter" in base:
+        return "OpenRouter"
+    if prov == "ollama" or "localhost:11434" in base or "127.0.0.1:11434" in base:
+        return "Ollama (Offline)"
+    if prov == "openai" or "api.openai.com" in base or "gpt" in model or "o3" in model or "o4" in model:
+        return "OpenAI"
+    if prov:
+        return prov.capitalize()
+    return "Custom Provider"
+
+
 def check_llm_providers(cfg: dict = None) -> list[dict]:
     results = []
     if cfg is None:
@@ -165,53 +186,65 @@ def check_llm_providers(cfg: dict = None) -> list[dict]:
         else:
             cfg = {}
 
-    providers_checked = 0
+    seen_providers = set()
 
-    # Gemini
-    gemini_key = cfg.get("gemini_api_key") or cfg.get("api_key") or os.environ.get("GEMINI_API_KEY")
-    if gemini_key:
-        providers_checked += 1
+    # 1. Primary configured provider key
+    primary_key = cfg.get("api_key")
+    if primary_key:
+        prov_name = _detect_provider_from_cfg(cfg)
+        results.append({
+            "category": "LLM Providers",
+            "name": prov_name,
+            "status": "ok",
+            "message": "API key configured",
+        })
+        seen_providers.add(prov_name)
+
+    # 2. Google Gemini dedicated key
+    gemini_key = cfg.get("gemini_api_key") or os.environ.get("GEMINI_API_KEY")
+    if gemini_key and "Google Gemini" not in seen_providers:
         results.append({
             "category": "LLM Providers",
             "name": "Google Gemini",
             "status": "ok",
             "message": "API key configured",
         })
+        seen_providers.add("Google Gemini")
 
-    # Anthropic
+    # 3. Anthropic Claude dedicated key
     anthropic_key = cfg.get("anthropic_api_key") or os.environ.get("ANTHROPIC_API_KEY")
-    if anthropic_key:
-        providers_checked += 1
+    if anthropic_key and "Anthropic Claude" not in seen_providers:
         results.append({
             "category": "LLM Providers",
             "name": "Anthropic Claude",
             "status": "ok",
             "message": "API key configured",
         })
+        seen_providers.add("Anthropic Claude")
 
-    # OpenAI
-    openai_key = cfg.get("custom_api_key") or os.environ.get("OPENAI_API_KEY")
-    if openai_key:
-        providers_checked += 1
+    # 4. OpenAI dedicated key
+    openai_key = cfg.get("openai_api_key") or cfg.get("custom_api_key") or os.environ.get("OPENAI_API_KEY")
+    if openai_key and "OpenAI" not in seen_providers:
         results.append({
             "category": "LLM Providers",
             "name": "OpenAI",
             "status": "ok",
             "message": "API key configured",
         })
+        seen_providers.add("OpenAI")
 
-    # Ollama Local
+    # 5. Ollama Local
     ollama_active = cfg.get("provider") == "ollama" or os.environ.get("OLLAMA_HOST")
-    if ollama_active:
-        providers_checked += 1
+    if ollama_active and "Ollama (Offline)" not in seen_providers:
         results.append({
             "category": "LLM Providers",
             "name": "Ollama (Offline)",
             "status": "ok",
             "message": "Local provider configured",
         })
+        seen_providers.add("Ollama (Offline)")
 
-    if providers_checked == 0:
+    if not results:
         results.append({
             "category": "LLM Providers",
             "name": "Model Providers",
@@ -220,6 +253,9 @@ def check_llm_providers(cfg: dict = None) -> list[dict]:
         })
 
     return results
+
+
+_check_llm_providers = check_llm_providers
 
 
 def check_security_and_gateways(cfg: dict = None) -> list[dict]:

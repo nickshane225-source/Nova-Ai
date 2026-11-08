@@ -796,6 +796,9 @@ def call_llm_with_fallback(cfg, system, messages):
         fallbacks = [fallbacks]
 
     res = None
+    answered_prov = "gemini" if "generativelanguage" in cfg.get("base_url", "") else cfg.get("provider", "unknown")
+    answered_model = cfg.get("model", "unknown")
+
     try:
         res = _call_single_llm(cfg, system, messages)
     except LLMError as primary_err:
@@ -844,6 +847,10 @@ def call_llm_with_fallback(cfg, system, messages):
                 if cfg.get("debug_llm") and sys.stdout:
                     print(f"[Nova Router] Primary LLM failed ({last_err}). Failing over to '{fb_name}'...")
                 res = _call_single_llm(fb_cfg, system, messages)
+                answered_prov = fb_name
+                answered_model = fb_cfg.get("model", "unknown")
+                if cfg.get("debug_llm") and sys.stdout:
+                    print(f"[Nova Router] Fallback '{fb_name}' succeeded with model '{answered_model}'.")
                 break
             except LLMError as fb_err:
                 last_err = fb_err
@@ -859,8 +866,8 @@ def call_llm_with_fallback(cfg, system, messages):
             inp_tokens = usage_tracker.estimate_tokens_from_text("x" * inp_chars)
             out_tokens = usage_tracker.estimate_tokens_from_text(res)
             usage_tracker.record_usage(
-                provider=cfg.get("provider", "unknown"),
-                model=cfg.get("model", "unknown"),
+                provider=answered_prov,
+                model=answered_model,
                 input_tokens=inp_tokens,
                 output_tokens=out_tokens,
                 duration_sec=time.time() - t0,
@@ -877,15 +884,30 @@ def call_llm(cfg, system, messages):
 
 def call_llm_vision(cfg, prompt, base64_png):
     """Sends a base64 screenshot to multimodal vision LLMs (Anthropic, Gemini, OpenAI, Ollama)."""
+    if usage_tracker and cfg.get("monthly_budget_usd"):
+        try:
+            cap_val = float(cfg.get("monthly_budget_usd"))
+            if cap_val > 0.0:
+                b_status = usage_tracker.check_budget_status(cap_val)
+                if b_status.get("exhausted"):
+                    raise LLMError(f"Monthly budget limit reached (${b_status['spent_usd']:.2f} spent of ${b_status['cap_usd']:.2f} cap). Adjust monthly_budget_usd in Settings.")
+        except LLMError:
+            raise
+        except Exception:
+            pass
+
+    t0 = time.time()
     provider = cfg["provider"]
     key = cfg.get("api_key", "")
     if isinstance(key, str) and key.startswith("dpapi:"):
         key = decrypt_dpapi(key)
     system = "You are Nova AI Desktop Vision. Look carefully at the provided desktop screenshot and answer the user's question clearly, accurately, and concisely in their language."
     
+    res = None
     if provider == "anthropic":
         if not key:
             raise LLMError("No API key set. Open Settings and paste your key.")
+        model_name = cfg["model"] if "claude" in cfg["model"] else "claude-3-5-sonnet-latest"
         data = http_post(
             "https://api.anthropic.com/v1/messages",
             {
@@ -894,7 +916,7 @@ def call_llm_vision(cfg, prompt, base64_png):
                 "anthropic-version": "2023-06-01",
             },
             {
-                "model": cfg["model"] if "claude" in cfg["model"] else "claude-3-5-sonnet-latest",
+                "model": model_name,
                 "max_tokens": 1000,
                 "system": system,
                 "messages": [
@@ -918,35 +940,53 @@ def call_llm_vision(cfg, prompt, base64_png):
                 ],
             },
         )
-        return "".join(b.get("text", "") for b in data.get("content", []))
+        res = "".join(b.get("text", "") for b in data.get("content", []))
+    else:
+        # OpenAI-compatible / Gemini / Ollama
+        base = cfg["base_url"].rstrip("/")
+        headers = {"content-type": "application/json"}
+        if key:
+            headers["authorization"] = f"Bearer {key}"
+        elif "localhost" not in base and "127.0.0.1" not in base:
+            raise LLMError("No API key set. Open Settings and paste your key.")
 
-    # OpenAI-compatible / Gemini / Ollama
-    base = cfg["base_url"].rstrip("/")
-    headers = {"content-type": "application/json"}
-    if key:
-        headers["authorization"] = f"Bearer {key}"
-    elif "localhost" not in base and "127.0.0.1" not in base:
-        raise LLMError("No API key set. Open Settings and paste your key.")
+        body = {
+            "model": cfg["model"],
+            "max_tokens": 1000,
+            "messages": [
+                {"role": "system", "content": system},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt or "What is on my screen? Provide a clear summary and point out any errors or important content."},
+                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64_png}"}}
+                    ],
+                },
+            ],
+        }
+        data = http_post(base + "/chat/completions", headers, body, timeout=60)
+        try:
+            res = data["choices"][0]["message"].get("content") or "I could not analyze the image."
+        except Exception:
+            raise LLMError(f"Unexpected vision response from AI provider: {str(data)[:300]}")
 
-    body = {
-        "model": cfg["model"],
-        "max_tokens": 1000,
-        "messages": [
-            {"role": "system", "content": system},
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt or "What is on my screen? Provide a clear summary and point out any errors or important content."},
-                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64_png}"}}
-                ],
-            },
-        ],
-    }
-    data = http_post(base + "/chat/completions", headers, body, timeout=60)
-    try:
-        return data["choices"][0]["message"].get("content") or "I could not analyze the image."
-    except Exception:
-        raise LLMError(f"Unexpected vision response from AI provider: {str(data)[:300]}")
+    if usage_tracker and res:
+        try:
+            img_tokens = 1600
+            inp_tokens = usage_tracker.estimate_tokens_from_text(prompt or "") + img_tokens
+            out_tokens = usage_tracker.estimate_tokens_from_text(res)
+            prov = "gemini" if "generativelanguage" in cfg.get("base_url", "") else cfg.get("provider", "unknown")
+            usage_tracker.record_usage(
+                provider=prov,
+                model=cfg.get("model", "unknown"),
+                input_tokens=inp_tokens,
+                output_tokens=out_tokens,
+                duration_sec=time.time() - t0,
+            )
+        except Exception:
+            pass
+
+    return res
 
 
 SKILL_DOC = """
