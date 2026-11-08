@@ -77,6 +77,88 @@ class TestPlanMode(unittest.TestCase):
         self.assertEqual(len(side_effects), 1, "Side effect must only execute once without fallback re-execution")
         self.assertIn("simulated inner type error in runner", res["error"])
 
+    def test_shared_confirmation_gate_identical_pending_entry(self):
+        import server
+        cfg = {"confirm_destructive": True, "workspace_dir": "D:\\Developer Mode on\\nova-ai"}
+        source = "pc"
+        mode = "developer"
+        conv_id = "pc:developer"
+        cmd_text = "echo test_shared_gate_comparison"
+
+        # 1. Path 1: execute_model_tags
+        with server.PENDING_LOCK:
+            server.PENDING_ACTIONS.clear()
+        res_tags_1 = server.execute_model_tags(
+            [("CMD", cmd_text, 0, 10)],
+            cfg,
+            jid="jid_gate_test_1",
+            mode=mode,
+            source=source,
+            is_tainted=False,
+            conv_id=conv_id,
+        )
+        pending_1 = res_tags_1.get("pending_info")
+        self.assertIsNotNone(pending_1)
+        id_1 = pending_1["id"]
+        with server.PENDING_LOCK:
+            entry_1 = dict(server.PENDING_ACTIONS[id_1])
+
+        # 2. Path 2: plan step runner
+        with server.PENDING_LOCK:
+            server.PENDING_ACTIONS.clear()
+        runner = server.create_plan_step_runner(
+            {"title": "Unified Gate Test Plan"},
+            cfg,
+            source=source,
+            mode=mode,
+            is_tainted=False,
+            conv_id=conv_id,
+        )
+        res_runner = runner(f"CMD: {cmd_text}", 1, [f"CMD: {cmd_text}"], [], [])
+        self.assertTrue(res_runner.get("paused"))
+        pending_2 = res_runner.get("pending_info")
+        self.assertIsNotNone(pending_2)
+        id_2 = pending_2["id"]
+        with server.PENDING_LOCK:
+            entry_2 = dict(server.PENDING_ACTIONS[id_2])
+
+        # Compare entry_1 and entry_2
+        self.assertIn("plan_state", entry_2)
+        self.assertEqual(entry_2["plan_state"]["title"], "Unified Gate Test Plan")
+        self.assertNotIn("plan_state", entry_1)
+
+        # Apart from id, timestamps (created_at, expires_at), and plan_state: entries must be IDENTICAL
+        e1_norm = {k: v for k, v in entry_1.items() if k not in ("id", "created_at", "expires_at", "plan_state")}
+        e2_norm = {k: v for k, v in entry_2.items() if k not in ("id", "created_at", "expires_at", "plan_state")}
+        self.assertEqual(e1_norm, e2_norm)
+
+        # Check required fields
+        self.assertEqual(e1_norm["name"], "CMD")
+        self.assertEqual(e1_norm["arg"], cmd_text)
+        self.assertEqual(e1_norm["command"], cmd_text)
+        self.assertEqual(e1_norm["source"], "pc")
+        self.assertEqual(e1_norm["mode"], "developer")
+        self.assertFalse(e1_norm["is_tainted"])
+
+        # 2000-char rejection check in both paths
+        huge_cmd = "dir " + ("a" * 2005)
+        # execute_model_tags
+        res_huge = server.execute_model_tags(
+            [("CMD", huge_cmd, 0, 10)],
+            cfg,
+            jid="jid_gate_test_huge",
+            mode=mode,
+            source=source,
+            is_tainted=False,
+            conv_id=conv_id,
+        )
+        self.assertIn("exceeds maximum allowed length of 2,000 characters", res_huge["actions"][0]["result"])
+
+        # plan runner
+        res_runner_huge = runner(f"CMD: {huge_cmd}", 1, [f"CMD: {huge_cmd}"], [], [])
+        self.assertFalse(res_runner_huge.get("ok"))
+        self.assertIn("exceeds maximum allowed length of 2,000 characters", res_runner_huge.get("error"))
+
 
 if __name__ == "__main__":
     unittest.main()

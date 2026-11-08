@@ -1900,6 +1900,159 @@ def sanitize_preview(text: str) -> tuple[str, bool]:
         escaped_str = "[SECURITY WARNING: Preview contains escaped invisible, control, or bidi-override characters (\\uXXXX)]\n\n" + escaped_str
     return escaped_str, has_invisible
 
+def create_pending_action(
+    cfg: dict,
+    name: str,
+    arg: str,
+    source: str = "pc",
+    mode: str = "developer",
+    is_tainted: bool = False,
+    reason: str = "",
+    g_verdict: str = "NONE",
+    plan_state: dict | None = None,
+    prompt: str | None = None,
+    expires_in: float = 120,
+    turn_written_files: set | None = None,
+    conv_id: str | None = None,
+) -> tuple[dict | None, dict | None, str | None]:
+    """
+    Unified gate for creating pending actions requiring user confirmation.
+    Applies:
+      - 2,000-char rejection for CMD/POWERSHELL/RUN_CODE and tainted executable file writes
+      - sanitize_preview on both preview and prompt
+      - 'command' field set to raw_arg
+      - large tainted WRITE_FILE summary (>20,000 chars)
+      - pc_only flag for oversized gateway payloads
+      - Guardian verdict & is_tainted tracking
+      - mark_file_tainted on file writes / detected command files
+    Returns: (pending_entry, pending_info, error_msg)
+    """
+    clean_name = unicodedata.normalize("NFKC", (name or "")).strip().upper()
+    raw_arg = arg or ""
+
+    # 1. 2,000-char rejection
+    if clean_name in ("CMD", "POWERSHELL", "RUN_CODE") and len(raw_arg) > 2000:
+        err_msg = f"Error: {clean_name} command exceeds maximum allowed length of 2,000 characters ({len(raw_arg)} chars). Command rejected."
+        return None, None, err_msg
+
+    if clean_name in ("WRITE_FILE", "EDIT_FILE") and is_tainted:
+        parts = raw_arg.split("|", 1)
+        target_f = parts[0].strip()
+        ext = os.path.splitext(target_f)[1].lower()
+        if ext in EXECUTABLE_EXTENSIONS and len(raw_arg) > 2000:
+            err_msg = f"Error: Tainted {clean_name} to executable extension '{ext}' exceeds maximum allowed length of 2,000 characters ({len(raw_arg)} chars). Command rejected."
+            return None, None, err_msg
+
+    # 2. mark_file_tainted & record_workspace_write
+    if clean_name in ("WRITE_FILE", "EDIT_FILE", "CREATE_PROJECT"):
+        try:
+            target_f = Path(raw_arg.split("|")[0].strip()).name.lower()
+            if target_f:
+                if turn_written_files is not None:
+                    turn_written_files.add(target_f)
+                record_workspace_write(target_f, is_tainted=is_tainted)
+                mark_file_tainted(target_f, is_tainted=is_tainted)
+        except Exception:
+            pass
+    elif clean_name in ("CMD", "POWERSHELL", "RUN_CODE"):
+        try:
+            detected = detect_written_files_from_command(raw_arg)
+            for df in detected:
+                if turn_written_files is not None:
+                    turn_written_files.add(df)
+                record_workspace_write(df, is_tainted=is_tainted)
+                mark_file_tainted(df, is_tainted=is_tainted)
+        except Exception:
+            pass
+
+    # 3. Preview formatting & large tainted WRITE_FILE summary
+    if clean_name == "WRITE_FILE" and is_tainted and len(raw_arg) > 20000:
+        first_500 = raw_arg[:500]
+        last_500 = raw_arg[-500:]
+        sha_hash = hashlib.sha256(raw_arg.encode("utf-8", errors="replace")).hexdigest()
+        preview_str = (
+            f"[Tainted WRITE_FILE Content Summary - Total Size: {len(raw_arg)} characters | SHA-256: {sha_hash}]\n\n"
+            f"--- FIRST 500 CHARACTERS ---\n{first_500}\n\n"
+            f"--- LAST 500 CHARACTERS ---\n{last_500}"
+        )
+    else:
+        preview_str = raw_arg
+
+    # 4. sanitize_preview on both preview and prompt
+    clean_preview, _ = sanitize_preview(preview_str)
+
+    if not prompt:
+        prompt = f"[{g_verdict}] {reason}" if g_verdict not in ("NONE", None, "") else (reason or f"Confirm: {clean_name}?")
+    clean_prompt, _ = sanitize_preview(prompt)
+
+    # 5. pc_only for oversized gateway payloads
+    pc_only = False
+    if source == "discord" and (len(clean_preview) > 1850 or len(clean_prompt) > 1850 or len(raw_arg) > 1850):
+        pc_only = True
+    elif source == "telegram" and (len(clean_preview) > 3900 or len(clean_prompt) > 3900 or len(raw_arg) > 3900):
+        pc_only = True
+    elif source not in ("pc", "api", "local", "web") and (len(clean_preview) > 1850 or len(clean_prompt) > 1850 or len(raw_arg) > 1850):
+        pc_only = True
+
+    # 6. ID and timestamps
+    action_id = secrets.token_hex(8)
+    now = time.time()
+
+    # 7. Construct pending_entry
+    pending_entry = {
+        "id": action_id,
+        "name": clean_name,
+        "arg": raw_arg,
+        "command": raw_arg,
+        "mode": mode,
+        "source": source,
+        "expires_at": now + expires_in,
+        "created_at": now,
+        "reason": reason,
+        "is_tainted": bool(is_tainted),
+        "preview": clean_preview,
+        "prompt": clean_prompt,
+        "guardian": g_verdict,
+    }
+    if pc_only:
+        pending_entry["pc_only"] = True
+    if plan_state is not None:
+        pending_entry["plan_state"] = plan_state
+
+    # 8. Store in PENDING_ACTIONS with bounded cap
+    with PENDING_LOCK:
+        if len(PENDING_ACTIONS) >= 20:
+            oldest_id = next(iter(PENDING_ACTIONS))
+            PENDING_ACTIONS.pop(oldest_id, None)
+        PENDING_ACTIONS[action_id] = pending_entry
+
+    # 9. Construct pending_info for response / UI
+    pending_info = {
+        "id": action_id,
+        "action": clean_name,
+        "name": clean_name,
+        "preview": clean_preview,
+        "command": raw_arg,
+        "prompt": clean_prompt,
+        "guardian": g_verdict,
+        "is_tainted": bool(is_tainted),
+    }
+    if pc_only:
+        pending_info["pc_only"] = True
+
+    # 10. Audit log
+    if audit_logger:
+        audit_logger.log_audit_event(
+            channel=source,
+            tool=clean_name,
+            preview=clean_preview,
+            guardian_verdict=g_verdict,
+            status="AWAITING_CONFIRMATION",
+            cfg=cfg,
+        )
+
+    return pending_entry, pending_info, None
+
 def normalize_memory_entry(item):
     if isinstance(item, dict):
         return {
@@ -3848,57 +4001,39 @@ def create_plan_step_runner(plan_info, cfg, source="pc", mode="developer", is_ta
             reason = f"Guardian flagged action as DANGEROUS: {g_reason}" if g_reason else "Guardian flagged action as DANGEROUS"
 
         if needs_confirm:
-            action_id = secrets.token_hex(8)
-            preview_str = arg or ""
-            prompt = f"Plan '{plan_info.get('title', 'Execution Plan')}' Step {idx} ({clean_name}): {preview_str}"
             rem_steps = all_steps[idx:] if idx < len(all_steps) else []
-            pending_data = {
-                "id": action_id,
-                "name": clean_name,
-                "arg": arg,
+            plan_state = {
+                "title": plan_info.get("title", "Execution Plan"),
+                "all_steps": all_steps,
+                "completed": list(completed),
+                "paused_step_idx": idx,
+                "paused_step": step,
+                "remaining_steps": rem_steps,
+                "results": list(step_results),
                 "source": source,
                 "mode": mode,
                 "is_tainted": is_tainted,
-                "prompt": prompt,
-                "guardian": g_verdict,
-                "created_at": time.time(),
-                "expires_at": time.time() + 300,
-                "plan_state": {
-                    "title": plan_info.get("title", "Execution Plan"),
-                    "all_steps": all_steps,
-                    "completed": list(completed),
-                    "paused_step_idx": idx,
-                    "paused_step": step,
-                    "remaining_steps": rem_steps,
-                    "results": list(step_results),
-                    "source": source,
-                    "mode": mode,
-                    "is_tainted": is_tainted,
-                    "conv_id": conv_id,
-                }
+                "conv_id": conv_id,
             }
-            with PENDING_LOCK:
-                PENDING_ACTIONS[action_id] = pending_data
-            if audit_logger:
-                audit_logger.log_audit_event(
-                    channel=source,
-                    tool=clean_name,
-                    preview=preview_str,
-                    guardian_verdict=g_verdict,
-                    status="PENDING_APPROVAL",
-                    cfg=cfg,
-                )
+            pending_entry, pending_info, err = create_pending_action(
+                cfg=cfg,
+                name=clean_name,
+                arg=arg,
+                source=source,
+                mode=mode,
+                is_tainted=is_tainted,
+                reason=reason,
+                g_verdict=g_verdict,
+                plan_state=plan_state,
+                expires_in=120,
+                conv_id=conv_id,
+            )
+            if err:
+                return {"ok": False, "error": err}
             return {
                 "ok": True,
                 "paused": True,
-                "pending_info": {
-                    "id": action_id,
-                    "name": clean_name,
-                    "arg": arg,
-                    "prompt": prompt,
-                    "guardian": g_verdict,
-                    "is_tainted": is_tainted,
-                }
+                "pending_info": pending_info,
             }
 
         # 5. Check taint before execution
@@ -4550,62 +4685,24 @@ def execute_model_tags(tags, cfg, jid=None, mode="developer", source="pc", is_ta
                 CONVERSATION_SEARCH_COUNTS[effective_conv] = CONVERSATION_SEARCH_COUNTS.get(effective_conv, 0) + 1
 
         if needs_confirm:
-            action_id = secrets.token_hex(8)
-            raw_preview = arg or ""
-            # 1d. Tainted WRITE_FILE content over 20,000 chars: show first 500 chars, last 500 chars, total size and SHA-256
-            if clean_name == "WRITE_FILE" and is_tainted and len(raw_preview) > 20000:
-                first_500 = raw_preview[:500]
-                last_500 = raw_preview[-500:]
-                sha_hash = hashlib.sha256(raw_preview.encode("utf-8", errors="replace")).hexdigest()
-                preview_str = (
-                    f"[Tainted WRITE_FILE Content Summary - Total Size: {len(raw_preview)} characters | SHA-256: {sha_hash}]\n\n"
-                    f"--- FIRST 500 CHARACTERS ---\n{first_500}\n\n"
-                    f"--- LAST 500 CHARACTERS ---\n{last_500}"
-                )
-            else:
-                preview_str = raw_preview
-
-            # 1c. In all previews, escape control and invisible characters
-            preview_str, _ = sanitize_preview(preview_str)
-
-            with PENDING_LOCK:
-                if len(PENDING_ACTIONS) >= 20:
-                    oldest_id = next(iter(PENDING_ACTIONS))
-                    PENDING_ACTIONS.pop(oldest_id, None)
-                PENDING_ACTIONS[action_id] = {
-                    "id": action_id,
-                    "name": clean_name,
-                    "arg": arg,
-                    "mode": mode,
-                    "source": source,
-                    "expires_at": time.time() + 120,
-                    "created_at": time.time(),
-                    "reason": reason,
-                    "is_tainted": is_tainted,
-                    "preview": preview_str,
-                    "guardian": g_verdict,
-                }
-
-            prompt_text = f"[{g_verdict}] {reason}" if g_verdict != "NONE" else (reason or f"Confirm: {clean_name}?")
-            pending_info = {
-                "id": action_id,
-                "action": clean_name,
-                "preview": preview_str,
-                "command": arg or "",
-                "prompt": prompt_text,
-                "guardian": g_verdict,
-                "is_tainted": is_tainted,
-            }
+            pending_entry, pending_info, err = create_pending_action(
+                cfg=cfg,
+                name=clean_name,
+                arg=arg,
+                source=source,
+                mode=mode,
+                is_tainted=is_tainted,
+                reason=reason,
+                g_verdict=g_verdict,
+                turn_written_files=turn_written_files,
+                conv_id=conv_id,
+            )
+            if err:
+                actions.append({"skill": clean_name, "arg": arg, "result": err})
+                feedback_items.append(f"[{clean_name} Output]:\n{err}")
+                continue
+            prompt_text = pending_info["prompt"]
             actions.append({"skill": clean_name, "arg": arg, "result": f"Awaiting confirmation: {prompt_text}"})
-            if audit_logger:
-                audit_logger.log_audit_event(
-                    channel=source,
-                    tool=clean_name,
-                    preview=arg or "",
-                    guardian_verdict=g_verdict,
-                    status="AWAITING_CONFIRMATION",
-                    cfg=cfg,
-                )
             break
 
         act_phase(jid, "running", f"{'HEAL: ' if is_healing else ''}{clean_name}: {(arg or '').strip().splitlines()[0][:70] if (arg or '').strip() else ''}")
