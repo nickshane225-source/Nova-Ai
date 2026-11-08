@@ -68,12 +68,15 @@ class TestBatch7PackagingAndLaunchers(unittest.TestCase):
         gh_code = (ROOT / "integrations" / "github_connector.py").read_text(encoding="utf-8")
         self.assertIn("_MEIPASS", gh_code)
 
-    def test_HIGH_11_quick_summon_port_8765_and_boot_url(self):
-        """quick_summon.bat must check for port 8765 and open the boot URL from temp if present."""
+    def test_HIGH_11_quick_summon_port_8765_and_secure_fallback(self):
+        """quick_summon.bat must check for port 8765, never persist boot codes, avoid ExecutionPolicy Bypass, and fallback to run.bat."""
         qs_code = (ROOT / "quick_summon.bat").read_text(encoding="utf-8")
         self.assertIn("8765", qs_code)
-        self.assertIn("nova_boot_url.txt", qs_code)
-        self.assertIn("bootUrl", qs_code)
+        self.assertNotIn("-ExecutionPolicy Bypass", qs_code)
+        self.assertNotIn("nova_boot_url.txt", qs_code)
+        self.assertNotIn("bootUrl", qs_code)
+        self.assertIn("Nova is running - use the open tab or restart Nova", qs_code)
+        self.assertIn("run.bat", qs_code)
 
     def test_HIGH_11_installer_wizard_no_speech_engine(self):
         """installer_wizard.py must verify install health and have no references to obsolete speech_engine.py."""

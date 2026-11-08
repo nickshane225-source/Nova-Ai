@@ -29,6 +29,7 @@ if sys.version_info < (3, 10):
     sys.exit(
         f"Error: Nova AI requires Python 3.10 or higher (found Python {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro})."
     )
+import tempfile
 import threading
 import time
 import urllib.error
@@ -1587,6 +1588,19 @@ SESSION_TOKEN = secrets.token_hex(32)
 API_SESSION_TOKEN = secrets.token_hex(32)
 BOOT_CODES: dict[str, float] = {}
 BOOT_LOCK = threading.Lock()
+LAST_401_BOOT_MINT_TIME: float = 0.0
+
+def delete_persisted_boot_artifacts() -> None:
+    """Delete any existing %TEMP%\\nova_boot_url.txt at startup."""
+    try:
+        boot_path = Path(tempfile.gettempdir()) / "nova_boot_url.txt"
+        if boot_path.exists():
+            boot_path.unlink()
+    except Exception:
+        pass
+
+# Purge any stale boot artifacts at startup
+delete_persisted_boot_artifacts()
 
 REMOTE_PAIRING_CODES: dict[str, dict] = {} # code -> {"expires_at": float, "used": bool}
 REMOTE_PAIRING_LOCK = threading.Lock()
@@ -1605,8 +1619,29 @@ def generate_boot_code(valid_seconds: int = 60) -> str:
         expired = [k for k, exp in BOOT_CODES.items() if exp < now_t]
         for k in expired:
             BOOT_CODES.pop(k, None)
+        while len(BOOT_CODES) >= 5:
+            oldest = min(BOOT_CODES.keys(), key=lambda k: BOOT_CODES[k])
+            BOOT_CODES.pop(oldest, None)
         BOOT_CODES[code] = now_t + valid_seconds
     return code
+
+def maybe_mint_401_boot_code(valid_seconds: int = 60) -> str | None:
+    """Mint a boot code on 401 unauthorized request: at most one per 60 seconds, keep at most 5 live codes."""
+    global LAST_401_BOOT_MINT_TIME
+    now_t = time.time()
+    with BOOT_LOCK:
+        expired = [k for k, exp in BOOT_CODES.items() if exp < now_t]
+        for k in expired:
+            BOOT_CODES.pop(k, None)
+        if now_t - LAST_401_BOOT_MINT_TIME < 60.0:
+            return None
+        while len(BOOT_CODES) >= 5:
+            oldest = min(BOOT_CODES.keys(), key=lambda k: BOOT_CODES[k])
+            BOOT_CODES.pop(oldest, None)
+        code = secrets.token_urlsafe(24)
+        BOOT_CODES[code] = now_t + valid_seconds
+        LAST_401_BOOT_MINT_TIME = now_t
+        return code
 
 def generate_remote_pairing_code(valid_seconds: int = 300) -> str:
     code = secrets.token_urlsafe(16)
@@ -5838,16 +5873,11 @@ class Handler(BaseHandler):
         if path.startswith("/api/"):
             auth_fn = getattr(self, 'check_session_auth', None)
             if not (auth_fn() if callable(auth_fn) else check_session_auth(self)):
-                fresh_boot = generate_boot_code(60)
-                cfg = get_config()
-                port = int(cfg.get("port", 8765))
-                reauth_url = f"http://127.0.0.1:{port}/?boot={fresh_boot}"
-                try:
-                    import tempfile
-                    (Path(tempfile.gettempdir()) / "nova_boot_url.txt").write_text(reauth_url, encoding="utf-8")
-                except Exception:
-                    pass
-                if sys.stdout:
+                fresh_boot = maybe_mint_401_boot_code(60)
+                if fresh_boot and sys.stdout:
+                    cfg = get_config()
+                    port = int(cfg.get("port", 8765))
+                    reauth_url = f"http://127.0.0.1:{port}/?boot={fresh_boot}"
                     print(f"\n[Nova Security] Unauthorized /api request. Re-authenticate via: {reauth_url}\n")
                 return self._send(401, {"ok": False, "error": "Unauthorized: valid nova_session cookie required."})
         if path == "/api/remote/devices":
@@ -6058,16 +6088,11 @@ class Handler(BaseHandler):
         if path.startswith("/api/"):
             auth_fn = getattr(self, 'check_session_auth', None)
             if not (auth_fn() if callable(auth_fn) else check_session_auth(self)):
-                fresh_boot = generate_boot_code(60)
-                cfg = get_config()
-                port = int(cfg.get("port", 8765))
-                reauth_url = f"http://127.0.0.1:{port}/?boot={fresh_boot}"
-                try:
-                    import tempfile
-                    (Path(tempfile.gettempdir()) / "nova_boot_url.txt").write_text(reauth_url, encoding="utf-8")
-                except Exception:
-                    pass
-                if sys.stdout:
+                fresh_boot = maybe_mint_401_boot_code(60)
+                if fresh_boot and sys.stdout:
+                    cfg = get_config()
+                    port = int(cfg.get("port", 8765))
+                    reauth_url = f"http://127.0.0.1:{port}/?boot={fresh_boot}"
                     print(f"\n[Nova Security] Unauthorized /api request. Re-authenticate via: {reauth_url}\n")
                 return self._send(401, {"ok": False, "error": "Unauthorized: valid nova_session cookie required."})
         if path == "/api/notes":
@@ -6126,16 +6151,11 @@ class Handler(BaseHandler):
         if path.startswith("/api/"):
             auth_fn = getattr(self, 'check_session_auth', None)
             if not (auth_fn() if callable(auth_fn) else check_session_auth(self)):
-                fresh_boot = generate_boot_code(60)
-                cfg = get_config()
-                port = int(cfg.get("port", 8765))
-                reauth_url = f"http://127.0.0.1:{port}/?boot={fresh_boot}"
-                try:
-                    import tempfile
-                    (Path(tempfile.gettempdir()) / "nova_boot_url.txt").write_text(reauth_url, encoding="utf-8")
-                except Exception:
-                    pass
-                if sys.stdout:
+                fresh_boot = maybe_mint_401_boot_code(60)
+                if fresh_boot and sys.stdout:
+                    cfg = get_config()
+                    port = int(cfg.get("port", 8765))
+                    reauth_url = f"http://127.0.0.1:{port}/?boot={fresh_boot}"
                     print(f"\n[Nova Security] Unauthorized /api request. Re-authenticate via: {reauth_url}\n")
                 return self._send(401, {"ok": False, "error": "Unauthorized: valid nova_session cookie required."})
         body = self._body()
@@ -6931,13 +6951,9 @@ def main():
         if sys.stdout:
             print(f"Port {port} is busy. Nova may already be running: http://127.0.0.1:{port}")
         return
+    delete_persisted_boot_artifacts()
     boot_code = generate_boot_code(60)
     boot_url = f"http://127.0.0.1:{port}/?boot={boot_code}"
-    try:
-        import tempfile
-        (Path(tempfile.gettempdir()) / "nova_boot_url.txt").write_text(boot_url, encoding="utf-8")
-    except Exception:
-        pass
     url = f"http://127.0.0.1:{port}"
     if sys.stdout:
         print(f"\n  NOVA AI is running at {url}\n  Boot URL: {boot_url}\n  Use Chrome or Edge for voice. Press Ctrl+C to stop.\n")
