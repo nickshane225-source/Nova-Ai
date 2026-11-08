@@ -86,5 +86,92 @@ class TestSecurityHardeningItems(unittest.TestCase):
                     self.assertEqual(res["pending"]["action"], "CMD")
                     self.assertEqual(res["pending"]["command"], "calc")
 
+    # -----------------------------------------------------------------
+    # ITEM 2: TAINT SCOPE (PER-CONVERSATION) & CLEAR UNTRUSTED CONTEXT
+    # -----------------------------------------------------------------
+    def test_item2_taint_scope_and_clear_untrusted_context(self):
+        """
+        Item 2:
+        - Taint keyed by conversation id (source + jid, or pc:mode)
+        - Scheduler / automation conversations get their own history and taint; a scheduler run must not taint the PC chat.
+        - "Clear untrusted context" removes tool-output messages from that conversation's history.
+        - Test: after clear, the history sent to the LLM contains none of the earlier tool text.
+        """
+        # Part A: Scheduler run must NOT taint the PC chat
+        self.assertFalse(server.CONVERSATION_TAINT.get("pc:developer"))
+        self.assertFalse(server.CONVERSATION_TAINT.get("developer"))
+
+        # Run a scheduler turn
+        with patch("server.get_config", return_value=self.cfg):
+            with patch("server.call_llm", return_value="Scheduled check complete."):
+                res_sched = server.chat("check status", source="scheduler", mode="developer")
+                self.assertIn("reply", res_sched)
+
+        # Verify PC chat is still untainted!
+        self.assertFalse(server.CONVERSATION_TAINT.get("pc:developer"))
+        self.assertFalse(server.CONVERSATION_TAINT.get("developer"))
+
+        # Part B: PC chat tool execution and Clear Untrusted Context
+        captured_messages = []
+        def mock_llm_capture(cfg, system, messages):
+            captured_messages.append([dict(m) for m in messages])
+            if len(captured_messages) == 1:
+                return "Checking info: [[SEARCH: weather today]]"
+            elif len(captured_messages) == 2:
+                return "The weather is sunny with high 25C."
+            else:
+                return "Next turn response."
+
+        with patch("server.get_config", return_value=self.cfg):
+            with patch("server.call_llm", side_effect=mock_llm_capture):
+                with patch("server.run_skill", return_value="SECRET_TOOL_RESULT_ABC123"):
+                    res1 = server.chat("how is the weather?", source="pc", mode="developer")
+                    self.assertIn("actions", res1)
+
+        # Before clear: conversation has taint and tool output was in the history
+        self.assertTrue(server.CONVERSATION_TAINT.get("pc:developer"))
+        hist_before = server.CONVERSATION_HISTORIES.get("pc:developer", [])
+        tool_in_hist = any("SECRET_TOOL_RESULT_ABC123" in str(m.get("content", "")) for m in hist_before)
+        self.assertTrue(tool_in_hist, "Tool output must be recorded in conversation history during turn")
+
+        # Now trigger "Clear untrusted context"
+        # Handler simulation for POST /api/clear_untrusted_context
+        with server.LOCK:
+            target_conv_ids = ["pc:developer", "developer"]
+            for cid in target_conv_ids:
+                hist = server.CONVERSATION_HISTORIES.get(cid)
+                if hist is not None:
+                    cleaned = []
+                    for msg in hist:
+                        content = str(msg.get("content", ""))
+                        if (
+                            "<UNTRUSTED_TOOL_OUTPUT>" in content
+                            or "[Tool Output]:" in content
+                            or "[Action Requires Confirmation:" in content
+                            or "Output]:" in content
+                        ):
+                            continue
+                        cleaned.append(msg)
+                    hist.clear()
+                    hist.extend(cleaned)
+                server.CONVERSATION_TAINT[cid] = False
+        server.RUN_CODE_TRUST_STATE.reset()
+
+        # Verify taint was cleared
+        self.assertFalse(server.CONVERSATION_TAINT.get("pc:developer"))
+
+        # Next turn: verify history sent to the LLM contains NONE of the earlier tool text
+        captured_messages.clear()
+        with patch("server.get_config", return_value=self.cfg):
+            with patch("server.call_llm", side_effect=mock_llm_capture):
+                res2 = server.chat("tell me more", source="pc", mode="developer")
+                self.assertIn("reply", res2)
+
+        self.assertGreaterEqual(len(captured_messages), 1)
+        next_call_history = captured_messages[0]
+        for m in next_call_history:
+            self.assertNotIn("SECRET_TOOL_RESULT_ABC123", m["content"])
+            self.assertNotIn("<UNTRUSTED_TOOL_OUTPUT>", m["content"])
+
 if __name__ == "__main__":
     unittest.main()

@@ -618,10 +618,54 @@ HISTORIES = {
 }
 HISTORY = HISTORIES["developer"]  # short-term conversation backward compatibility alias
 
-CONVERSATION_TAINT = {
+CONVERSATION_HISTORIES = {
+    "pc:developer": HISTORIES["developer"],
+    "pc:cyber": HISTORIES["cyber"],
+}
+
+
+class _ConversationTaintDict(dict):
+    """
+    Thread-safe taint map keyed by conversation id (source + jid, or pc:mode).
+    Maintains backward compatibility with legacy mode string lookups.
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._lock = threading.Lock()
+
+    def __getitem__(self, key):
+        with self._lock:
+            if key in ("developer", "cyber"):
+                return super().get(f"pc:{key}", False)
+            return super().get(key, False)
+
+    def __setitem__(self, key, value):
+        with self._lock:
+            if key in ("developer", "cyber"):
+                super().__setitem__(f"pc:{key}", bool(value))
+            super().__setitem__(key, bool(value))
+
+    def get(self, key, default=False):
+        with self._lock:
+            if key in ("developer", "cyber"):
+                return super().get(f"pc:{key}", default)
+            return super().get(key, default)
+
+    def clear(self):
+        with self._lock:
+            super().clear()
+            super().__setitem__("pc:developer", False)
+            super().__setitem__("pc:cyber", False)
+            super().__setitem__("developer", False)
+            super().__setitem__("cyber", False)
+
+
+CONVERSATION_TAINT = _ConversationTaintDict({
+    "pc:developer": False,
+    "pc:cyber": False,
     "developer": False,
     "cyber": False,
-}
+})
 
 
 # ----------------------------------------------------------------------------
@@ -4223,14 +4267,21 @@ def execute_model_tags(tags, cfg, jid=None, mode="developer", source="pc", is_ta
     }
 
 
-def chat(user_text, source="pc", mode="developer", is_automation=False, automation_token=None):
+def chat(user_text, source="pc", mode="developer", is_automation=False, automation_token=None, conv_id=None):
     if is_automation or source == "scheduler":
         source = "scheduler"
         is_automation = True
     mode = "cyber" if mode == "cyber" else "developer"
     jid = act_start(source, user_text)
+    if not conv_id:
+        if source in ("scheduler", "automation"):
+            conv_id = f"scheduler:{jid}"
+        elif source != "pc":
+            conv_id = f"{source}:{jid}"
+        else:
+            conv_id = f"pc:{mode}"
     try:
-        result = _chat_inner(user_text, source, jid, mode=mode, is_automation=is_automation)
+        result = _chat_inner(user_text, source, jid, mode=mode, is_automation=is_automation, conv_id=conv_id)
         act_end(jid, ok=True)
         return result
     except Exception as e:
@@ -4238,13 +4289,18 @@ def chat(user_text, source="pc", mode="developer", is_automation=False, automati
         raise
 
 
-def _chat_inner(user_text, source, jid, mode="developer", is_automation=False):
+def _chat_inner(user_text, source, jid, mode="developer", is_automation=False, conv_id=None):
     mode = "cyber" if mode == "cyber" else "developer"
+    if not conv_id:
+        conv_id = f"{source}:{mode}" if source == "pc" else f"{source}:{jid}"
     cfg = get_config()
     chars = get_characters()
     char = next((c for c in chars if c["id"] == cfg["character"]), chars[0])
     user_msg = {"role": "user", "content": user_text}
-    hist = HISTORIES.get(mode, HISTORIES["developer"])
+    with LOCK:
+        if conv_id not in CONVERSATION_HISTORIES:
+            CONVERSATION_HISTORIES[conv_id] = []
+        hist = CONVERSATION_HISTORIES[conv_id]
 
     user_lower = (user_text or "").strip().lower()
     APPROVE_WORDS = {"yes", "confirm", "proceed", "allow", "approve", "haan", "thik ache", "y", "sure", "do it"}
@@ -4373,13 +4429,13 @@ def _chat_inner(user_text, source, jid, mode="developer", is_automation=False):
         raise
 
     is_tainted = (
-        bool(CONVERSATION_TAINT.get(mode, False))
+        bool(CONVERSATION_TAINT.get(conv_id, False))
         or (source != "pc")
         or is_automation
         or (source == "scheduler")
     )
     if is_tainted:
-        CONVERSATION_TAINT[mode] = True
+        CONVERSATION_TAINT[conv_id] = True
         RUN_CODE_TRUST_STATE.reset()
 
     # Multi-step tool-feedback loop
@@ -4402,7 +4458,7 @@ def _chat_inner(user_text, source, jid, mode="developer", is_automation=False):
         feedback_items = list(tag_result["feedback_items"])
         if tag_result["is_tainted"]:
             is_tainted = True
-            CONVERSATION_TAINT[mode] = True
+            CONVERSATION_TAINT[conv_id] = True
             RUN_CODE_TRUST_STATE.reset()
         if tag_result["pending_info"]:
             pending_info = tag_result["pending_info"]
@@ -4411,11 +4467,15 @@ def _chat_inner(user_text, source, jid, mode="developer", is_automation=False):
         # If tools executed and produced output, feed back to LLM for next step in loop
         if feedback_items:
             obs_text = "\n".join(wrap_untrusted_tool_output(item) for item in feedback_items)
-            conversation_chain.append({"role": "assistant", "content": raw})
-            conversation_chain.append({
+            tool_msg = {
                 "role": "user",
                 "content": f"[Tool Output]:\n{obs_text}\nBased on this output, proceed with next action or answer."
-            })
+            }
+            conversation_chain.append({"role": "assistant", "content": raw})
+            conversation_chain.append(tool_msg)
+            with LOCK:
+                hist.append({"role": "assistant", "content": raw})
+                hist.append(tool_msg)
             act_phase(jid, "thinking", "Continuing with tool output")
             try:
                 raw = call_llm(cfg, sys_prompt, conversation_chain)
@@ -4931,8 +4991,9 @@ class Handler(BaseHandler):
                     "presets": PRESETS,
                     "os": OS,
                     "workspace": str(WORKSPACE),
-                    "is_tainted": any(CONVERSATION_TAINT.values()),
+                    "is_tainted": bool(CONVERSATION_TAINT.get("pc:developer", False) or CONVERSATION_TAINT.get("pc:cyber", False) or any(CONVERSATION_TAINT.values())),
                     "tainted_modes": dict(CONVERSATION_TAINT),
+                    "tainted_conversations": dict(CONVERSATION_TAINT),
                 },
             )
         if path == "/api/news":
@@ -5585,28 +5646,47 @@ class Handler(BaseHandler):
                     if reset_mode in HISTORIES:
                         HISTORIES[reset_mode].clear()
                         CONVERSATION_TAINT[reset_mode] = False
+                        CONVERSATION_TAINT[f"pc:{reset_mode}"] = False
                     else:
                         HISTORIES["developer"].clear()
                         HISTORIES["cyber"].clear()
-                        CONVERSATION_TAINT["developer"] = False
-                        CONVERSATION_TAINT["cyber"] = False
+                        CONVERSATION_TAINT.clear()
+                        CONVERSATION_HISTORIES.clear()
+                        CONVERSATION_HISTORIES["pc:developer"] = HISTORIES["developer"]
+                        CONVERSATION_HISTORIES["pc:cyber"] = HISTORIES["cyber"]
                 RUN_CODE_TRUST_STATE.reset()
                 return self._send(200, {"ok": True, "is_tainted": False})
             if path == "/api/clear_untrusted_context":
                 clear_mode = body.get("mode") if isinstance(body, dict) else "developer"
-                target_modes = [clear_mode] if clear_mode in HISTORIES else ["developer", "cyber"]
+                target_conv_ids = []
+                if isinstance(body, dict) and body.get("conv_id"):
+                    target_conv_ids.append(str(body.get("conv_id")))
+                elif clear_mode in ("developer", "cyber"):
+                    target_conv_ids.extend([f"pc:{clear_mode}", clear_mode])
+                else:
+                    target_conv_ids.extend(["pc:developer", "pc:cyber", "developer", "cyber"])
+
                 with LOCK:
-                    for m in target_modes:
-                        hist = HISTORIES.get(m, [])
-                        cleaned = []
-                        for msg in hist:
-                            content = str(msg.get("content", ""))
-                            # Remove tool outputs and confirmation prompts from history
-                            if "[Tool Output]:" in content or "[Action Requires Confirmation:" in content or "Output]:" in content:
-                                continue
-                            cleaned.append(msg)
-                        HISTORIES[m] = cleaned
-                        CONVERSATION_TAINT[m] = False
+                    for cid in target_conv_ids:
+                        hist = CONVERSATION_HISTORIES.get(cid)
+                        if hist is None and cid in HISTORIES:
+                            hist = HISTORIES[cid]
+                        if hist is not None:
+                            cleaned = []
+                            for msg in hist:
+                                content = str(msg.get("content", ""))
+                                # Remove tool-output messages, confirmation prompts, and UNTRUSTED_TOOL_OUTPUT
+                                if (
+                                    "<UNTRUSTED_TOOL_OUTPUT>" in content
+                                    or "[Tool Output]:" in content
+                                    or "[Action Requires Confirmation:" in content
+                                    or "Output]:" in content
+                                ):
+                                    continue
+                                cleaned.append(msg)
+                            hist.clear()
+                            hist.extend(cleaned)
+                        CONVERSATION_TAINT[cid] = False
                 RUN_CODE_TRUST_STATE.reset()
                 return self._send(200, {"ok": True, "is_tainted": False, "mode": clear_mode})
             if path == "/api/workspace/open":
