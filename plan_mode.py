@@ -58,6 +58,7 @@ def execute_plan_batch(
     completed: List[str] = list(plan.get("completed") or [])
     step_results: List[Any] = list(plan.get("results") or [])
 
+    accumulated_active = float(plan.get("active_seconds", 0.0))
     start_time = plan.get("started_at")
     if start_time is None:
         start_time = time.time()
@@ -86,15 +87,15 @@ def execute_plan_batch(
         if idx > 10:
             break
 
-        elapsed = time.time() - start_time
-        if elapsed > timeout:
+        if accumulated_active >= timeout:
             return {
                 "ok": False,
-                "error": f"Plan execution timed out after {int(elapsed)} seconds (maximum allowed: {int(timeout)}s).",
+                "error": f"Plan execution timed out after {int(accumulated_active)} seconds of active execution (maximum allowed: {int(timeout)}s).",
                 "failed_step": step,
                 "completed": completed,
                 "results": step_results,
                 "timed_out": True,
+                "active_seconds": accumulated_active,
             }
 
         # Refuse nested PLAN tags or nested plan steps
@@ -106,8 +107,10 @@ def execute_plan_batch(
                 "failed_step": step,
                 "completed": completed,
                 "results": step_results,
+                "active_seconds": accumulated_active,
             }
         try:
+            t_step_start = time.time()
             if runner is not None:
                 if takes_extra_args:
                     res = runner(step, idx, all_steps, completed, step_results)
@@ -115,6 +118,32 @@ def execute_plan_batch(
                     res = runner(step)
             else:
                 res = f"Step {idx} ({step}): OK"
+            step_duration = max(0.0, time.time() - t_step_start)
+            accumulated_active += step_duration
+            plan["active_seconds"] = accumulated_active
+
+            step_timeout = float(cfg.get("plan_step_timeout", 60.0))
+            if step_duration > step_timeout:
+                return {
+                    "ok": False,
+                    "error": f"Plan step timed out: step '{step}' exceeded per-step timeout of {int(step_timeout)}s (took {step_duration:.1f}s).",
+                    "failed_step": step,
+                    "completed": completed,
+                    "results": step_results,
+                    "timed_out": True,
+                    "active_seconds": accumulated_active,
+                }
+
+            if accumulated_active > timeout:
+                return {
+                    "ok": False,
+                    "error": f"Plan execution timed out after {int(accumulated_active)} seconds of active execution (maximum allowed: {int(timeout)}s).",
+                    "failed_step": step,
+                    "completed": completed,
+                    "results": step_results,
+                    "timed_out": True,
+                    "active_seconds": accumulated_active,
+                }
 
             if isinstance(res, dict):
                 if res.get("paused"):
@@ -124,6 +153,7 @@ def execute_plan_batch(
                     p_info = res.get("pending_info") or {}
                     if isinstance(p_info, dict) and "plan_state" in p_info:
                         p_info["plan_state"]["started_at"] = start_time
+                        p_info["plan_state"]["active_seconds"] = accumulated_active
                     return {
                         "ok": True,
                         "paused": True,
@@ -133,6 +163,7 @@ def execute_plan_batch(
                         "results": step_results,
                         "remaining_steps": rem,
                         "started_at": start_time,
+                        "active_seconds": accumulated_active,
                     }
                 if not res.get("ok", True):
                     return {
@@ -141,6 +172,7 @@ def execute_plan_batch(
                         "failed_step": step,
                         "error": res.get("error", "Step reported failure"),
                         "results": step_results,
+                        "active_seconds": accumulated_active,
                     }
 
             completed.append(step)
@@ -152,6 +184,7 @@ def execute_plan_batch(
                 "failed_step": step,
                 "error": str(e),
                 "results": step_results,
+                "active_seconds": accumulated_active,
             }
 
     return {
@@ -159,4 +192,5 @@ def execute_plan_batch(
         "completed": completed,
         "results": step_results,
         "started_at": start_time,
+        "active_seconds": accumulated_active,
     }

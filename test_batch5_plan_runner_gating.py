@@ -30,6 +30,9 @@ class TestBatch5PlanRunnerGating(unittest.TestCase):
         }
         with server.PENDING_LOCK:
             server.PENDING_ACTIONS.clear()
+        if hasattr(server, "ACTIVE_PLANS_LOCK"):
+            with server.ACTIVE_PLANS_LOCK:
+                server.ACTIVE_PLANS.clear()
         server.CONVERSATION_TAINT.clear()
         with server.LOCK:
             server.HISTORIES["developer"].clear()
@@ -41,6 +44,9 @@ class TestBatch5PlanRunnerGating(unittest.TestCase):
     def tearDown(self):
         with server.PENDING_LOCK:
             server.PENDING_ACTIONS.clear()
+        if hasattr(server, "ACTIVE_PLANS_LOCK"):
+            with server.ACTIVE_PLANS_LOCK:
+                server.ACTIVE_PLANS.clear()
         server.CONVERSATION_TAINT.clear()
 
     def test_HIGH_01_plan_never_executes_cmd_without_confirmation(self):

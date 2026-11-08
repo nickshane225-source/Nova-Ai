@@ -8,6 +8,22 @@ import plan_mode
 
 
 class TestPlanMode(unittest.TestCase):
+    def setUp(self):
+        import server
+        with server.PENDING_LOCK:
+            server.PENDING_ACTIONS.clear()
+        if hasattr(server, "ACTIVE_PLANS_LOCK"):
+            with server.ACTIVE_PLANS_LOCK:
+                server.ACTIVE_PLANS.clear()
+
+    def tearDown(self):
+        import server
+        with server.PENDING_LOCK:
+            server.PENDING_ACTIONS.clear()
+        if hasattr(server, "ACTIVE_PLANS_LOCK"):
+            with server.ACTIVE_PLANS_LOCK:
+                server.ACTIVE_PLANS.clear()
+
     def test_parse_plan_tag_multiple_steps(self):
         raw_tag = "Refactor auth engine | 1. Backup old config | 2. Implement DPAPI cipher | 3. Run regression tests"
         plan = plan_mode.parse_plan_tag(raw_tag)
@@ -422,11 +438,11 @@ class TestPlanMode(unittest.TestCase):
         self.assertIn("plan_resumed_async", event_types)
         self.assertIn("plan_completed", event_types)
 
-        # 3. 5-minute total plan runtime timeout enforcement
+        # 3. 5-minute total plan active execution timeout enforcement
         expired_plan = {
             "title": "Expired Test Plan",
             "steps": ["NOTE: stepA", "NOTE: stepB"],
-            "started_at": time.time() - 310,  # 310 seconds ago (> 300s)
+            "active_seconds": 310.0,
         }
         batch_res = plan_mode.execute_plan_batch(expired_plan, cfg={}, runner=lambda s: "ok")
         self.assertFalse(batch_res["ok"])
@@ -438,7 +454,7 @@ class TestPlanMode(unittest.TestCase):
         quick_timeout_plan = {
             "title": "Quick Timeout Plan",
             "steps": ["NOTE: step1", "NOTE: step2"],
-            "started_at": time.time() - 5,
+            "active_seconds": 5.0,
         }
         res_quick = plan_mode.execute_plan_batch(quick_timeout_plan, cfg={}, runner=lambda s: "ok", timeout=1.0)
         self.assertFalse(res_quick["ok"])

@@ -4282,6 +4282,7 @@ def resume_plan_execution(plan_state: dict, last_result=None, cfg=None, turn_too
         "results": results,
         "remaining_steps": remaining,
         "started_at": plan_state.get("started_at", time.time()),
+        "active_seconds": plan_state.get("active_seconds", 0.0),
     }
 
     def _execute_worker():
@@ -4502,7 +4503,12 @@ def run_skill(cfg, name, arg, source="pc", is_confirmed=False, mode="developer",
                     if st == "running" and wrk and wrk.is_alive():
                         return f"Refused: Plan '{existing_p.get('title')}' is currently running in the background for this conversation. Only one active plan is allowed."
                     elif st == "paused":
-                        return f"Refused: Plan '{existing_p.get('title')}' is currently paused awaiting confirmation. Approve or deny it before starting a new plan."
+                        with PENDING_LOCK:
+                            has_pending = any(p.get("plan_state") for p in PENDING_ACTIONS.values())
+                        if has_pending:
+                            return f"Refused: Plan '{existing_p.get('title')}' is currently paused awaiting confirmation. Approve or deny it before starting a new plan."
+                        else:
+                            ACTIVE_PLANS.pop(effective_conv, None)
             parsed["started_at"] = time.time()
             with ACTIVE_PLANS_LOCK:
                 ACTIVE_PLANS[effective_conv] = {"title": parsed.get("title", "Execution Plan"), "status": "running", "worker": None}
