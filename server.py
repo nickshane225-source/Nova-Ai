@@ -941,6 +941,7 @@ def call_llm_vision(cfg, prompt, base64_png):
         if not key:
             raise LLMError("No API key set. Open Settings and paste your key.")
         model_name = cfg["model"] if "claude" in cfg["model"] else "claude-3-5-sonnet-latest"
+        timeout_val = int(cfg.get("llm_timeout", 60)) or 60
         data = http_post(
             "https://api.anthropic.com/v1/messages",
             {
@@ -972,6 +973,7 @@ def call_llm_vision(cfg, prompt, base64_png):
                     }
                 ],
             },
+            timeout=timeout_val,
         )
         res = "".join(b.get("text", "") for b in data.get("content", []))
     else:
@@ -997,7 +999,7 @@ def call_llm_vision(cfg, prompt, base64_png):
                 },
             ],
         }
-        data = http_post(base + "/chat/completions", headers, body, timeout=60)
+        data = http_post(base + "/chat/completions", headers, body, timeout=int(cfg.get("llm_timeout", 60)) or 60)
         try:
             res = data["choices"][0]["message"].get("content") or "I could not analyze the image."
         except Exception:
@@ -4096,6 +4098,20 @@ def open_url(url, cfg=None):
         return f"Opened {url}"
 
 
+def fetch_url_content(url: str, cfg: dict = None, timeout: float = 10.0) -> str:
+    """Fetch text content from an http/https URL with strict timeout and character cap."""
+    url = (url or "").strip().strip('"').strip("'")
+    if not url.startswith(("http://", "https://")):
+        return "Refused: only http:// and https:// URLs can be fetched."
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "NovaAI/1.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = resp.read(6000).decode("utf-8", errors="replace")
+            return data[:6000]
+    except Exception as e:
+        return f"Failed to fetch {url}: {e}"
+
+
 def parse_step_to_tag(step_str: str) -> tuple[str, str]:
     """Parses a plan step into (tool_name, argument)."""
     s = str(step_str or "").strip()
@@ -4965,6 +4981,8 @@ def run_skill(cfg, name, arg, source="pc", is_confirmed=False, mode="developer",
             return nova_browser.scroll_page(raw_arg)
         if name in ("OPEN_URL", "OPEN_FILE", "VIEW_FILE"):
             return open_url(raw_arg, cfg=cfg)
+        if name in ("FETCH", "FETCH_URL", "READ_URL"):
+            return fetch_url_content(raw_arg, cfg=cfg, timeout=10.0)
         if name == "SEARCH":
             return open_url("https://www.google.com/search?q=" + urllib.parse.quote_plus(raw_arg), cfg=cfg)
         if name == "PLAY":
