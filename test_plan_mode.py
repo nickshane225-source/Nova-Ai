@@ -159,6 +159,54 @@ class TestPlanMode(unittest.TestCase):
         self.assertFalse(res_runner_huge.get("ok"))
         self.assertIn("exceeds maximum allowed length of 2,000 characters", res_runner_huge.get("error"))
 
+    def test_plan_step_taint_propagation_and_next_turn_confirmation(self):
+        import server
+        from unittest.mock import patch
+
+        cfg = {"workspace_dir": "D:\\Developer Mode on\\nova-ai"}
+        conv_id = "test_plan_taint_propagation_conv"
+        server.CONVERSATION_TAINT[conv_id] = False
+
+        # Plan with BROWSER_READ step
+        plan_text = "Web Investigation | BROWSER_READ: https://news.example.com/item"
+        with patch("nova_browser.read_page_content", return_value={"title": "News", "url": "https://news.example.com/item", "content": "Untrusted text"}):
+            res = server.run_skill(
+                cfg, "PLAN", plan_text, source="pc", mode="developer", is_tainted=False, conv_id=conv_id
+            )
+
+        # 1. Assert conversation taint store was updated immediately
+        self.assertTrue(server.CONVERSATION_TAINT.get(conv_id, False))
+
+        # 2. Next turn: READ_FILE and SEARCH must require confirmation because conversation is tainted
+        next_turn_taint = server.CONVERSATION_TAINT.get(conv_id, False)
+
+        # READ_FILE
+        needs_confirm_read, reason_read = server.check_tool_confirmation_required(
+            cfg, "READ_FILE", "passwords.txt", is_tainted=next_turn_taint, source="pc", conv_id=conv_id
+        )
+        self.assertTrue(needs_confirm_read)
+        self.assertIn("tainted", reason_read.lower())
+
+        # 3. Resume path: If a paused plan is resumed with a tainted step, taint propagates immediately
+        conv_id_resume = "test_resume_plan_taint_conv"
+        server.CONVERSATION_TAINT[conv_id_resume] = False
+        paused_plan_state = {
+            "title": "Resume Taint Plan",
+            "all_steps": ["CMD: echo 1", "BROWSER_READ: https://example.com/data"],
+            "completed": ["CMD: echo 1"],
+            "remaining_steps": ["BROWSER_READ: https://example.com/data"],
+            "paused_step_idx": 1,
+            "paused_step": "CMD: echo 1",
+            "source": "pc",
+            "mode": "developer",
+            "is_tainted": False,
+            "conv_id": conv_id_resume,
+        }
+        with patch("nova_browser.read_page_content", return_value={"title": "Data", "url": "https://example.com/data", "content": "Untrusted"}):
+            server.resume_plan_execution(paused_plan_state, last_result="1", cfg=cfg)
+
+        self.assertTrue(server.CONVERSATION_TAINT.get(conv_id_resume, False), "Resume path must propagate taint to conversation taint store")
+
 
 if __name__ == "__main__":
     unittest.main()

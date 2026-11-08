@@ -2248,7 +2248,7 @@ NO_CONFIRM_TOOLS = {
     "NOTE", "SEARCH_NOTES", "REMIND", "TIMER", "VOLUME", "MEDIA", "PLAY",
     "SCREENSHOT", "ACTIVE_WINDOW", "GET_WINDOW", "BRIEFING", "MORNING_BRIEFING",
     "LIST_AUTOMATIONS", "AUTOMATIONS", "CANCEL_AUTOMATION", "STOP_AUTOMATION",
-    "BROWSER_CLOSE", "BROWSER_RESEARCH",
+    "BROWSER_CLOSE", "BROWSER_RESEARCH", "BROWSER_READ",
     "LIST_FILES", "READ_FILE", "SEARCH",
 }
 
@@ -3934,12 +3934,17 @@ def create_plan_step_runner(plan_info, cfg, source="pc", mode="developer", is_ta
     budget checking, and output wrapping.
     """
     cfg = cfg or {}
+    effective_conv = conv_id or (f"{source}:{mode}" if source == "pc" else f"{source}:general")
 
     def step_runner(step: str, idx: int = 1, all_steps: list = None, completed: list = None, step_results: list = None):
         nonlocal is_tainted
         all_steps = all_steps or []
         completed = completed or []
         step_results = step_results or []
+
+        # If conversation is already tainted in the store, taint this run immediately
+        if CONVERSATION_TAINT.get(effective_conv, False):
+            is_tainted = True
 
         # 1. Budget check
         try:
@@ -3993,7 +3998,7 @@ def create_plan_step_runner(plan_info, cfg, source="pc", mode="developer", is_ta
 
         # 4. Check tool confirmation required
         needs_confirm, reason = check_tool_confirmation_required(
-            cfg, clean_name, arg, is_tainted=is_tainted, source=source, conv_id=conv_id
+            cfg, clean_name, arg, is_tainted=is_tainted, source=source, conv_id=effective_conv
         )
 
         if g_verdict == getattr(guardian_agent, "VERDICT_DANGEROUS", "DANGEROUS"):
@@ -4013,7 +4018,7 @@ def create_plan_step_runner(plan_info, cfg, source="pc", mode="developer", is_ta
                 "source": source,
                 "mode": mode,
                 "is_tainted": is_tainted,
-                "conv_id": conv_id,
+                "conv_id": effective_conv,
             }
             pending_entry, pending_info, err = create_pending_action(
                 cfg=cfg,
@@ -4026,7 +4031,7 @@ def create_plan_step_runner(plan_info, cfg, source="pc", mode="developer", is_ta
                 g_verdict=g_verdict,
                 plan_state=plan_state,
                 expires_in=120,
-                conv_id=conv_id,
+                conv_id=effective_conv,
             )
             if err:
                 return {"ok": False, "error": err}
@@ -4040,17 +4045,21 @@ def create_plan_step_runner(plan_info, cfg, source="pc", mode="developer", is_ta
         if clean_name in ("READ_FILE", "LIST_FILES"):
             if is_read_or_list_target_tainted(arg, cfg=cfg):
                 is_tainted = True
+                CONVERSATION_TAINT[effective_conv] = True
                 RUN_CODE_TRUST_STATE.invalidate()
         elif clean_name in TAINT_SOURCE_TOOLS:
             is_tainted = True
+            CONVERSATION_TAINT[effective_conv] = True
             RUN_CODE_TRUST_STATE.invalidate()
 
         # 6. Execute step
-        step_res = run_skill(cfg, clean_name, arg, source=source, mode=mode, is_tainted=is_tainted)
+        step_res = run_skill(cfg, clean_name, arg, source=source, mode=mode, is_tainted=is_tainted, conv_id=effective_conv)
 
         # Check error taint
         if clean_name in TAINT_SOURCE_TOOLS and step_res and any(err_pat in str(step_res) for err_pat in ("STDERR:", "Traceback (most recent call last)", "Exit code:", "Error:", "failed:")):
             is_tainted = True
+            CONVERSATION_TAINT[effective_conv] = True
+            RUN_CODE_TRUST_STATE.invalidate()
 
         # 7. Record usage
         try:
@@ -4094,6 +4103,14 @@ def resume_plan_execution(plan_state: dict, last_result=None, cfg=None):
     if last_result is not None:
         results.append(last_result)
 
+    source = plan_state.get("source", "pc")
+    mode = plan_state.get("mode", "developer")
+    conv_id = plan_state.get("conv_id") or (f"{source}:{mode}" if source == "pc" else f"{source}:general")
+    is_tainted = bool(plan_state.get("is_tainted", False) or CONVERSATION_TAINT.get(conv_id, False))
+    if is_tainted:
+        CONVERSATION_TAINT[conv_id] = True
+        RUN_CODE_TRUST_STATE.invalidate()
+
     if not remaining:
         return f"Plan '{plan_state.get('title', 'Execution Plan')}' executed successfully ({len(completed)} steps completed)."
 
@@ -4107,10 +4124,10 @@ def resume_plan_execution(plan_state: dict, last_result=None, cfg=None):
     step_runner = create_plan_step_runner(
         plan_data,
         cfg,
-        source=plan_state.get("source", "pc"),
-        mode=plan_state.get("mode", "developer"),
-        is_tainted=plan_state.get("is_tainted", False),
-        conv_id=plan_state.get("conv_id"),
+        source=source,
+        mode=mode,
+        is_tainted=is_tainted,
+        conv_id=conv_id,
     )
     batch_res = plan_mode.execute_plan_batch(plan_data, cfg=cfg, runner=step_runner)
     if batch_res.get("paused"):
@@ -4122,7 +4139,7 @@ def resume_plan_execution(plan_state: dict, last_result=None, cfg=None):
         return f"Plan '{plan_state.get('title', 'Execution Plan')}' aborted at step '{batch_res.get('failed_step')}': {batch_res.get('error')}"
 
 
-def run_skill(cfg, name, arg, source="pc", is_confirmed=False, mode="developer", is_tainted=False):
+def run_skill(cfg, name, arg, source="pc", is_confirmed=False, mode="developer", is_tainted=False, conv_id=None):
     try:
         name = name.strip().upper()
         raw_arg = (arg or "").strip()
@@ -4199,7 +4216,8 @@ def run_skill(cfg, name, arg, source="pc", is_confirmed=False, mode="developer",
             parsed = plan_mode.parse_plan_tag(raw_arg)
             if not parsed.get("steps"):
                 return f"Plan '{parsed.get('title', 'Execution Plan')}' has no steps."
-            step_runner = create_plan_step_runner(parsed, cfg, source=source, mode=mode, is_tainted=is_tainted)
+            effective_conv = conv_id or (f"{source}:{mode}" if source == "pc" else f"{source}:general")
+            step_runner = create_plan_step_runner(parsed, cfg, source=source, mode=mode, is_tainted=is_tainted, conv_id=effective_conv)
             batch_res = plan_mode.execute_plan_batch(parsed, cfg=cfg, runner=step_runner)
             if batch_res.get("paused"):
                 pending = batch_res.get("pending_info")
@@ -4707,7 +4725,7 @@ def execute_model_tags(tags, cfg, jid=None, mode="developer", source="pc", is_ta
 
         act_phase(jid, "running", f"{'HEAL: ' if is_healing else ''}{clean_name}: {(arg or '').strip().splitlines()[0][:70] if (arg or '').strip() else ''}")
         _t0 = time.time()
-        res = run_skill(cfg, clean_name, arg, source=source, mode=mode, is_tainted=is_tainted)
+        res = run_skill(cfg, clean_name, arg, source=source, mode=mode, is_tainted=is_tainted, conv_id=conv_id)
         if isinstance(res, dict) and res.get("paused") and res.get("pending_info"):
             pending_info = res["pending_info"]
             actions.append({"skill": clean_name, "arg": arg, "result": res.get("result", "Plan paused for confirmation")})
@@ -4833,9 +4851,14 @@ def _chat_inner(user_text, source, jid, mode="developer", is_automation=False, c
                             RUN_CODE_TRUST_STATE.record_approval()
                     elif pending.get("is_tainted") or is_file_tainted_provenance(pending.get("arg", ""))[0]:
                         RUN_CODE_TRUST_STATE.invalidate()
-                    res = run_skill(cfg, pending["name"], pending["arg"], source=source, is_confirmed=True, mode=pending.get("mode", mode), is_tainted=pending.get("is_tainted", False))
+                    res = run_skill(cfg, pending["name"], pending["arg"], source=source, is_confirmed=True, mode=pending.get("mode", mode), is_tainted=pending.get("is_tainted", False), conv_id=conv_id)
                     if pending.get("plan_state"):
-                        plan_res = resume_plan_execution(pending["plan_state"], last_result=res, cfg=cfg)
+                        p_state = pending["plan_state"]
+                        p_conv = p_state.get("conv_id") or conv_id
+                        if pending.get("is_tainted") or p_state.get("is_tainted"):
+                            CONVERSATION_TAINT[p_conv] = True
+                            RUN_CODE_TRUST_STATE.invalidate()
+                        plan_res = resume_plan_execution(p_state, last_result=res, cfg=cfg)
                         if isinstance(plan_res, dict) and plan_res.get("paused"):
                             reply = f"Approved and executed {pending['name']}.\n{res}\n\n[Action Requires Confirmation: {plan_res.get('pending_info', {}).get('prompt')}]"
                             with LOCK:
@@ -5751,7 +5774,11 @@ class Handler(BaseHandler):
                         RUN_CODE_TRUST_STATE.record_approval()
                 elif pending.get("is_tainted") or is_file_tainted_provenance(pending.get("arg", ""))[0]:
                     RUN_CODE_TRUST_STATE.invalidate()
-                res = run_skill(cfg, pending["name"], pending["arg"], source=pending.get("source", "pc"), is_confirmed=True, mode=pending.get("mode", "developer"), is_tainted=pending.get("is_tainted", False))
+                p_conv = pending.get("plan_state", {}).get("conv_id") or pending.get("conv_id") or f"{pending.get('source', 'pc')}:{pending.get('mode', 'developer')}"
+                if pending.get("is_tainted") or pending.get("plan_state", {}).get("is_tainted"):
+                    CONVERSATION_TAINT[p_conv] = True
+                    RUN_CODE_TRUST_STATE.invalidate()
+                res = run_skill(cfg, pending["name"], pending["arg"], source=pending.get("source", "pc"), is_confirmed=True, mode=pending.get("mode", "developer"), is_tainted=pending.get("is_tainted", False), conv_id=p_conv)
                 if pending.get("plan_state"):
                     plan_res = resume_plan_execution(pending["plan_state"], last_result=res, cfg=cfg)
                     if isinstance(plan_res, dict) and plan_res.get("paused"):

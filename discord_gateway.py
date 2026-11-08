@@ -374,6 +374,12 @@ def handle_remote_confirm(action_id: str, approve: bool) -> dict[str, Any]:
                 )
             return {"ok": True, "approved": False, "action": pending["name"], "command": pending.get("arg", "")}
 
+        p_conv = pending.get("plan_state", {}).get("conv_id") or pending.get("conv_id") or "discord:general"
+        if pending.get("is_tainted") or pending.get("plan_state", {}).get("is_tainted"):
+            server.CONVERSATION_TAINT[p_conv] = True
+            if hasattr(server, "RUN_CODE_TRUST_STATE"):
+                server.RUN_CODE_TRUST_STATE.invalidate()
+
         res = server.run_skill(
             cfg,
             pending["name"],
@@ -382,6 +388,7 @@ def handle_remote_confirm(action_id: str, approve: bool) -> dict[str, Any]:
             is_confirmed=True,
             mode=pending.get("mode", "developer"),
             is_tainted=pending.get("is_tainted", False),
+            conv_id=p_conv,
         )
         if pending.get("plan_state") and hasattr(server, "resume_plan_execution"):
             plan_res = server.resume_plan_execution(pending["plan_state"], last_result=res, cfg=cfg)
