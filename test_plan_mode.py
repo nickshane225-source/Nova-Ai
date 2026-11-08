@@ -204,7 +204,9 @@ class TestPlanMode(unittest.TestCase):
         }
         with patch("nova_browser.read_page_content", return_value={"title": "Data", "url": "https://example.com/data", "content": "Untrusted"}):
             res_res = server.resume_plan_execution(paused_plan_state, last_result="1", cfg=cfg)
-            if isinstance(res_res, dict) and res_res.get("worker"):
+            if hasattr(server, "wait_for_plan_worker"):
+                server.wait_for_plan_worker(conv_id_resume, timeout=5.0)
+            elif isinstance(res_res, dict) and res_res.get("worker"):
                 res_res["worker"].join(2.0)
 
         self.assertTrue(server.CONVERSATION_TAINT.get(conv_id_resume, False), "Resume path must propagate taint to conversation taint store")
@@ -405,9 +407,14 @@ class TestPlanMode(unittest.TestCase):
         self.assertTrue(res_resume.get("ok"))
         self.assertTrue(res_resume.get("resumed"))
         self.assertIn("resumed in background", res_resume.get("message", ""))
-        self.assertIn("worker", res_resume)
+        self.assertNotIn("worker", res_resume)
+        import json
+        self.assertTrue(json.loads(json.dumps(res_resume)))
         # Wait for worker thread to finish
-        res_resume["worker"].join(timeout=3.0)
+        if hasattr(server, "wait_for_plan_worker"):
+            server.wait_for_plan_worker("pc:developer", timeout=5.0)
+        elif "worker" in res_resume:
+            res_resume["worker"].join(timeout=3.0)
 
         # 2. Verify events exposed on status channel (/api/events)
         with server.LOCK:
