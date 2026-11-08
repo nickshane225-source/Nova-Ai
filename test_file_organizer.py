@@ -22,7 +22,7 @@ class TestFileOrganizer(unittest.TestCase):
         self.test_dir.cleanup()
 
     def test_organize_custom_folder(self):
-        res = server.run_skill({}, "ORGANIZE", str(self.folder))
+        res = server.run_skill({"allow_outside_workspace": True}, "ORGANIZE", str(self.folder))
         self.assertIn("Organized", res)
         self.assertTrue((self.folder / "Documents" / "document.pdf").exists())
         self.assertTrue((self.folder / "Images" / "photo.png").exists())
@@ -32,9 +32,9 @@ class TestFileOrganizer(unittest.TestCase):
 
     def test_organize_already_clean_folder(self):
         # Organize once
-        server.run_skill({}, "ORGANIZE", str(self.folder))
+        server.run_skill({"allow_outside_workspace": True}, "ORGANIZE", str(self.folder))
         # Organize second time
-        res2 = server.run_skill({}, "ORGANIZE", str(self.folder))
+        res2 = server.run_skill({"allow_outside_workspace": True}, "ORGANIZE", str(self.folder))
         self.assertIn("already well organized", res2)
 
 if __name__ == "__main__":

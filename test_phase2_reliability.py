@@ -27,7 +27,7 @@ class TestPhase2Reliability(unittest.TestCase):
 
         class MockReq:
             def __init__(self, body):
-                self.headers = {"Host": "127.0.0.1:8765", "Origin": "http://127.0.0.1:8765"}
+                self.headers = {"Host": "127.0.0.1:8765", "Origin": "http://127.0.0.1:8765", "Cookie": f"nova_session={server.SESSION_TOKEN}", "X-Nova-Token": server.API_SESSION_TOKEN}
                 self.command = "POST"
                 self.path = "/api/reset"
                 self._test_body = body
@@ -79,7 +79,7 @@ class TestPhase2Reliability(unittest.TestCase):
     def test_browser_routes_catch_crashes(self):
         class MockReq:
             def __init__(self, path, body):
-                self.headers = {"Host": "127.0.0.1:8765", "Origin": "http://127.0.0.1:8765"}
+                self.headers = {"Host": "127.0.0.1:8765", "Origin": "http://127.0.0.1:8765", "Cookie": f"nova_session={server.SESSION_TOKEN}", "X-Nova-Token": server.API_SESSION_TOKEN}
                 self.command = "POST"
                 self.path = path
                 self._test_body = body
@@ -130,7 +130,7 @@ class TestPhase2Reliability(unittest.TestCase):
     def test_config_unknown_key_rejected(self):
         class MockReq:
             def __init__(self, body):
-                self.headers = {"Host": "127.0.0.1:8765", "Origin": "http://127.0.0.1:8765"}
+                self.headers = {"Host": "127.0.0.1:8765", "Origin": "http://127.0.0.1:8765", "Cookie": f"nova_session={server.SESSION_TOKEN}", "X-Nova-Token": server.API_SESSION_TOKEN}
                 self.command = "POST"
                 self.path = "/api/config"
                 self._test_body = body
@@ -152,7 +152,7 @@ class TestPhase2Reliability(unittest.TestCase):
     def test_config_voice_bounds_clamped(self):
         class MockReq:
             def __init__(self, body):
-                self.headers = {"Host": "127.0.0.1:8765", "Origin": "http://127.0.0.1:8765"}
+                self.headers = {"Host": "127.0.0.1:8765", "Origin": "http://127.0.0.1:8765", "Cookie": f"nova_session={server.SESSION_TOKEN}", "X-Nova-Token": server.API_SESSION_TOKEN}
                 self.command = "POST"
                 self.path = "/api/config"
                 self._test_body = body
@@ -179,7 +179,7 @@ class TestPhase2Reliability(unittest.TestCase):
     def test_config_max_tokens_validation(self):
         class MockReq:
             def __init__(self, body):
-                self.headers = {"Host": "127.0.0.1:8765", "Origin": "http://127.0.0.1:8765"}
+                self.headers = {"Host": "127.0.0.1:8765", "Origin": "http://127.0.0.1:8765", "Cookie": f"nova_session={server.SESSION_TOKEN}", "X-Nova-Token": server.API_SESSION_TOKEN}
                 self.command = "POST"
                 self.path = "/api/config"
                 self._test_body = body
@@ -214,7 +214,7 @@ class TestPhase2Reliability(unittest.TestCase):
     def test_state_masks_secrets(self):
         class MockReq:
             def __init__(self):
-                self.headers = {"Host": "127.0.0.1:8765"}
+                self.headers = {"Host": "127.0.0.1:8765", "Cookie": f"nova_session={server.SESSION_TOKEN}", "X-Nova-Token": server.API_SESSION_TOKEN}
                 self.path = "/api/state"
                 self.status = None
                 self.data = None
@@ -451,7 +451,7 @@ class TestPhase2Reliability(unittest.TestCase):
     def test_protect_api_config_sensitive_keys(self):
         class MockReq:
             def __init__(self, body):
-                self.headers = {"Host": "127.0.0.1:8765", "Origin": "http://127.0.0.1:8765"}
+                self.headers = {"Host": "127.0.0.1:8765", "Origin": "http://127.0.0.1:8765", "Cookie": f"nova_session={server.SESSION_TOKEN}", "X-Nova-Token": server.API_SESSION_TOKEN}
                 self.command = "POST"
                 self.path = "/api/config"
                 self._test_body = body

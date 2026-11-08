@@ -1,4 +1,3 @@
-import server
 #!/usr/bin/env python3
 """
 Nova AI Discord Remote Gateway
@@ -12,6 +11,7 @@ and remote approval of confirmation gates (/allow <id>, /deny <id>).
 
 import json
 import logging
+import re
 import threading
 import time
 import urllib.error
@@ -111,9 +111,8 @@ class DiscordGateway:
             if is_bot or user_id == self.bot_id:
                 continue
 
-            # Check User Whitelist if configured
-            if self.allowed_user_ids and user_id not in self.allowed_user_ids:
-                logger.warning(f"[Discord Security] Ignored message from unauthorized user: {user_id}")
+            if not self.is_authorized(user_id, channel_id):
+                logger.warning(f"[Discord Security] Ignored message from unauthorized user/channel: {user_id}/{channel_id}")
                 continue
 
             content = (msg.get("content") or "").strip()
@@ -122,8 +121,28 @@ class DiscordGateway:
 
             self.handle_message(channel_id, user_id, content)
 
+    def is_authorized(self, user_id: str | int, channel_id: str | int = "") -> bool:
+        """
+        Verify message sender and channel authorization:
+        - Must return False whenever allowed_user_ids is empty (regardless of channel_ids).
+        - Must require BOTH a listed user and, if channel_ids is set, a listed channel.
+        """
+        if not self.allowed_user_ids:
+            return False
+        uid = str(user_id or "").strip()
+        if not uid or uid not in self.allowed_user_ids:
+            return False
+        if self.channel_ids:
+            cid = str(channel_id or "").strip()
+            if not cid or cid not in self.channel_ids:
+                return False
+        return True
+
     def handle_message(self, channel_id: str, user_id: str, text: str) -> None:
         """Handle incoming command or user query."""
+        if not self.is_authorized(user_id, channel_id):
+            logger.warning(f"[Discord Security] Ignored message from unauthorized user/channel: {user_id}/{channel_id}")
+            return
         cmd = text.strip()
 
         # Approval commands: /allow <id> or /deny <id>
@@ -140,7 +159,14 @@ class DiscordGateway:
                 if result.get("ok"):
                     res_detail = result.get("result")
                     res_str = f"\nResult: {res_detail}" if res_detail else ""
-                    cmd_str = f"\nCommand: `{result.get('command')}`" if result.get('command') else ""
+                    cmd_raw = result.get('command') or ''
+                    cmd_str = ''
+                    if cmd_raw:
+                        import server
+                        safe_c, _ = server.sanitize_preview(cmd_raw)
+                        backticks = re.findall(r"`+", safe_c)
+                        fence = "`" * max(3, max([len(b) for b in backticks], default=0) + 1)
+                        cmd_str = f"\nCommand:\n{fence}\n{safe_c}\n{fence}"
                     reply = f"✅ Action {action}ed: {result.get('action')}{cmd_str}{res_str}"
                 else:
                     reply = f"❌ Failed to {action}: {result.get('error', 'Action not found or expired')}"
@@ -175,32 +201,39 @@ class DiscordGateway:
                 resp = self.chat_handler(text, "discord")
                 reply_text = resp.get("reply") or resp.get("response") or "Done."
                 if isinstance(resp, dict) and resp.get("pending"):
+                    import server
                     p = resp["pending"]
                     p_id = p.get("id")
+                    raw_prompt = p.get("prompt") or ""
+                    safe_prompt, _ = server.sanitize_preview(raw_prompt)
                     cmd_val = p.get("command") or p.get("arg") or p.get("preview") or ""
-                    # 1b. Strip or escape backticks
-                    safe_cmd = cmd_val.replace("```", "'''").replace("`", "'")
-                    # 1c. Escape control and invisible characters
-                    if hasattr(server, "sanitize_preview"):
-                        safe_cmd, _ = server.sanitize_preview(safe_cmd)
+                    safe_cmd, has_invis = server.sanitize_preview(cmd_val)
+                    invis_warn = "\n⚠️ Warning: Command contains hidden or invisible characters." if has_invis else ""
+                    backticks = re.findall(r"`+", safe_cmd)
+                    fence = "`" * max(3, max([len(b) for b in backticks], default=0) + 1)
                     full_approval_msg = (
-                        f"\n\n⚠️ Action Requires Approval (ID: `{p_id}`):\n"
-                        f"{p.get('prompt')}\n\n"
-                        f"Command:\n```\n{safe_cmd}\n```\n"
+                        f"⚠️ Action Requires Approval (ID: `{p_id}`):\n"
+                        f"{safe_prompt}\n\n"
+                        f"Command:\n{fence}\n{safe_cmd}\n{fence}{invis_warn}\n\n"
                         f"Use `/allow {p_id}` or `/deny {p_id}`"
                     )
-                    if len(reply_text + full_approval_msg) > 2000:
+                    if reply_text and reply_text != "Done.":
+                        self.send_message(channel_id, reply_text)
+                    if len(full_approval_msg) > 1950:
                         with server.PENDING_LOCK:
                             if p_id in server.PENDING_ACTIONS:
                                 server.PENDING_ACTIONS[p_id]["pc_only"] = True
-                        reply_text += (
-                            f"\n\n⚠️ Action Requires Approval (ID: `{p_id}`):\n"
-                            f"{p.get('prompt')}\n\n"
+                        short_msg = (
+                            f"⚠️ Action Requires Approval (ID: `{p_id}`):\n"
+                            f"{safe_prompt}\n\n"
                             f"Notice: Approval for this action must be done on the PC (payload exceeds Discord limits)."
                         )
+                        self.send_message(channel_id, short_msg)
                     else:
-                        reply_text += full_approval_msg
-                self.send_message(channel_id, reply_text)
+                        self.send_message(channel_id, full_approval_msg)
+                    return
+                else:
+                    self.send_message(channel_id, reply_text)
             except Exception as e:
                 self.send_message(channel_id, f"Error processing query: {e}")
         else:
@@ -261,7 +294,7 @@ def handle_remote_confirm(action_id: str, approve: bool) -> dict[str, Any]:
                     channel="discord",
                     tool=pending["name"],
                     preview=pending.get("arg", ""),
-                    guardian_verdict="NONE",
+                    guardian_verdict=pending.get("guardian", "NONE"),
                     status="DENIED",
                     cfg=cfg,
                 )
@@ -274,13 +307,14 @@ def handle_remote_confirm(action_id: str, approve: bool) -> dict[str, Any]:
             source="discord",
             is_confirmed=True,
             mode=pending.get("mode", "developer"),
+            is_tainted=pending.get("is_tainted", False),
         )
         if getattr(server, "audit_logger", None):
             server.audit_logger.log_audit_event(
                 channel="discord",
                 tool=pending["name"],
                 preview=pending.get("arg", ""),
-                guardian_verdict="NONE",
+                guardian_verdict=pending.get("guardian", "NONE"),
                 status="APPROVED",
                 cfg=cfg,
             )
@@ -295,12 +329,13 @@ def start_discord_daemon(cfg: dict[str, Any], chat_callback: Callable[..., Any] 
         return None
     token = cfg.get("discord_bot_token")
     channels = cfg.get("discord_channel_ids") or []
-    if not token or not channels:
+    allowed_users = cfg.get("discord_allowed_user_ids") or []
+    if not token or not channels or not allowed_users:
         return None
     return start_discord_gateway(
         bot_token=token,
         channel_ids=channels,
-        allowed_user_ids=cfg.get("discord_allowed_user_ids") or [],
+        allowed_user_ids=allowed_users,
         chat_handler=chat_callback,
         confirm_handler=handle_remote_confirm,
     )

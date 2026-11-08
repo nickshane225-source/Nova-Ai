@@ -82,10 +82,15 @@ def _tokenize(text: str):
     words = re.findall(r"[a-zA-Z0-9_\u0900-\u097F\u0980-\u09FF\u0600-\u06FF\u4E00-\u9FFF]+", text.lower())
     return [w for w in words if len(w) > 1]
 
+def escape_delimiters(text: str) -> str:
+    if text is None:
+        return ""
+    return str(text).replace("<", "&lt;").replace(">", "&gt;")
+
 def save_note(title: str, content: str, category: str = "general", tainted: int = 0, db_path=None) -> int:
     """Creates or updates a note in the second brain."""
-    title = title.strip()
-    content = content.strip()
+    title = escape_delimiters(title).strip()
+    content = escape_delimiters(content).strip()
     now = datetime.datetime.now().isoformat()
     with _lock:
         conn = get_db(db_path)
@@ -117,6 +122,7 @@ def save_note(title: str, content: str, category: str = "general", tainted: int 
 def get_note(title_or_id, db_path=None):
     """Fetches a note by title or integer ID."""
     clean = str(title_or_id).strip()
+    escaped = escape_delimiters(clean).strip()
     with _lock:
         conn = get_db(db_path)
         try:
@@ -124,7 +130,7 @@ def get_note(title_or_id, db_path=None):
             if isinstance(title_or_id, int) or clean.isdigit():
                 cur.execute("SELECT * FROM notes WHERE id = ?", (int(clean),))
             else:
-                cur.execute("SELECT * FROM notes WHERE LOWER(title) = LOWER(?)", (clean,))
+                cur.execute("SELECT * FROM notes WHERE LOWER(title) = LOWER(?) OR LOWER(title) = LOWER(?)", (clean, escaped))
             row = cur.fetchone()
             if row:
                 return dict(row)
@@ -142,13 +148,19 @@ def list_notes(category=None, limit=50, db_path=None):
                 cur.execute("SELECT * FROM notes WHERE LOWER(category) = LOWER(?) ORDER BY updated_at DESC LIMIT ?", (category, limit))
             else:
                 cur.execute("SELECT * FROM notes ORDER BY updated_at DESC LIMIT ?", (limit,))
-            return [dict(r) for r in cur.fetchall()]
+            res = []
+            for r in cur.fetchall():
+                d = dict(r)
+                d["tainted"] = 1 if d.get("tainted") else 0
+                res.append(d)
+            return res
         finally:
             conn.close()
 
 def delete_note(title_or_id, db_path=None) -> bool:
     """Deletes a note."""
     clean = str(title_or_id).strip()
+    escaped = escape_delimiters(clean).strip()
     with _lock:
         conn = get_db(db_path)
         try:
@@ -156,7 +168,7 @@ def delete_note(title_or_id, db_path=None) -> bool:
             if isinstance(title_or_id, int) or clean.isdigit():
                 cur.execute("DELETE FROM notes WHERE id = ?", (int(clean),))
             else:
-                cur.execute("DELETE FROM notes WHERE LOWER(title) = LOWER(?)", (clean,))
+                cur.execute("DELETE FROM notes WHERE LOWER(title) = LOWER(?) OR LOWER(title) = LOWER(?)", (clean, escaped))
             conn.commit()
             return cur.rowcount > 0
         finally:
@@ -216,6 +228,7 @@ def search_notes(query: str, limit: int = 5, db_path=None):
         if score > 0:
             item = dict(note)
             item["score"] = round(score, 3)
+            item["tainted"] = 1 if note.get("tainted") else 0
             scored.append(item)
 
     scored.sort(key=lambda x: x["score"], reverse=True)

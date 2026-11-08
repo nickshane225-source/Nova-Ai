@@ -5,9 +5,53 @@ let mode = "idle"; // idle | listening | thinking | speaking
 let active = false, micMuted = false, rec = null, level = 0;
 
 /* ---------- API ---------- */
+function getSessionToken() {
+  try {
+    if (typeof sessionStorage !== "undefined" && sessionStorage.getItem) {
+      return sessionStorage.getItem("nova_token") || "";
+    }
+  } catch (e) {}
+  return "";
+}
+
 async function api(path, body) {
-  const r = await fetch(path, body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {});
-  return r.json();
+  const token = getSessionToken();
+  const headers = { "X-Nova-Token": token };
+  if (body) {
+    headers["Content-Type"] = "application/json";
+  }
+  const r = await fetch(path, body ? { method: "POST", headers: headers, body: JSON.stringify(body) } : { headers: headers });
+  let data = null;
+  try {
+    data = await r.json();
+  } catch (e) {
+    data = { ok: false, error: `Server returned HTTP ${r.status}` };
+  }
+  if (!r.ok && data && typeof data === "object" && !Array.isArray(data)) {
+    if (data.ok === undefined) data.ok = false;
+    if (!data.error) data.error = `HTTP ${r.status}`;
+    data._status = r.status;
+  }
+  return data;
+}
+
+async function streamChat(path, body, onChunk) {
+  const token = getSessionToken();
+  const response = await fetch(path, {
+    method: body ? "POST" : "GET",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Nova-Token": token
+    },
+    body: body ? JSON.stringify(body) : undefined
+  });
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (onChunk) onChunk(decoder.decode(value, { stream: true }));
+  }
 }
 async function loadState() {
   state = await api("/api/state");
@@ -1242,6 +1286,28 @@ async function renderPanel(name) {
       upd();
       window._mobileTimer = setInterval(upd, 3000);
     }
+    try {
+      const devRes = await api("/api/remote/devices");
+      if (devRes && devRes.devices && devRes.devices.length) {
+        let devHtml = `<div style="margin-top:20px;border-top:1px solid rgba(55,214,255,0.2);padding-top:15px;">
+          <h3 style="font-size:14px;color:#37d6ff;margin-bottom:8px;">Paired Devices</h3>
+          <ul style="list-style:none;padding:0;margin:0;">`;
+        devRes.devices.forEach(d => {
+          devHtml += `<li style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.05);font-size:12px;">
+            <span>${esc(d.name)} (${esc(d.client_ip || "IP")})</span>
+            <button class="btn btn-sm revoke-btn" data-dev-id="${esc(d.id)}" style="padding:2px 8px;font-size:11px;">Revoke</button>
+          </li>`;
+        });
+        devHtml += `</ul></div>`;
+        body.insertAdjacentHTML("beforeend", devHtml);
+        body.querySelectorAll(".revoke-btn").forEach(btn => {
+          btn.onclick = async () => {
+            await api("/api/remote/devices/revoke", { id: btn.dataset.devId });
+            renderPanel("mobile");
+          };
+        });
+      }
+    } catch (e) {}
     return;
   }
   if (name === "doctor") {
@@ -1379,21 +1445,24 @@ async function renderPanel(name) {
           return;
         }
         let h = `<div style="display:flex; flex-direction:column; gap:8px; max-height:55vh; overflow-y:auto;">`;
-        for (const ev of events) {
-          const isAllowed = ev.status === "ALLOWED" || ev.status === "APPROVED" || ev.status === "AUTO_APPROVED";
-          const stCol = isAllowed ? "#2ed573" : (ev.status === "AWAITING_CONFIRMATION" ? "#ffa502" : "#ff4757");
+        for (const ev of events.slice().reverse()) {
+          const stUpper = (ev.status || "UNKNOWN").toUpperCase();
+          const isAllowed = stUpper === "EXECUTED" || stUpper === "ALLOWED" || stUpper === "APPROVED" || stUpper === "AUTO_APPROVED" || stUpper === "APPROVED_USER";
+          const stCol = isAllowed ? "#2ed573" : (stUpper === "AWAITING_CONFIRMATION" ? "#ffa502" : "#ff4757");
           const toolName = ev.tool || "SYSTEM";
           const chan = ev.channel || "pc";
-          const verdict = ev.guardian_verdict || "NONE";
+          const rawVerdict = ev.guardian || ev.guardian_verdict || "NONE";
+          const verdictNorm = String(rawVerdict).replace(/^\[|\]$/g, "").toUpperCase();
+          const verdictCol = verdictNorm === "SAFE" ? "#2ed573" : (verdictNorm === "DANGEROUS" ? "#ff4757" : "#7fa6b8");
           const timeStr = ev.timestamp ? ev.timestamp.replace("T", " ").slice(0, 19) : "";
           h += `<div style="background:rgba(0,0,0,0.3); padding:8px 12px; border-radius:4px; border-left:3px solid ${stCol}; font-size:11px;">
             <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
               <span style="color:#37d6ff; font-weight:bold;">${esc(toolName)} <small style="color:#7fa6b8; font-weight:normal;">via [${esc(chan)}]</small></span>
-              <span style="color:${stCol}; font-weight:bold;">${esc(ev.status)}</span>
+              <span style="color:${stCol}; font-weight:bold;">${esc(stUpper)}</span>
             </div>
             <div style="color:#cfe9f5; font-family:monospace; margin-bottom:4px; word-break:break-all;">${esc(ev.preview || "")}</div>
             <div style="display:flex; justify-content:space-between; color:#7fa6b8; font-size:10px;">
-              <span>Guardian: <b style="color:${verdict === '[SAFE]' ? '#2ed573' : (verdict === '[DANGEROUS]' ? '#ff4757' : '#7fa6b8')}">${esc(verdict)}</b></span>
+              <span>Guardian: <b style="color:${verdictCol}">${esc(verdictNorm)}</b></span>
               <span>${esc(timeStr)}</span>
             </div>
           </div>`;
@@ -1443,12 +1512,30 @@ async function renderPanel(name) {
     };
   }
   if (name === "workspace") {
+    let taintedList = [];
+    try {
+      const tRes = await api("/api/workspace/tainted");
+      taintedList = (tRes && tRes.files) ? tRes.files : [];
+    } catch (e) {}
     body.innerHTML = `<h2>Coding Workspace</h2>
       <p class="hint">This is the dedicated folder where Nova creates code files, scripts, and projects for you.</p>
       <div class="workspace-bar">
         <span>📁 Path:</span>
         <span class="workspace-path">${esc(state.workspace || "workspace")}</span>
         <button class="btn" id="btnOpenWs">Open in Explorer</button>
+      </div>
+      <div id="taintedFilesSection" style="margin:14px 0; padding:10px 12px; border:1px solid rgba(255,107,129,0.35); border-radius:4px; background:rgba(255,71,87,0.06);">
+        <h3 style="margin:0 0 6px 0; font-size:12px; color:#ff6b81; letter-spacing:0.1em; text-transform:uppercase;">🛡️ Untrusted / Tainted Files (${taintedList.length})</h3>
+        <p class="hint" style="margin:0 0 8px 0;">Files written during untrusted/tainted turns require confirmation before execution or opening until you explicitly trust their current SHA-256 content.</p>
+        ${taintedList.length ? taintedList.map(f => `
+          <div class="row" style="display:flex; justify-content:space-between; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid rgba(255,255,255,0.06);">
+            <div style="overflow:hidden; text-overflow:ellipsis;">
+              <b style="color:#ff6b81">${esc(f.name)}</b>
+              <small style="display:block; color:#7fa6b8; font-family:monospace; font-size:10px;">SHA-256: ${esc((f.sha256 || '').slice(0, 16))}…</small>
+            </div>
+            <button class="btn trust-file-btn" data-trust-path="${esc(f.path || f.name)}" style="padding:3px 10px; font-size:11px; color:#4dffb0;">Trust File</button>
+          </div>
+        `).join("") : "<p class='hint' style='margin:0;'>No tainted files in workspace.</p>"}
       </div>
       <label>Voice coding examples you can try:</label>
       <div class="row"><span>“Write a Python script calculator.py with functions for math operations”</span></div>
@@ -1461,6 +1548,18 @@ async function renderPanel(name) {
         await api("/api/workspace/open");
       };
     }
+    body.querySelectorAll(".trust-file-btn").forEach(btn => {
+      btn.onclick = async () => {
+        const p = btn.dataset.trustPath;
+        const r = await api("/api/workspace/trust", { path: p });
+        if (r && r.ok) {
+          showToast("File Trusted", `Cleared taint mark for ${p}`, "normal");
+          renderPanel("workspace");
+        } else {
+          showToast("Error", (r && r.error) || "Could not trust file", "alert");
+        }
+      };
+    });
   }
   if (name === "skills") {
     body.innerHTML = `<h2>Nova AI Skills & Powers</h2>
@@ -1701,17 +1800,20 @@ async function renderPanel(name) {
             <h3>Budget & Multi-Channel Gateways</h3>
       <div style="display:flex; flex-direction:column; gap:8px; margin-bottom:16px;">
         <label>Monthly Budget Cap (USD, 0 for unlimited)</label>
-        <input id="monthlyBudget" type="number" step="0.5" min="0" value="${c.monthly_budget_usd || 0}">
+        <input id="monthlyBudget" type="number" step="0.5" min="0" value="${c.monthly_budget_usd != null ? c.monthly_budget_usd : 0}">
         <label style="display:flex; align-items:center; gap:8px; text-transform:none; font-size:12px; color:#cfe9f5; cursor:pointer">
           <input type="checkbox" id="chkDiscord" ${c.discord_enabled === true ? 'checked' : ''} style="width:auto">
           <span>Enable <b>Discord Remote Gateway</b></span>
         </label>
-        <label>Discord Bot Token</label>
-        <input id="discordToken" type="password" placeholder="Bot token" value="${esc(c.discord_bot_token || '')}">
+        <label>Discord Bot Token ${c.discord_bot_token_set ? "(saved — leave blank to keep)" : ""}</label>
+        <input id="discordToken" type="password" placeholder="${c.discord_bot_token_set ? "••••••••" : "Bot token"}" value="">
         <label>Discord Channel IDs (comma-separated)</label>
         <input id="discordChannels" placeholder="e.g. 123456789012345678" value="${esc((c.discord_channel_ids || []).join(', '))}">
+        <label>Discord Allowed User IDs (comma-separated; empty = nobody allowed)</label>
+        <input id="discordUsers" placeholder="e.g. 987654321098765432" value="${esc((c.discord_allowed_user_ids || []).join(', '))}">
       </div>
 
+      <div id="settingsError" class="hidden" style="color:#ff4757; background:rgba(255,71,87,0.12); border:1px solid #ff4757; padding:8px 10px; border-radius:4px; margin:8px 0; font-size:12px; font-weight:600;"></div>
       <br><button class="btn" id="save">Save Settings</button>
       ${c.has_key ? ' <button class="btn" id="clearkey" style="color:#ff6b81">Remove saved key</button>' : ""}
       <button class="btn" id="reset">Clear chat history</button>
@@ -1731,17 +1833,25 @@ async function renderPanel(name) {
     };
 
     $("#save").onclick = async () => {
+      const errEl = $("#settingsError");
+      if (errEl) {
+        errEl.textContent = "";
+        errEl.classList.add("hidden");
+      }
       let prov = $("#prov").value; if (prov === "ollama" || prov === "gemini") prov = "openai";
+      const rawBudget = $("#monthlyBudget") ? String($("#monthlyBudget").value).trim() : "0";
+      const parsedBudget = rawBudget === "" ? 0 : Number(rawBudget);
       const payload = {
         provider: prov,
         api_key: $("#key").value,
         model: $("#model").value,
         base_url: $("#base").value,
         user_name: $("#uname").value,
-        monthly_budget_usd: parseFloat($("#monthlyBudget")?.value || 0),
+        monthly_budget_usd: Number.isNaN(parsedBudget) ? rawBudget : parsedBudget,
         discord_enabled: $("#chkDiscord")?.checked || false,
         discord_bot_token: $("#discordToken")?.value || "",
         discord_channel_ids: ($("#discordChannels")?.value || "").split(",").map(s => s.trim()).filter(Boolean),
+        discord_allowed_user_ids: ($("#discordUsers")?.value || "").split(",").map(s => s.trim()).filter(Boolean),
         language: $("#lang").value,
         voice_rate: Number($("#vrate").value),
         voice_pitch: Number($("#vpitch").value),
@@ -1751,7 +1861,21 @@ async function renderPanel(name) {
         allow_outside_workspace: $("#chkOutsideWs") ? $("#chkOutsideWs").checked : false,
         llm_timeout: Math.max(5, Math.min(90, Number($("#llmTimeout") ? $("#llmTimeout").value : 60) || 60))
       };
-      const res = await api("/api/config", payload);
+      let res;
+      try {
+        res = await api("/api/config", payload);
+      } catch (e) {
+        res = { ok: false, error: e.message || "Network error while saving settings." };
+      }
+      if (!res || res.ok === false || res.error) {
+        const msg = (res && res.error) ? res.error : "Failed to save settings.";
+        if (errEl) {
+          errEl.textContent = msg;
+          errEl.classList.remove("hidden");
+        }
+        showToast("Settings Error", msg, "alert");
+        return;
+      }
       if (res && res.need_confirm) {
         showConfirmModal({
           action: "SECURITY_SETTINGS",
@@ -1759,12 +1883,21 @@ async function renderPanel(name) {
           preview: `Modifying: ${res.keys ? res.keys.join(", ") : "protected configuration keys"}`,
           callback: async (approve) => {
             if (approve) {
-              await api("/api/config", { ...payload, confirm_token: res.token });
+              const res2 = await api("/api/config", { ...payload, confirm_token: res.token });
+              if (!res2 || res2.ok === false || res2.error) {
+                const msg2 = (res2 && res2.error) ? res2.error : "Failed to save security settings.";
+                if (errEl) {
+                  errEl.textContent = msg2;
+                  errEl.classList.remove("hidden");
+                }
+                showToast("Settings Error", msg2, "alert");
+                return;
+              }
               await loadState();
               $("#panel").classList.add("hidden");
-              showToast("Settings Saved", "Security configuration updated.", "success");
+              showToast("Settings Saved", "Security configuration updated.", "normal");
             } else {
-              showToast("Cancelled", "Settings change was cancelled.", "info");
+              showToast("Cancelled", "Settings change was cancelled.", "warning");
             }
           }
         });
@@ -1975,7 +2108,7 @@ setMode("idle");
 
   async function poll() {
     try {
-      const r = await fetch("/api/activity", { cache: "no-store" });
+      const r = await fetch("/api/activity", { cache: "no-store", headers: { "X-Nova-Token": getSessionToken() } });
       snap = await r.json(); snapAt = Date.now(); offline = false;
     } catch { offline = true; }
     render();
@@ -2076,10 +2209,28 @@ document.querySelectorAll(".spot-item").forEach(item => {
 
 /* ---------- Confirmation Gate Modal ---------- */
 let currentPendingAction = null;
+let pendingConfirmId = null;
+let isConfirming = false;
+
+function closeModal() {
+  const modal = $("#confirmModal");
+  if (modal) modal.classList.add("hidden");
+  const allowBtn = $("#confirmAllowBtn");
+  const denyBtn = $("#confirmDenyBtn");
+  if (allowBtn) allowBtn.disabled = false;
+  if (denyBtn) denyBtn.disabled = false;
+}
+
 function showConfirmModal(pending) {
   currentPendingAction = pending;
+  pendingConfirmId = pending ? (pending.id || null) : null;
+  isConfirming = false;
   const modal = $("#confirmModal");
   if (!modal) return;
+  const allowBtn = $("#confirmAllowBtn");
+  const denyBtn = $("#confirmDenyBtn");
+  if (allowBtn) allowBtn.disabled = false;
+  if (denyBtn) denyBtn.disabled = false;
   const promptEl = $("#confirmPrompt");
   const previewEl = $("#confirmPreview");
   if (promptEl) promptEl.textContent = pending.prompt || "A high-impact action requires confirmation:";
@@ -2088,29 +2239,49 @@ function showConfirmModal(pending) {
 }
 
 async function resolveConfirmation(approve) {
-  const modal = $("#confirmModal");
-  if (modal) modal.classList.add("hidden");
-  if (!currentPendingAction) return;
+  if (isConfirming || (!currentPendingAction && !pendingConfirmId)) return;
+  isConfirming = true;
+  const allowBtn = $("#confirmAllowBtn");
+  const denyBtn = $("#confirmDenyBtn");
+  if (allowBtn) allowBtn.disabled = true;
+  if (denyBtn) denyBtn.disabled = true;
+
   const action = currentPendingAction;
+  const confirmId = pendingConfirmId || (action ? action.id : null);
   currentPendingAction = null;
-  if (action.callback) {
-    await action.callback(approve);
+  pendingConfirmId = null;
+  closeModal();
+
+  if (!action && !confirmId) {
+    isConfirming = false;
+    return;
+  }
+
+  if (action && action.callback) {
+    try {
+      await action.callback(approve);
+    } finally {
+      isConfirming = false;
+    }
     return;
   }
   try {
-    const res = await api("/api/confirm", { id: action.id, approve: approve });
+    const res = await api("/api/confirm", { id: confirmId || (action && action.id), approve: approve });
+    const actionName = (action && action.action) ? action.action : "Action";
     if (approve) {
-      showToast("Action Approved", `${action.action} completed.`, "success");
+      showToast("Action Approved", `${actionName} completed.`, "success");
       if (res.result) {
-        subtitle("", `Executed ${action.action}: ${res.result.slice(0, 100)}`);
-        if (active && !micMuted) speak(`Executed ${action.action}`);
+        subtitle("", `Executed ${actionName}: ${res.result.slice(0, 100)}`);
+        if (active && !micMuted) speak(`Executed ${actionName}`);
       }
     } else {
-      showToast("Action Denied", `${action.action} cancelled.`, "info");
-      subtitle("", `Cancelled ${action.action}.`);
+      showToast("Action Denied", `${actionName} cancelled.`, "info");
+      subtitle("", `Cancelled ${actionName}.`);
     }
   } catch (err) {
     showToast("Confirmation Error", err.message || "Failed to confirm", "error");
+  } finally {
+    isConfirming = false;
   }
 }
 

@@ -1,4 +1,4 @@
-import server
+#!/usr/bin/env python3
 """
 Telegram Remote Gateway for Nova AI.
 Inspired by PocketPaw's multi-channel remote connectivity.
@@ -6,6 +6,7 @@ Zero third-party pip dependencies - Python standard library only.
 """
 import json
 import logging
+import re
 import threading
 import time
 import urllib.error
@@ -39,7 +40,7 @@ def handle_remote_confirm(action_id: str, approve: bool) -> Dict[str, Any]:
                     channel="telegram",
                     tool=pending["name"],
                     preview=pending.get("arg", ""),
-                    guardian_verdict="NONE",
+                    guardian_verdict=pending.get("guardian", "NONE"),
                     status="DENIED",
                     cfg=cfg,
                 )
@@ -52,13 +53,14 @@ def handle_remote_confirm(action_id: str, approve: bool) -> Dict[str, Any]:
             source="telegram",
             is_confirmed=True,
             mode=pending.get("mode", "developer"),
+            is_tainted=pending.get("is_tainted", False),
         )
         if getattr(server, "audit_logger", None):
             server.audit_logger.log_audit_event(
                 channel="telegram",
                 tool=pending["name"],
                 preview=pending.get("arg", ""),
-                guardian_verdict="NONE",
+                guardian_verdict=pending.get("guardian", "NONE"),
                 status="APPROVED",
                 cfg=cfg,
             )
@@ -96,22 +98,61 @@ class TelegramGateway:
             logger.error(f"[Telegram] Failed to send message to {chat_id}: {e}")
             return False
 
+    def is_authorized(self, chat_id: Any, user_id: Any = None, chat_type: str = "private") -> bool:
+        """
+        Verify Telegram sender and chat authorization:
+        - Requires sender user_id (from.id) in telegram_allowed_user_ids (empty = nobody allowed,
+          unless telegram_allowed_user_ids is omitted/empty AND telegram_allowed_chat_ids is set AND chat is strictly 'private').
+        - If only chat IDs are set, group/supergroup/channel chats are strictly refused and only private chats accepted.
+        - If both chat IDs and user IDs are set, BOTH must match.
+        """
+        cid = str(chat_id).strip() if chat_id is not None else ""
+        uid = str(user_id).strip() if user_id is not None else ""
+        ctype = str(chat_type or "").strip().lower()
+
+        raw_chats = self.cfg.get("telegram_allowed_chat_ids") or []
+        allowed_chat_ids = [str(x).strip() for x in raw_chats if str(x).strip()]
+
+        raw_users = self.cfg.get("telegram_allowed_user_ids") or []
+        allowed_user_ids = [str(x).strip() for x in raw_users if str(x).strip()]
+
+        if not allowed_chat_ids and not allowed_user_ids:
+            return False
+
+        if allowed_chat_ids and cid not in allowed_chat_ids:
+            return False
+
+        if allowed_user_ids:
+            if not uid or uid not in allowed_user_ids:
+                return False
+        else:
+            # Only chat_ids are set -> group chats must be refused; only private chats accepted
+            if ctype and ctype != "private":
+                return False
+            # In a Telegram private chat, the user's ID equals the private chat ID; if from.id is present and differs, reject
+            if uid and uid not in allowed_chat_ids:
+                return False
+
+        return True
+
     def process_update(self, update: Dict[str, Any]) -> bool:
         message = update.get("message")
         if not message:
             return False
 
-        chat_id_int = message.get("chat", {}).get("id")
+        chat_obj = message.get("chat") or {}
+        chat_id_int = chat_obj.get("id")
         if chat_id_int is None:
             return False
 
-        chat_id = str(chat_id_int)
-        raw_allowed = self.cfg.get("telegram_allowed_chat_ids") or []
-        allowed_chat_ids = [str(x).strip() for x in raw_allowed if str(x).strip()]
+        chat_type = str(chat_obj.get("type") or "private").strip().lower()
+        from_obj = message.get("from") or {}
+        user_id = from_obj.get("id")
 
-        # Strict chat ID whitelist check
-        if allowed_chat_ids and chat_id not in allowed_chat_ids:
-            logger.warning(f"[Telegram Security] Rejected message from unauthorized chat ID: {chat_id}")
+        if not self.is_authorized(chat_id_int, user_id=user_id, chat_type=chat_type):
+            logger.warning(
+                f"[Telegram Security] Rejected message from unauthorized chat/user/type: chat={chat_id_int}, user={user_id}, type={chat_type}"
+            )
             return False
 
         text = (message.get("text") or "").strip()
@@ -127,7 +168,14 @@ class TelegramGateway:
                 return True
             res = handle_remote_confirm(action_id, approve=True)
             if res.get("ok"):
-                cmd_info = f"\nCommand:\n`{res.get('command')}`" if res.get("command") else ""
+                cmd_raw = res.get("command") or ""
+                cmd_info = ""
+                if cmd_raw:
+                    import server
+                    safe_c, _ = server.sanitize_preview(cmd_raw)
+                    backticks = re.findall(r"`+", safe_c)
+                    fence = "`" * max(3, max([len(b) for b in backticks], default=0) + 1)
+                    cmd_info = f"\nCommand:\n{fence}\n{safe_c}\n{fence}"
                 self.send_message(chat_id_int, f"✅ Action Approved: {res.get('action')}{cmd_info}\n{res.get('result', '')}")
             else:
                 self.send_message(chat_id_int, f"❌ Failed to approve: {res.get('error')}")
@@ -142,7 +190,14 @@ class TelegramGateway:
                 return True
             res = handle_remote_confirm(action_id, approve=False)
             if res.get("ok"):
-                cmd_info = f"\nCommand:\n`{res.get('command')}`" if res.get("command") else ""
+                cmd_raw = res.get("command") or ""
+                cmd_info = ""
+                if cmd_raw:
+                    import server
+                    safe_c, _ = server.sanitize_preview(cmd_raw)
+                    backticks = re.findall(r"`+", safe_c)
+                    fence = "`" * max(3, max([len(b) for b in backticks], default=0) + 1)
+                    cmd_info = f"\nCommand:\n{fence}\n{safe_c}\n{fence}"
                 self.send_message(chat_id_int, f"🚫 Action Denied: {res.get('action')}{cmd_info}")
             else:
                 self.send_message(chat_id_int, f"❌ Failed to deny: {res.get('error')}")
@@ -162,35 +217,45 @@ class TelegramGateway:
                 if isinstance(res, dict):
                     reply_text = res.get("reply", "") or res.get("response", "")
                     if res.get("pending"):
+                        import server
                         p = res["pending"]
                         p_id = p.get("id")
+                        raw_prompt = p.get("prompt") or ""
+                        safe_prompt, _ = server.sanitize_preview(raw_prompt)
                         cmd_val = p.get("command") or p.get("arg") or p.get("preview") or ""
-                        # 1b. Strip or escape backticks
-                        safe_cmd = cmd_val.replace("```", "'''").replace("`", "'")
-                        # 1c. Escape control and invisible characters
-                        if hasattr(server, "sanitize_preview"):
-                            safe_cmd, _ = server.sanitize_preview(safe_cmd)
+                        safe_cmd, has_invis = server.sanitize_preview(cmd_val)
+                        invis_warn = "\n⚠️ Warning: Command contains hidden or invisible characters." if has_invis else ""
+                        backticks = re.findall(r"`+", safe_cmd)
+                        fence = "`" * max(3, max([len(b) for b in backticks], default=0) + 1)
                         full_approval_msg = (
-                            f"\n\n⚠️ Action Requires Approval (ID: `{p_id}`):\n"
-                            f"{p.get('prompt')}\n\n"
-                            f"Command:\n```\n{safe_cmd}\n```\n"
+                            f"⚠️ Action Requires Approval (ID: `{p_id}`):\n"
+                            f"{safe_prompt}\n\n"
+                            f"Command:\n{fence}\n{safe_cmd}\n{fence}{invis_warn}\n\n"
                             f"Use `/allow {p_id}` or `/deny {p_id}`"
                         )
-                        if len(reply_text + full_approval_msg) > 4096:
+                        if reply_text:
+                            self.send_message(chat_id_int, reply_text)
+                            reply_text = ""
+                        if len(full_approval_msg) > 4000:
                             with server.PENDING_LOCK:
                                 if p_id in server.PENDING_ACTIONS:
                                     server.PENDING_ACTIONS[p_id]["pc_only"] = True
-                            reply_text += (
-                                f"\n\n⚠️ Action Requires Approval (ID: `{p_id}`):\n"
-                                f"{p.get('prompt')}\n\n"
+                            short_msg = (
+                                f"⚠️ Action Requires Approval (ID: `{p_id}`):\n"
+                                f"{safe_prompt}\n\n"
                                 f"Notice: Approval for this action must be done on the PC (payload exceeds Telegram limits)."
                             )
+                            self.send_message(chat_id_int, short_msg)
                         else:
-                            reply_text += full_approval_msg
+                            self.send_message(chat_id_int, full_approval_msg)
+                        return True
+                    else:
+                        if reply_text:
+                            self.send_message(chat_id_int, reply_text)
+                        return True
                 else:
-                    reply_text = str(res)
-                self.send_message(chat_id_int, reply_text)
-                return True
+                    self.send_message(chat_id_int, str(res))
+                    return True
             except Exception as e:
                 logger.error(f"[Telegram] Error executing chat callback: {e}")
                 self.send_message(chat_id_int, f"Error processing request: {e}")

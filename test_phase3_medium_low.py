@@ -162,7 +162,7 @@ class TestPhase3MediumLow(unittest.TestCase):
         class StateTestHandler(server.Handler):
             def __init__(self, path="/api/state"):
                 self.path = path
-                self.headers = {"Host": "127.0.0.1:8765", "Origin": "http://127.0.0.1:8765"}
+                self.headers = {"Host": "127.0.0.1:8765", "Origin": "http://127.0.0.1:8765", "Cookie": f"nova_session={server.SESSION_TOKEN}", "X-Nova-Token": server.API_SESSION_TOKEN}
                 self.command = "GET"
                 self.requestline = f"GET {path} HTTP/1.1"
                 self.sent_status = None
@@ -248,7 +248,7 @@ class TestPhase3MediumLow(unittest.TestCase):
             class ConfirmTestHandler(server.Handler):
                 def __init__(self, body_dict):
                     self.path = "/api/confirm"
-                    self.headers = {"Host": "127.0.0.1:8765", "Origin": "http://127.0.0.1:8765"}
+                    self.headers = {"Host": "127.0.0.1:8765", "Origin": "http://127.0.0.1:8765", "Cookie": f"nova_session={server.SESSION_TOKEN}", "X-Nova-Token": server.API_SESSION_TOKEN}
                     self.command = "POST"
                     self.requestline = "POST /api/confirm HTTP/1.1"
                     self._body_override = body_dict
@@ -321,7 +321,8 @@ class TestPhase3MediumLow(unittest.TestCase):
         t.start()
 
         try:
-            res = server.skill_smart_home(f"http://127.0.0.1:{port}/control")
+            with patch("server.is_allowed_smart_home_host", return_value=(True, "OK")):
+                res = server.skill_smart_home(f"http://127.0.0.1:{port}/control")
             self.assertEqual(res, "Refused: smart home redirects are blocked for security.")
             self.assertFalse(target_called[0])
         finally:
@@ -360,7 +361,7 @@ class TestPhase3MediumLow(unittest.TestCase):
         self.assertEqual(reason, "OK")
 
         # 5. LAN private IP addresses allowed without special configuration
-        for lan_ip in ("127.0.0.1", "192.168.1.100", "10.0.0.1", "172.16.0.5"):
+        for lan_ip in ("192.168.1.100", "10.0.0.1", "172.16.0.5"):
             ok_lan, _ = server.is_allowed_smart_home_host(lan_ip, {})
             self.assertTrue(ok_lan, f"Expected {lan_ip} to be allowed")
 
@@ -385,7 +386,8 @@ class TestPhase3MediumLow(unittest.TestCase):
         t.start()
 
         try:
-            res_live = server.skill_smart_home(f"http://127.0.0.1:{port}/api/toggle | POST | {{\"entity_id\": \"light.living_room\"}}")
+            with patch("server.is_allowed_smart_home_host", return_value=(True, "OK")):
+                res_live = server.skill_smart_home(f"http://127.0.0.1:{port}/api/toggle | POST | {{\"entity_id\": \"light.living_room\"}}")
             self.assertIn("succeeded (200)", res_live)
             self.assertIn("light_turned_on", res_live)
         finally:
@@ -479,7 +481,7 @@ class TestPhase3MediumLow(unittest.TestCase):
         # 4. Turn with invalid token rejected by /api/chat
         class MockChatReq:
             def __init__(self, body):
-                self.headers = {"Host": "127.0.0.1:8765", "Origin": "http://127.0.0.1:8765"}
+                self.headers = {"Host": "127.0.0.1:8765", "Origin": "http://127.0.0.1:8765", "Cookie": f"nova_session={server.SESSION_TOKEN}", "X-Nova-Token": server.API_SESSION_TOKEN}
                 self.command = "POST"
                 self.path = "/api/chat"
                 self._test_body = body

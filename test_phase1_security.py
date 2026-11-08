@@ -23,6 +23,10 @@ class TestPhase1Security(unittest.TestCase):
             server.PENDING_ACTIONS.clear()
         with server.FAILS_LOCK:
             server.FAILS.clear()
+        with server.WORKSPACE_WRITES_LOCK:
+            server.WORKSPACE_WRITES_HISTORY.clear()
+            server.SESSION_WORKSPACE_WRITES_COUNT = 0
+        server.RUN_CODE_TRUST_STATE.reset()
 
     # --- 1A. GIT HARDENING ---
     def test_git_shell_operators_blocked(self):

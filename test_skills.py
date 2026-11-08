@@ -1,3 +1,4 @@
+import server
 import unittest
 import time
 from pathlib import Path
@@ -170,7 +171,7 @@ class TestSkillsSystem(unittest.TestCase):
         class MockRequest:
             def __init__(self, path, host="127.0.0.1:8765", origin=None):
                 self.path = path
-                self.headers = {"Host": host}
+                self.headers = {"Host": host, "Cookie": f"nova_session={server.SESSION_TOKEN}", "X-Nova-Token": server.API_SESSION_TOKEN}
                 if origin:
                     self.headers["Origin"] = origin
                 self.status = None

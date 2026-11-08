@@ -80,7 +80,7 @@ flowchart TD
 - **DNS Rebinding & CSRF Protection**: Binds strictly to `127.0.0.1`, enforces exact port/host validation, and blocks cross-site fetch headers.
 
 ### 🌐 Multi-Channel Gateways (Work from Anywhere)
-- **Mobile QR Remote (`:8766`)**: Scan a one-time QR code with your phone to control Nova over Wi-Fi without cloud relay servers.
+- **Mobile QR Remote (`:8766`)**: Scan a one-time QR code with your phone to control Nova over Wi-Fi without cloud relay servers. Uses a 5-minute single-use pairing code exchanged for a per-device authorization token (`Authorization: Bearer <token>`, never in URL query strings). Paired devices can be inspected and revoked at any time from Nova's Mobile panel.
 - **Telegram Bot Gateway**: Remote control Nova securely from Telegram with chat ID whitelist verification and silent desktop execution.
 - **Discord Bot Gateway**: Full bot gateway supporting `!nova <prompt>` and interactive `!confirm <token>` workflows.
 

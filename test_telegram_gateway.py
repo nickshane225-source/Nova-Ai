@@ -128,7 +128,7 @@ class TestTelegramGateway(unittest.TestCase):
         with patch.object(gw, "send_message") as mock_send:
             handled = gw.process_update(update)
             self.assertTrue(handled)
-            mock_send.assert_called_once()
+            self.assertEqual(mock_send.call_count, 2)
             msg = mock_send.call_args[0][1]
             self.assertIn("Action Requires Approval", msg)
             self.assertIn("dir /s /b", msg)

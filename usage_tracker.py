@@ -137,6 +137,11 @@ def record_usage(
             _USAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
             with open(_USAGE_FILE, "a", encoding="utf-8") as f:
                 f.write(json.dumps(event, ensure_ascii=False) + "\n")
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except Exception:
+                    pass
         except Exception as e:
             logger.warning(f"Failed to append to usage log: {e}")
 

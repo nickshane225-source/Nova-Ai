@@ -43,7 +43,7 @@ class TestChatStream(unittest.TestCase):
         handler.request_version = "HTTP/1.1"
         handler.requestline = f"{handler.command} {handler.path} {handler.request_version}"
         handler.wfile = io.BytesIO()
-        handler.headers = {"Host": "127.0.0.1:8765"}
+        handler.headers = {"Host": "127.0.0.1:8765", "Cookie": f"nova_session={server.SESSION_TOKEN}", "X-Nova-Token": server.API_SESSION_TOKEN}
 
         with patch("server.chat", return_value={"reply": "Hi from streaming!", "actions": []}):
             handler.do_GET()
