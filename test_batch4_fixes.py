@@ -407,6 +407,7 @@ class TestBatch4AndFollowUps(unittest.TestCase):
             "telegram_bot_token": "tok",
             "telegram_allowed_chat_ids": [1001],
             "telegram_allowed_user_ids": [555],
+            "telegram_allow_groups": True,
         })
         # Listed user in group chat with allowed chat_id -> ALLOWED
         self.assertTrue(tg_user_strict.is_authorized(chat_id=1001, user_id=555, chat_type="group"))

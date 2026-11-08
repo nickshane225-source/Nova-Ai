@@ -327,12 +327,12 @@ class TestSecurityHardeningItems(unittest.TestCase):
 
         with patch("guardian_agent._call_guardian_llm", side_effect=mock_guardian_llm) as p_call:
             # First invocation calls LLM
-            v1, r1 = guardian_agent.review_command_safety(valid_cfg, "CMD", "echo hello_cache")
+            v1, r1 = guardian_agent.review_command_safety(valid_cfg, "CMD", "custom_build_tool hello_cache")
             self.assertEqual(v1, guardian_agent.VERDICT_SAFE)
             self.assertEqual(p_call.call_count, 1)
 
             # Second invocation within 60s uses cache
-            v2, r2 = guardian_agent.review_command_safety(valid_cfg, "CMD", "echo hello_cache")
+            v2, r2 = guardian_agent.review_command_safety(valid_cfg, "CMD", "custom_build_tool hello_cache")
             self.assertEqual(v2, guardian_agent.VERDICT_SAFE)
             self.assertEqual(p_call.call_count, 1)  # NOT incremented
 
@@ -487,6 +487,64 @@ class TestSecurityHardeningItems(unittest.TestCase):
                 self.assertNotIn("GIT_EXTERNAL_DIFF", child_env, "Child process environment must not inherit GIT_EXTERNAL_DIFF from parent")
         finally:
             os.environ.pop("GIT_EXTERNAL_DIFF", None)
+
+    def test_item7_search_egress_gating(self):
+        """
+        Follow-up 7:
+        Search egress gating: in check_tool_confirmation_required, require confirmation if a SEARCH query
+        contains an unbroken 20+ char base64 or hex token, OR contains text taken from a tainted file,
+        OR if more than 5 unconfirmed searches have run in the conversation.
+        """
+        cfg = {"confirm_destructive": False}
+        conv_id = "test:egress_conv"
+
+        with server.CONVERSATION_SEARCH_LOCK:
+            server.CONVERSATION_SEARCH_COUNTS.pop(conv_id, None)
+
+        # 1. Unbroken 20+ char hex or base64 token requires confirmation
+        # Benign short query
+        req, reason = server.check_tool_confirmation_required(cfg, "SEARCH", "how to make pasta", is_tainted=False, source="pc", conv_id=conv_id)
+        self.assertFalse(req)
+
+        # Hex MD5/SHA (32 chars)
+        req, reason = server.check_tool_confirmation_required(cfg, "SEARCH", "lookup d41d8cd98f00b204e9800998ecf8427e in db", is_tainted=False, source="pc", conv_id=conv_id)
+        self.assertTrue(req)
+        self.assertIn("base64/hex", reason)
+
+        # Base64 token (20+ chars)
+        req, reason = server.check_tool_confirmation_required(cfg, "SEARCH", "token=c29tZXNlY3JldHRva2VuMTIzNDU2Nzg5MDEyMzQ1Njc4OTA=", is_tainted=False, source="pc", conv_id=conv_id)
+        self.assertTrue(req)
+        self.assertIn("base64/hex", reason)
+
+        # 2. Text taken from a tainted file requires confirmation
+        tainted_file = "sensitive_notes.txt"
+        server.mark_file_tainted(tainted_file, is_tainted=True, content_override="confidential corporate quarterly projection analysis\nsome normal line")
+
+        # Query containing snippet from tainted file
+        req, reason = server.check_tool_confirmation_required(cfg, "SEARCH", "search for confidential corporate quarterly projection", is_tainted=False, source="pc", conv_id=conv_id)
+        self.assertTrue(req)
+        self.assertIn("tainted file", reason)
+
+        # Query referencing the tainted filename directly
+        req, reason = server.check_tool_confirmation_required(cfg, "SEARCH", f"grep {tainted_file}", is_tainted=False, source="pc", conv_id=conv_id)
+        self.assertTrue(req)
+        self.assertIn("tainted file", reason)
+
+        # 3. Max 5 unconfirmed searches per conversation
+        # Execute 5 searches through execute_model_tags
+        with patch("server.open_url", return_value="Opened search URL"):
+            for i in range(5):
+                tags = [("SEARCH", f"query number {i}", 0, 10)]
+                res = server.execute_model_tags(tags, cfg, source="pc", mode="developer", is_tainted=False, conv_id=conv_id)
+                self.assertIsNone(res["pending_info"], f"Search {i+1} should not require confirmation")
+                self.assertEqual(len(res["actions"]), 1)
+
+            # 6th search must require confirmation
+            tags = [("SEARCH", "query number 6", 0, 10)]
+            res = server.execute_model_tags(tags, cfg, source="pc", mode="developer", is_tainted=False, conv_id=conv_id)
+            self.assertIsNotNone(res["pending_info"], "6th unconfirmed search must require confirmation")
+            self.assertIn("Maximum of 5 unconfirmed searches reached", res["pending_info"]["prompt"])
+
 
 if __name__ == "__main__":
     unittest.main()

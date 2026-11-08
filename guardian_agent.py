@@ -34,7 +34,7 @@ def is_exec_capable_tag(tool_name: str, argument: str) -> bool:
     """
     tool_upper = str(tool_name or "").strip().upper()
     cmd = str(argument or "").strip()
-    if tool_upper in ("CMD", "POWERSHELL", "RUN_CODE"):
+    if tool_upper in ("CMD", "POWERSHELL", "RUN_CODE", "GIT"):
         return True
     if tool_upper in ("WRITE_FILE", "EDIT_FILE"):
         parts = cmd.split("|", 1)
@@ -196,11 +196,25 @@ def review_command_safety(cfg: dict, tool_name: str, argument: str, source: str 
     if _PROMPT_INJECTION_IN_CMD_RE.search(cmd):
         return VERDICT_DANGEROUS, "DANGEROUS: Command contains prompt-injection instructions attempting to override Guardian."
 
+    # Commands that skip confirmation (remote or scheduled) must match explicit allowlist
+    if source in ("phone", "remote", "telegram", "discord", "scheduled"):
+        if not is_command_in_allowlist(tool_upper, cmd):
+            return VERDICT_DANGEROUS, f"DANGEROUS: Command '{cmd}' from {source} is not on the safety allowlist."
+        return VERDICT_SAFE, f"SAFE: Command '{cmd}' matched safety allowlist for {source} execution."
+
     # 2. Call Guardian LLM ONLY for exec-capable tags after local rails
     if not is_exec_capable_tag(tool_upper, cmd):
         return VERDICT_SAFE, "SAFE: Non-exec tool"
 
-    # 3. Check 60-second verdict cache
+    # 3. Fail closed if no provider or API key is available (only for exec-capable tags)
+    if not _has_usable_guardian_provider(cfg):
+        return VERDICT_DANGEROUS, "DANGEROUS: No LLM provider or API key available for Guardian safety review (fail-closed)"
+
+    # Check read-only / safe shell allowlist (skip LLM call for known safe commands)
+    if is_command_in_allowlist(tool_upper, cmd):
+        return VERDICT_SAFE, "SAFE: Read-only tool inspection"
+
+    # 4. Check 60-second verdict cache
     cache_key = f"{tool_upper}:{cmd}"
     now_t = time.time()
     with GUARDIAN_CACHE_LOCK:
@@ -208,21 +222,6 @@ def review_command_safety(cfg: dict, tool_name: str, argument: str, source: str 
             cached_v, cached_r, cached_t = GUARDIAN_VERDICT_CACHE[cache_key]
             if now_t - cached_t < GUARDIAN_CACHE_TTL:
                 return cached_v, cached_r
-
-    # Commands that skip confirmation (remote or scheduled) must match explicit allowlist
-    if source in ("phone", "remote", "telegram", "discord", "scheduled"):
-        if not is_command_in_allowlist(tool_upper, cmd):
-            v_res = (VERDICT_DANGEROUS, f"DANGEROUS: Command '{cmd}' from {source} is not on the safety allowlist.")
-            with GUARDIAN_CACHE_LOCK:
-                GUARDIAN_VERDICT_CACHE[cache_key] = (v_res[0], v_res[1], now_t)
-            return v_res
-
-    # 4. Fail closed if no provider or API key is available (only for exec-capable tags)
-    if not _has_usable_guardian_provider(cfg):
-        v_res = (VERDICT_DANGEROUS, "DANGEROUS: No LLM provider or API key available for Guardian safety review (fail-closed)")
-        with GUARDIAN_CACHE_LOCK:
-            GUARDIAN_VERDICT_CACHE[cache_key] = (v_res[0], v_res[1], now_t)
-        return v_res
 
     # 5. Invoke Guardian LLM with <UNTRUSTED_COMMAND_DATA> wrapping
     prompt = _wrap_untrusted_command(tool_upper, cmd)

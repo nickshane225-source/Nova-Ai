@@ -7,6 +7,7 @@ Runs a small web server on 127.0.0.1 and opens the UI in your browser.
 Your API key is stored only in data/config.json on your own machine.
 """
 import datetime
+import difflib
 import hashlib
 import hmac
 import ipaddress
@@ -1595,6 +1596,20 @@ def mark_file_tainted(file_path: str, is_tainted: bool = True, content_override:
         if not sha and content_override is not None:
             sha = hashlib.sha256(str(content_override).encode("utf-8", errors="replace")).hexdigest()
 
+        if is_tainted:
+            text_c = content_override
+            if text_c is None and canon.is_file():
+                try:
+                    if canon.stat().st_size < 1_000_000:
+                        text_c = canon.read_text(encoding="utf-8", errors="replace")
+                except Exception:
+                    pass
+            if text_c:
+                for line in text_c.splitlines():
+                    s_line = line.strip().lower()
+                    if len(s_line) >= 15:
+                        TAINTED_FILE_CONTENT_SNIPPETS.add(s_line)
+
         def _updater(data):
             if not isinstance(data, dict):
                 data = {}
@@ -2120,7 +2135,39 @@ def is_read_or_list_target_tainted(raw_arg: str, cfg=None) -> bool:
     return False
 
 
-def check_tool_confirmation_required(cfg, name, arg, is_tainted=False, source="pc", turn_written_files=None):
+CONVERSATION_SEARCH_COUNTS = {}
+CONVERSATION_SEARCH_LOCK = threading.Lock()
+TAINTED_FILE_CONTENT_SNIPPETS = set()
+
+def has_base64_hex_token(text: str) -> bool:
+    """Detects unbroken 20+ character tokens of base64 or hex characters."""
+    if not text:
+        return False
+    for match in re.finditer(r"[A-Za-z0-9+/=_-]{20,}", text):
+        tok = match.group(0).strip("=")
+        if len(tok) >= 20:
+            return True
+    return False
+
+def is_text_from_tainted_file(query_text: str) -> bool:
+    """Returns True if the query references a tainted file or contains content from one."""
+    q = str(query_text or "").strip().lower()
+    if not q:
+        return False
+    prov_tainted, _ = is_file_tainted_provenance(q)
+    if prov_tainted:
+        return True
+    for snippet in list(TAINTED_FILE_CONTENT_SNIPPETS):
+        if snippet in q or (len(q) >= 15 and q in snippet):
+            return True
+        if len(snippet) >= 15 and len(q) >= 15:
+            match = difflib.SequenceMatcher(None, snippet, q).find_longest_match(0, len(snippet), 0, len(q))
+            if match.size >= 15:
+                return True
+    return False
+
+
+def check_tool_confirmation_required(cfg, name, arg, is_tainted=False, source="pc", turn_written_files=None, conv_id=None):
     name = unicodedata.normalize("NFKC", (name or "")).strip().upper()
     arg_clean = (arg or "").strip().lower()
 
@@ -2141,6 +2188,21 @@ def check_tool_confirmation_required(cfg, name, arg, is_tainted=False, source="p
         elif is_read_or_list_target_tainted(arg, cfg=cfg):
             return True, f"Listing '{arg}' outside workspace requires user approval."
     if name == "SEARCH":
+        # Check base64/hex token (20+ unbroken chars)
+        if has_base64_hex_token(arg or ""):
+            return True, "Search query contains unbroken 20+ character base64/hex-like token; user approval required."
+
+        # Check text taken from a tainted file
+        if is_text_from_tainted_file(arg or ""):
+            return True, "Search query references or contains text taken from a tainted file; user approval required."
+
+        # Max 5 unconfirmed searches per conversation
+        effective_conv = conv_id or f"{source}:developer"
+        with CONVERSATION_SEARCH_LOCK:
+            s_count = CONVERSATION_SEARCH_COUNTS.get(effective_conv, 0)
+            if s_count >= 5:
+                return True, "Maximum of 5 unconfirmed searches reached for this conversation; user approval required."
+
         if is_tainted or source != "pc":
             # In a tainted conversation, SEARCH needs confirmation, except SEARCH with <= 80 chars
             if is_tainted and source == "pc" and len(arg or "") <= 80:
@@ -3245,18 +3307,7 @@ def skill_git(arg, cfg=None):
     if not tokens:
         return "Refused: empty git arguments."
 
-    # 1. Check unconditional reject flags and disallowed schemes anywhere in tokens
-    for tok in tokens:
-        tok_lower = tok.lower()
-        if tok_lower.startswith(("ext::", "file://", "file:")) or "ext::" in tok_lower:
-            return f"Refused: git argument '{tok}' contains disallowed URL scheme (ext::, file://)."
-        for bad in UNCONDITIONAL_REJECT_FLAGS:
-            if tok == bad or tok_lower == bad or tok_lower.startswith(bad + "=") or tok_lower.startswith(bad):
-                return f"Git flag '{tok}' is disallowed for security."
-        if tok in ("-C", "--exec-path") or tok_lower.startswith(("-C", "--work-tree", "--git-dir", "--exec-path")):
-            return f"Git flag '{tok}' is disallowed for security."
-
-    # 2. Find the subcommand (first token not starting with -)
+    # 1. Find the subcommand (first token not starting with -)
     subcmd = None
     subcmd_idx = -1
     skip_arg = False
@@ -3265,7 +3316,7 @@ def skill_git(arg, cfg=None):
             skip_arg = False
             continue
         if tok in ("-c", "-C", "--exec-path"):
-            return f"Git flag '{tok}' is disallowed for security."
+            return f"Git flag '{tok}' is disallowed for security and is not permitted."
         if not tok.startswith("-"):
             subcmd = tok.lower()
             subcmd_idx = i
@@ -3274,7 +3325,18 @@ def skill_git(arg, cfg=None):
             skip_arg = True
 
     if not subcmd or subcmd not in GIT_ALLOWED_SUBCOMMANDS:
-        return f"Refused: git subcommand '{subcmd or ''}' is not permitted."
+        return f"Refused: git subcommand '{subcmd or ''}' is not permitted (disallowed for security)."
+
+    # 2. Check unconditional reject flags and disallowed schemes anywhere in tokens
+    for tok in tokens:
+        tok_lower = tok.lower()
+        if tok_lower.startswith(("ext::", "file://", "file:")) or "ext::" in tok_lower:
+            return f"Refused: git argument '{tok}' contains disallowed URL scheme (ext::, file://) and is not permitted."
+        for bad in UNCONDITIONAL_REJECT_FLAGS:
+            if tok == bad or tok_lower == bad or tok_lower.startswith(bad + "=") or tok_lower.startswith(bad):
+                return f"Git flag '{tok}' is disallowed for security and is not permitted."
+        if tok in ("-C", "--exec-path") or tok_lower.startswith(("-C", "--work-tree", "--git-dir", "--exec-path")):
+            return f"Git flag '{tok}' is disallowed for security and is not permitted."
 
     clone_url = None
     target_dir = None
@@ -4161,12 +4223,14 @@ TAINT_SOURCE_TOOLS = {
     "NEWS"
 }
 
-def execute_model_tags(tags, cfg, jid=None, mode="developer", source="pc", is_tainted=False, is_healing=False):
+def execute_model_tags(tags, cfg, jid=None, mode="developer", source="pc", is_tainted=False, is_healing=False, conv_id=None):
     """
     Unified function that executes model-emitted tags.
     Every tool call passes through check_tool_confirmation_required().
     Used by both normal turns and self-healing turns so gating and taint never diverge.
     """
+    if conv_id is None:
+        conv_id = f"{source}:{mode}" if source == "pc" else f"{source}:{jid}"
     actions = []
     feedback_items = []
     pending_info = None
@@ -4234,13 +4298,18 @@ def execute_model_tags(tags, cfg, jid=None, mode="developer", source="pc", is_ta
                     g_reason = f"Non-exec tool bypassed classifier error: {e}"
 
         needs_confirm, reason = check_tool_confirmation_required(
-            cfg, clean_name, arg, is_tainted=is_tainted, source=source, turn_written_files=turn_written_files
+            cfg, clean_name, arg, is_tainted=is_tainted, source=source, turn_written_files=turn_written_files, conv_id=conv_id
         )
 
         # Guardian DANGEROUS or classifier failure MUST block every auto-approval path
         if g_verdict == guardian_agent.VERDICT_DANGEROUS:
             needs_confirm = True
             reason = f"Guardian flagged action as DANGEROUS: {g_reason}" if g_reason else "Guardian flagged action as DANGEROUS"
+
+        if clean_name == "SEARCH" and not needs_confirm:
+            effective_conv = conv_id or (f"{source}:{mode}" if source == "pc" else f"{source}:{jid}")
+            with CONVERSATION_SEARCH_LOCK:
+                CONVERSATION_SEARCH_COUNTS[effective_conv] = CONVERSATION_SEARCH_COUNTS.get(effective_conv, 0) + 1
 
         if needs_confirm:
             action_id = secrets.token_hex(8)
@@ -4359,9 +4428,16 @@ def _chat_inner(user_text, source, jid, mode="developer", is_automation=False, c
     char = next((c for c in chars if c["id"] == cfg["character"]), chars[0])
     user_msg = {"role": "user", "content": user_text}
     with LOCK:
-        if conv_id not in CONVERSATION_HISTORIES:
-            CONVERSATION_HISTORIES[conv_id] = []
-        hist = CONVERSATION_HISTORIES[conv_id]
+        if conv_id == "pc:developer":
+            hist = HISTORIES["developer"]
+            CONVERSATION_HISTORIES["pc:developer"] = hist
+        elif conv_id == "pc:cyber":
+            hist = HISTORIES["cyber"]
+            CONVERSATION_HISTORIES["pc:cyber"] = hist
+        else:
+            if conv_id not in CONVERSATION_HISTORIES:
+                CONVERSATION_HISTORIES[conv_id] = []
+            hist = CONVERSATION_HISTORIES[conv_id]
 
     user_lower = (user_text or "").strip().lower()
     APPROVE_WORDS = {"yes", "confirm", "proceed", "allow", "approve", "haan", "thik ache", "y", "sure", "do it"}
@@ -4513,7 +4589,7 @@ def _chat_inner(user_text, source, jid, mode="developer", is_automation=False, c
             break
         tool_loop_steps += 1
         tag_result = execute_model_tags(
-            parsed_tags, cfg, jid=jid, mode=mode, source=source, is_tainted=is_tainted, is_healing=False
+            parsed_tags, cfg, jid=jid, mode=mode, source=source, is_tainted=is_tainted, is_healing=False, conv_id=conv_id
         )
         actions.extend(tag_result["actions"])
         feedback_items = list(tag_result["feedback_items"])
@@ -4569,7 +4645,7 @@ def _chat_inner(user_text, source, jid, mode="developer", is_automation=False, c
             heal_raw = call_llm(cfg, sys_prompt, conversation_chain)
             raw = heal_raw
             heal_tags = extract_tags(heal_raw)
-            heal_result = execute_model_tags(heal_tags, cfg, jid=jid, mode=mode, source=source, is_tainted=is_tainted, is_healing=True)
+            heal_result = execute_model_tags(heal_tags, cfg, jid=jid, mode=mode, source=source, is_tainted=is_tainted, is_healing=True, conv_id=conv_id)
             actions.extend(heal_result["actions"])
             is_tainted = heal_result["is_tainted"] or is_tainted
             if heal_result["pending_info"]:
@@ -5721,6 +5797,8 @@ class Handler(BaseHandler):
                         CONVERSATION_HISTORIES["pc:developer"] = HISTORIES["developer"]
                         CONVERSATION_HISTORIES["pc:cyber"] = HISTORIES["cyber"]
                 RUN_CODE_TRUST_STATE.reset()
+                with CONVERSATION_SEARCH_LOCK:
+                    CONVERSATION_SEARCH_COUNTS.clear()
                 return self._send(200, {"ok": True, "is_tainted": False})
             if path == "/api/clear_untrusted_context":
                 clear_mode = body.get("mode") if isinstance(body, dict) else "developer"

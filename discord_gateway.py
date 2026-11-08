@@ -110,8 +110,12 @@ class DiscordGateway:
         is_bot = bool(author.get("bot", False))
 
         # 2. Derive is_dm from missing guild_id (or guild_id is None / empty)
+        # In Discord REST API (GET /channels/{id}/messages), guild_id is omitted; if channel_id is in self.channel_ids, it is not a DM.
         guild_id = msg.get("guild_id")
-        is_dm = (guild_id is None or str(guild_id).strip() == "")
+        if channel_id and channel_id in self.channel_ids:
+            is_dm = False
+        else:
+            is_dm = (guild_id is None or str(guild_id).strip() == "")
 
         content = (msg.get("content") or "").strip()
         if not content:
