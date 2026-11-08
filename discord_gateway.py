@@ -254,7 +254,7 @@ class DiscordGateway:
                 def _disc_notify(event_dict):
                     st = event_dict.get("status")
                     if st == "paused":
-                        p_info = event_dict.get("pending_info")
+                        p_info = event_dict.get("pending_info") or (event_dict if (event_dict.get("pending_id") or event_dict.get("id")) else None)
                         if p_info:
                             self.send_approval_announcement(channel_id, p_info, prefix_text=event_dict.get("message"))
                         else:

@@ -4655,6 +4655,13 @@ def resume_plan_execution(plan_state: dict, last_result=None, cfg=None, turn_too
                     pc_only=p_pc_only,
                     guardian=p_guardian,
                 )
+                p_dict = {
+                    "id": p_id,
+                    "action": p_act,
+                    "preview": clean_paused_prev,
+                    "pc_only": p_pc_only,
+                    "guardian": p_guardian,
+                }
                 if notify:
                     try:
                         notify({
@@ -4663,6 +4670,7 @@ def resume_plan_execution(plan_state: dict, last_result=None, cfg=None, turn_too
                             "message": f"Plan paused: {clean_paused_prev}",
                             "paused_step": clean_paused_prev,
                             "pending_id": p_id,
+                            "pending_info": p_dict,
                             "action": p_act,
                             "preview": clean_paused_prev,
                             "pc_only": p_pc_only,
