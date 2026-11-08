@@ -545,6 +545,52 @@ class TestSecurityHardeningItems(unittest.TestCase):
             self.assertIsNotNone(res["pending_info"], "6th unconfirmed search must require confirmation")
             self.assertIn("Maximum of 5 unconfirmed searches reached", res["pending_info"]["prompt"])
 
+    def test_item8_error_taint_and_step_cap_tag_stripping(self):
+        """
+        Follow-up 8:
+        1. Error taint: only taint on 'Error:' output when the failing tool is in TAINT_SOURCE_TOOLS.
+        2. When the tool-feedback loop hits its step cap, strip any unexecuted [[...]] tags from the final reply.
+        """
+        cfg = {"confirm_destructive": False}
+
+        # 1. Non-taint tool error (e.g., CMD or RUN_CODE) does NOT taint the turn
+        with patch("server.run_skill", return_value="Error: command failed"):
+            with patch("server.check_tool_confirmation_required", return_value=(False, "")):
+                res_non_taint = server.execute_model_tags([("CMD", "echo test", 0, 10)], cfg, is_tainted=False)
+                self.assertFalse(res_non_taint["is_tainted"], "Error in non-taint tool must not taint the turn")
+
+        # 2. Taint tool error (in TAINT_SOURCE_TOOLS, e.g. FETCH_URL or SEARCH) DOES taint the turn
+        with patch("server.run_skill", return_value="Error: connection timed out"):
+            with patch("server.check_tool_confirmation_required", return_value=(False, "")):
+                res_taint = server.execute_model_tags([("FETCH_URL", "https://timeout.com", 0, 10)], cfg, is_tainted=False)
+                self.assertTrue(res_taint["is_tainted"], "Error in TAINT_SOURCE_TOOLS must taint the turn")
+
+        # 3. Step cap strips unexecuted tags from final reply
+        call_count = [0]
+        def mock_stepping_llm(cfg_arg, sys_prompt_arg, messages):
+            call_count[0] += 1
+            # Keep returning tags to exhaust the max 5 tool loop steps
+            if call_count[0] < 5:
+                return "Step work [[NOTE: title | content]]"
+            else:
+                # On 5th iteration (hitting max_tool_steps cap), return text containing unexecuted tags
+                return "Completed work but still wants [[CMD: calc.exe]] and [[WRITE_FILE: payload.bat | evil]] tags."
+
+        conv_id = "test:step_cap_conv"
+        with server.LOCK:
+            server.CONVERSATION_HISTORIES[conv_id] = []
+            server.CONVERSATION_TAINT[conv_id] = False
+
+        with patch("server.call_llm", side_effect=mock_stepping_llm):
+            with patch("server.run_skill", return_value="OK"):
+                with patch("server.check_tool_confirmation_required", return_value=(False, "")):
+                    chat_res = server._chat_inner("do work", "pc", "jid_step_test", mode="developer", conv_id=conv_id)
+                    reply = chat_res["reply"]
+                    self.assertNotIn("[[CMD: calc.exe]]", reply)
+                    self.assertNotIn("[[WRITE_FILE: payload.bat | evil]]", reply)
+                    self.assertNotIn("[[", reply)
+                    self.assertNotIn("]]", reply)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -4384,7 +4384,7 @@ def execute_model_tags(tags, cfg, jid=None, mode="developer", source="pc", is_ta
                 status="EXECUTED",
                 cfg=cfg,
             )
-        if res and any(err_pat in res for err_pat in ("STDERR:", "Traceback (most recent call last)", "Exit code:", "Error:", "failed:")):
+        if clean_name in TAINT_SOURCE_TOOLS and res and any(err_pat in str(res) for err_pat in ("STDERR:", "Traceback (most recent call last)", "Exit code:", "Error:", "failed:")):
             is_tainted = True
         if res and str(res).strip():
             feedback_items.append(f"[{clean_name} Output]:\n{res}")
@@ -4674,6 +4674,9 @@ def _chat_inner(user_text, source, jid, mode="developer", is_automation=False, c
                 final_reply = cleaned_obs
         except Exception:
             pass
+
+    if tool_loop_steps >= max_tool_steps:
+        final_reply = re.sub(r"\[\[.*?\]\]", "", final_reply, flags=re.DOTALL).strip()
 
     reply = final_reply or "Done."
     if pending_info and not any(w in reply.lower() for w in ("confirm", "approve", "permission")):
