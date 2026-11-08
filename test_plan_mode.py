@@ -207,6 +207,86 @@ class TestPlanMode(unittest.TestCase):
 
         self.assertTrue(server.CONVERSATION_TAINT.get(conv_id_resume, False), "Resume path must propagate taint to conversation taint store")
 
+    def test_paused_plan_approval_prompt_resume_deny_and_expiry(self):
+        import server
+        from unittest.mock import patch
+        import time
+
+        # Reset history and state
+        with server.LOCK:
+            server.HISTORIES["developer"].clear()
+        with server.PENDING_LOCK:
+            server.PENDING_ACTIONS.clear()
+
+        # Mock LLM returning a PLAN tag whose step 2 is a CMD
+        mock_plan_llm_reply = (
+            "Here is the execution plan:\n"
+            "[[PLAN: Deploy Pipeline | STEP: Prep environment | CMD: echo deploying_service_running | STEP: Verify service health]]"
+        )
+
+        with patch("server.call_llm", return_value=mock_plan_llm_reply):
+            res_chat = server.chat("deploy the pipeline", source="pc", mode="developer")
+
+        # 1. Verify approval prompt appears in chat
+        self.assertIn("[Action Requires Confirmation:", res_chat["reply"])
+        self.assertIn("pending", res_chat)
+        action_id = res_chat["pending"]["id"]
+        self.assertEqual(res_chat["pending"]["name"], "CMD")
+        with server.PENDING_LOCK:
+            self.assertIn(action_id, server.PENDING_ACTIONS)
+            pending_entry = server.PENDING_ACTIONS[action_id]
+            self.assertEqual(pending_entry["plan_state"]["title"], "Deploy Pipeline")
+            self.assertEqual(pending_entry["plan_state"]["paused_step_idx"], 2)
+
+        # 2. Approving resumes step 3 and finishes
+        res_approve = server.chat("yes", source="pc", mode="developer")
+        self.assertIn("executed successfully", res_approve["reply"])
+        self.assertIn("3 steps completed", res_approve["reply"])
+        with server.PENDING_LOCK:
+            self.assertNotIn(action_id, server.PENDING_ACTIONS)
+
+        # 3. Denying aborts the plan
+        with server.LOCK:
+            server.HISTORIES["developer"].clear()
+        with server.PENDING_LOCK:
+            server.PENDING_ACTIONS.clear()
+
+        mock_plan_deny_reply = (
+            "Here is the execution plan:\n"
+            "[[PLAN: Abort Pipeline | STEP: Prep | CMD: echo abort_me_cmd | STEP: Post-step]]"
+        )
+        with patch("server.call_llm", return_value=mock_plan_deny_reply):
+            res_chat_deny = server.chat("run abort pipeline", source="pc", mode="developer")
+
+        self.assertIn("pending", res_chat_deny)
+        deny_action_id = res_chat_deny["pending"]["id"]
+
+        res_deny = server.chat("no", source="pc", mode="developer")
+        self.assertIn("cancelled", res_deny["reply"])
+        self.assertIn("Plan 'Abort Pipeline' aborted", res_deny["reply"])
+        with server.PENDING_LOCK:
+            self.assertNotIn(deny_action_id, server.PENDING_ACTIONS)
+
+        # 4. Expiry cleans up
+        with server.LOCK:
+            server.HISTORIES["developer"].clear()
+        with server.PENDING_LOCK:
+            server.PENDING_ACTIONS.clear()
+
+        with patch("server.call_llm", return_value=mock_plan_deny_reply):
+            res_chat_exp = server.chat("run expire pipeline", source="pc", mode="developer")
+
+        exp_action_id = res_chat_exp["pending"]["id"]
+        with server.PENDING_LOCK:
+            # Force expiration
+            server.PENDING_ACTIONS[exp_action_id]["expires_at"] = time.time() - 10
+
+        # Attempting chat turn after expiry purges it
+        with patch("server.call_llm", return_value="All systems nominal."):
+            server.chat("status update", source="pc", mode="developer")
+        with server.PENDING_LOCK:
+            self.assertNotIn(exp_action_id, server.PENDING_ACTIONS)
+
 
 if __name__ == "__main__":
     unittest.main()

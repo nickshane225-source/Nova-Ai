@@ -2249,7 +2249,7 @@ NO_CONFIRM_TOOLS = {
     "SCREENSHOT", "ACTIVE_WINDOW", "GET_WINDOW", "BRIEFING", "MORNING_BRIEFING",
     "LIST_AUTOMATIONS", "AUTOMATIONS", "CANCEL_AUTOMATION", "STOP_AUTOMATION",
     "BROWSER_CLOSE", "BROWSER_RESEARCH", "BROWSER_READ",
-    "LIST_FILES", "READ_FILE", "SEARCH",
+    "LIST_FILES", "READ_FILE", "SEARCH", "PLAN",
 }
 
 
@@ -4895,7 +4895,11 @@ def _chat_inner(user_text, source, jid, mode="developer", is_automation=False, c
                             status="DENIED",
                             cfg=cfg,
                         )
-                    reply = f"Action {pending['name']} was cancelled."
+                    if pending.get("plan_state"):
+                        plan_title = pending["plan_state"].get("title", "Plan")
+                        reply = f"Action {pending['name']} was cancelled. Plan '{plan_title}' aborted."
+                    else:
+                        reply = f"Action {pending['name']} was cancelled."
                     with LOCK:
                         hist.append(user_msg)
                         hist.append({"role": "assistant", "content": reply})
@@ -5766,7 +5770,12 @@ class Handler(BaseHandler):
                             status="DENIED",
                             cfg=cfg,
                         )
-                    return self._send(200, {"ok": True, "approved": False, "action": pending["name"], "command": pending.get("arg", ""), "guardian": pending.get("guardian", "NONE")})
+                    res_body = {"ok": True, "approved": False, "action": pending["name"], "command": pending.get("arg", ""), "guardian": pending.get("guardian", "NONE")}
+                    if pending.get("plan_state"):
+                        plan_title = pending["plan_state"].get("title", "Plan")
+                        res_body["plan_aborted"] = True
+                        res_body["message"] = f"Plan '{plan_title}' aborted."
+                    return self._send(200, res_body)
                 if pending.get("name") == "RUN_CODE":
                     if pending.get("is_tainted") or is_file_tainted_provenance(pending.get("arg", ""))[0]:
                         RUN_CODE_TRUST_STATE.invalidate()
