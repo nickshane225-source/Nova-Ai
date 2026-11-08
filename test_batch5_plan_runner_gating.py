@@ -30,10 +30,18 @@ class TestBatch5PlanRunnerGating(unittest.TestCase):
         }
         with server.PENDING_LOCK:
             server.PENDING_ACTIONS.clear()
+        server.CONVERSATION_TAINT.clear()
+        with server.LOCK:
+            server.HISTORIES["developer"].clear()
+            server.HISTORIES["cyber"].clear()
+            server.CONVERSATION_HISTORIES.clear()
+            server.CONVERSATION_HISTORIES["pc:developer"] = server.HISTORIES["developer"]
+            server.CONVERSATION_HISTORIES["pc:cyber"] = server.HISTORIES["cyber"]
 
     def tearDown(self):
         with server.PENDING_LOCK:
             server.PENDING_ACTIONS.clear()
+        server.CONVERSATION_TAINT.clear()
 
     def test_HIGH_01_plan_never_executes_cmd_without_confirmation(self):
         """CMD step inside PLAN must pause and require confirmation before executing."""
@@ -99,9 +107,9 @@ class TestBatch5PlanRunnerGating(unittest.TestCase):
         executed_steps = []
         real_run_skill = server.run_skill
 
-        def mock_run_skill(cfg, name, arg, source="pc", is_confirmed=False, mode="developer", is_tainted=False):
+        def mock_run_skill(cfg, name, arg, source="pc", is_confirmed=False, mode="developer", is_tainted=False, **kwargs):
             if name == "PLAN":
-                return real_run_skill(cfg, name, arg, source=source, is_confirmed=is_confirmed, mode=mode, is_tainted=is_tainted)
+                return real_run_skill(cfg, name, arg, source=source, is_confirmed=is_confirmed, mode=mode, is_tainted=is_tainted, **kwargs)
             executed_steps.append((name, arg, is_confirmed))
             return f"{name} OK: {arg}"
 
@@ -130,7 +138,9 @@ class TestBatch5PlanRunnerGating(unittest.TestCase):
 
             # Resume plan execution
             final_res = server.resume_plan_execution(plan_st, last_result=approved_res, cfg=self.cfg)
-            self.assertIn("executed successfully", final_res)
+            if isinstance(final_res, dict) and final_res.get("worker"):
+                final_res["worker"].join(timeout=3.0)
+            self.assertTrue("resumed in background" in str(final_res) or "executed successfully" in str(final_res))
 
             # Now all 3 steps must have executed
             self.assertEqual(len(executed_steps), 3)
@@ -143,9 +153,9 @@ class TestBatch5PlanRunnerGating(unittest.TestCase):
         executed = []
         real_run_skill = server.run_skill
 
-        def mock_run_skill(cfg, name, arg, source="pc", is_confirmed=False, mode="developer", is_tainted=False):
+        def mock_run_skill(cfg, name, arg, source="pc", is_confirmed=False, mode="developer", is_tainted=False, **kwargs):
             if name == "PLAN":
-                return real_run_skill(cfg, name, arg, source=source, is_confirmed=is_confirmed, mode=mode, is_tainted=is_tainted)
+                return real_run_skill(cfg, name, arg, source=source, is_confirmed=is_confirmed, mode=mode, is_tainted=is_tainted, **kwargs)
             executed.append(name)
             return "OK"
 

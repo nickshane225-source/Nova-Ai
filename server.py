@@ -5689,6 +5689,9 @@ class Handler(BaseHandler):
             safe["api_key_set"] = bool(cfg.get("api_key"))
             for sec in sorted(SECRET_FIELDS):
                 safe[f"{sec}_set"] = bool(cfg.get(sec))
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            state_mode = qs.get("mode", ["developer"])[0]
+            is_tainted = bool(CONVERSATION_TAINT.get(f"pc:{state_mode}", False) or CONVERSATION_TAINT.get(state_mode, False))
             return self._send(
                 200,
                 {
@@ -5698,7 +5701,7 @@ class Handler(BaseHandler):
                     "presets": PRESETS,
                     "os": OS,
                     "workspace": str(WORKSPACE),
-                    "is_tainted": bool(CONVERSATION_TAINT.get("pc:developer", False) or CONVERSATION_TAINT.get("pc:cyber", False) or any(CONVERSATION_TAINT.values())),
+                    "is_tainted": is_tainted,
                     "tainted_modes": dict(CONVERSATION_TAINT),
                     "tainted_conversations": dict(CONVERSATION_TAINT),
                 },
