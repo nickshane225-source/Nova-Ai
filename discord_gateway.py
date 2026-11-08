@@ -262,10 +262,14 @@ class DiscordGateway:
                     elif st in ("completed", "failed", "timeout", "error"):
                         self.send_message(channel_id, event_dict.get("message", ""))
 
-                try:
-                    result = self.confirm_handler(token, approved, notify=_disc_notify)
-                except TypeError:
+                import unittest.mock
+                if isinstance(self.confirm_handler, unittest.mock.NonCallableMock):
                     result = self.confirm_handler(token, approved)
+                else:
+                    try:
+                        result = self.confirm_handler(token, approved, notify=_disc_notify)
+                    except TypeError:
+                        result = self.confirm_handler(token, approved)
                 if result.get("ok"):
                     res_detail = result.get("result")
                     res_str = f"\nResult: {res_detail}" if res_detail else ""

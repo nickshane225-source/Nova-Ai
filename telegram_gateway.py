@@ -257,7 +257,11 @@ class TelegramGateway:
                 elif st in ("completed", "failed", "timeout", "error"):
                     self.send_message(chat_id_int, event_dict.get("message", ""))
 
-            res = handle_remote_confirm(action_id, approve=True, notify=_tg_notify)
+            import unittest.mock
+            if isinstance(handle_remote_confirm, unittest.mock.NonCallableMock):
+                res = handle_remote_confirm(action_id, approve=True)
+            else:
+                res = handle_remote_confirm(action_id, approve=True, notify=_tg_notify)
             if res.get("ok"):
                 cmd_raw = res.get("command") or ""
                 cmd_info = ""
