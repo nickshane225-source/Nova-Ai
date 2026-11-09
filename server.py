@@ -2408,6 +2408,17 @@ NO_CONFIRM_TOOLS = {
     "LIST_FILES", "READ_FILE", "SEARCH", "PLAN",
 }
 
+NETWORK_CAPABLE_TOOLS = {
+    "FETCH", "FETCH_URL", "READ_URL",
+    "OPEN_URL", "SEARCH",
+    "BROWSER_OPEN", "BROWSER_RESEARCH", "BROWSER_READ", "BROWSER_PAGE",
+    "BROWSER_TABS", "BROWSER_CLICK", "BROWSER_TYPE", "BROWSER_SCROLL", "BROWSER_ACTIVATE", "BROWSER_CLOSE", "BROWSER_YOUTUBE",
+    "READ_PAGE", "PAGE_CONTENT",
+    "GITHUB", "GH", "GIT_HUB", "GIT",
+    "SMART_HOME", "WEBHOOK", "IOT",
+    "NEWS", "BRIEFING", "MORNING_BRIEFING",
+}
+
 
 def is_read_or_list_target_tainted(raw_arg: str, cfg=None) -> bool:
     """
@@ -2570,6 +2581,11 @@ def is_text_from_tainted_file(query_text: str) -> bool:
 def check_tool_confirmation_required(cfg, name, arg, is_tainted=False, source="pc", turn_written_files=None, conv_id=None):
     name = unicodedata.normalize("NFKC", (name or "")).strip().upper()
     arg_clean = (arg or "").strip().lower()
+
+    # In tainted or non-PC conversations, every network-capable tool requires confirmation.
+    if is_tainted or source != "pc":
+        if name in NETWORK_CAPABLE_TOOLS:
+            return True, f"Running network-capable tool '{name}' during a tainted or non-PC ({source}) turn requires user approval."
 
     # CRIT-03: Any tainted turn or non-pc source requires confirmation for READ_FILE, VISION,
     # OPEN_URL, BROWSER_*, GITHUB, and all writes.
@@ -4113,10 +4129,12 @@ def skill_smart_home(arg):
 
 
 
-def open_url(url, cfg=None):
+def open_url(url, cfg=None, source="pc", is_tainted=False):
     url = (url or "").strip().strip('"').strip("'")
     if not url:
         return "Refused: empty URL or file path."
+
+    allow_dev = (source == "pc" and not is_tainted)
 
     # Check if this is a local file or file:// URI
     is_local = False
@@ -4128,7 +4146,7 @@ def open_url(url, cfg=None):
     if is_local:
         try:
             if nova_browser:
-                url = nova_browser.normalize_target_url(url)
+                url = nova_browser.normalize_target_url(url, allow_localhost_dev=allow_dev)
             else:
                 local_raw = url
                 if url.lower().startswith("file:"):
@@ -4146,10 +4164,21 @@ def open_url(url, cfg=None):
         else:
             url = f"https://www.google.com/search?q={urllib.parse.quote_plus(url)}"
 
+    # If web URL, validate through unified SSRF guard
+    if url.lower().startswith(("http://", "https://")):
+        import ssrf_guard
+        ok, reason, _ = ssrf_guard.validate_url_target(
+            url,
+            allow_localhost_dev=allow_dev,
+            blocked_ports=ssrf_guard.get_blocked_ports(cfg),
+        )
+        if not ok:
+            return f"Refused: {reason}"
+
     # Always use Nova Browser (Edge with CDP control)
     if nova_browser:
         try:
-            res = nova_browser.open_or_activate(url)
+            res = nova_browser.open_or_activate(url, allow_localhost_dev=allow_dev)
             return res.get("message") or f"Opened {url} in Nova Browser"
         except (PermissionError, ValueError) as e:
             return f"Refused: {e}"
@@ -4170,18 +4199,23 @@ def open_url(url, cfg=None):
         return f"Opened {url}"
 
 
-def fetch_url_content(url: str, cfg: dict = None, timeout: float = 10.0) -> str:
-    """Fetch text content from an http/https URL with strict timeout and character cap."""
+def fetch_url_content(url: str, cfg: dict = None, timeout: float = 10.0, allow_localhost_dev: bool = False) -> str:
+    """Fetch text content from an http/https URL with unified SSRF protection and wrapped untrusted output."""
     url = (url or "").strip().strip('"').strip("'")
     if not url.startswith(("http://", "https://")):
         return "Refused: only http:// and https:// URLs can be fetched."
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "NovaAI/1.0"})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = resp.read(6000).decode("utf-8", errors="replace")
-            return data[:6000]
-    except Exception as e:
-        return f"Failed to fetch {url}: {e}"
+    import ssrf_guard
+    ok, text, meta = ssrf_guard.safe_http_fetch(
+        url,
+        timeout=timeout,
+        cfg=cfg,
+        allow_localhost_dev=allow_localhost_dev,
+        blocked_ports=ssrf_guard.get_blocked_ports(cfg),
+        wrap_output=True,
+    )
+    if not ok:
+        return f"Refused: {text}"
+    return text
 
 
 def parse_step_to_tag(step_str: str) -> tuple[str, str]:
@@ -5141,11 +5175,12 @@ def run_skill(cfg, name, arg, source="pc", is_confirmed=False, mode="developer",
                 return "Nova Browser module not available."
             return nova_browser.scroll_page(raw_arg)
         if name in ("OPEN_URL", "OPEN_FILE", "VIEW_FILE"):
-            return open_url(raw_arg, cfg=cfg)
+            return open_url(raw_arg, cfg=cfg, source=source, is_tainted=is_tainted)
         if name in ("FETCH", "FETCH_URL", "READ_URL"):
-            return fetch_url_content(raw_arg, cfg=cfg, timeout=10.0)
+            allow_dev = (source == "pc" and not is_tainted)
+            return fetch_url_content(raw_arg, cfg=cfg, timeout=10.0, allow_localhost_dev=allow_dev)
         if name == "SEARCH":
-            return open_url("https://www.google.com/search?q=" + urllib.parse.quote_plus(raw_arg), cfg=cfg)
+            return open_url("https://www.google.com/search?q=" + urllib.parse.quote_plus(raw_arg), cfg=cfg, source=source, is_tainted=is_tainted)
         if name == "PLAY":
             clean_song = raw_arg.strip().lstrip("|").strip()
             if nova_browser:
@@ -5221,7 +5256,8 @@ def run_skill(cfg, name, arg, source="pc", is_confirmed=False, mode="developer",
         if name in ("BROWSER_RESEARCH", "BROWSER_READ", "READ_PAGE", "PAGE_CONTENT"):
             if not nova_browser:
                 return "Nova Browser module not available."
-            data = nova_browser.read_page_content(raw_arg)
+            allow_dev = (source == "pc" and not is_tainted)
+            data = nova_browser.read_page_content(raw_arg, allow_localhost_dev=allow_dev)
             if "error" in data:
                 return f"Research error: {data['error']}"
             return f"Page: {data.get('title')} ({data.get('url')})\n\nContent:\n{data.get('content')}"
@@ -5992,15 +6028,18 @@ def get_news():
         return NEWS_CACHE["items"]
     items = []
     try:
-        req = urllib.request.Request(
-            "https://feeds.bbci.co.uk/news/world/rss.xml", headers={"User-Agent": "NovaAI/1.0"}
+        import ssrf_guard
+        ok, text, _ = ssrf_guard.safe_http_fetch(
+            "https://feeds.bbci.co.uk/news/world/rss.xml",
+            timeout=10,
+            wrap_output=False,
         )
-        with urllib.request.urlopen(req, timeout=10) as r:
-            root = ET.fromstring(r.read())
-        for it in root.iter("item"):
-            items.append({"title": it.findtext("title", ""), "link": it.findtext("link", "")})
-            if len(items) >= 12:
-                break
+        if ok and text:
+            root = ET.fromstring(text)
+            for it in root.iter("item"):
+                items.append({"title": it.findtext("title", ""), "link": it.findtext("link", "")})
+                if len(items) >= 12:
+                    break
     except Exception:
         pass
     if items:

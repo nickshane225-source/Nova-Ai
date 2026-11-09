@@ -279,7 +279,7 @@ def activate_tab(tab_id: str) -> bool:
 
 def open_new_tab(target_url: str) -> dict or None:
     """Opens a new tab with target_url via CDP."""
-    target_url = normalize_target_url(target_url)
+    target_url = normalize_target_url(target_url, allow_localhost_dev=allow_localhost_dev)
     if not is_cdp_available(timeout=0.5):
         if not launch_browser(target_url):
             return None
@@ -389,7 +389,7 @@ def _resolve_local_target_in_workspace(target: str) -> Path:
     return resolved
 
 
-def normalize_target_url(target: str) -> str:
+def normalize_target_url(target: str, allow_localhost_dev: bool = False) -> str:
     target = (target or "").strip().strip('"').strip("'")
     if not target or target.lower() in ("blank", "about:blank"):
         return "about:blank"
@@ -400,13 +400,18 @@ def normalize_target_url(target: str) -> str:
     # Web URL
     if not re.match(r"^(https?|about|chrome|edge):", target, re.I):
         if "." in target and " " not in target and not target.startswith("/"):
-            return "https://" + target
+            target = "https://" + target
         else:
             return f"https://www.google.com/search?q={urllib.parse.quote_plus(target)}"
+    if target.lower().startswith(("http://", "https://")):
+        import ssrf_guard
+        ok, reason, _ = ssrf_guard.validate_url_target(target, allow_localhost_dev=allow_localhost_dev)
+        if not ok:
+            raise PermissionError(f"Access denied by SSRF Protection: {reason}")
     return target
 
 
-def open_or_activate(target_url: str) -> dict:
+def open_or_activate(target_url: str, allow_localhost_dev: bool = False) -> dict:
     """
     Intelligently opens a URL or local file in Nova Browser (Edge)
     or activates the existing tab if already open.
@@ -604,7 +609,7 @@ def execute_cdp_eval(tab: dict, js_code: str) -> dict:
 # High-Level Automation Skills (Research, YouTube, WhatsApp, Telegram)
 # ----------------------------------------------------------------------------
 
-def read_page_content(query_or_url: str = None) -> dict:
+def read_page_content(query_or_url: str = None, allow_localhost_dev: bool = False) -> dict:
     """
     Extracts page title, URL, and readable body text from an open tab in Nova Browser.
     If query_or_url is a URL, newspaper site, or file not yet open, opens it first.
@@ -612,14 +617,17 @@ def read_page_content(query_or_url: str = None) -> dict:
     """
     if query_or_url and is_local_target(query_or_url):
         try:
-            normalized_local = normalize_target_url(query_or_url)
-            open_or_activate(normalized_local)
+            normalized_local = normalize_target_url(query_or_url, allow_localhost_dev=allow_localhost_dev)
+            open_or_activate(normalized_local, allow_localhost_dev=allow_localhost_dev)
             time.sleep(1.0)
         except (PermissionError, ValueError) as e:
             return {"error": str(e)}
     elif query_or_url and re.match(r"^https?://", query_or_url, re.I):
-        open_or_activate(query_or_url)
-        time.sleep(1.0)
+        try:
+            open_or_activate(query_or_url, allow_localhost_dev=allow_localhost_dev)
+            time.sleep(1.0)
+        except (PermissionError, ValueError) as e:
+            return {"error": str(e)}
 
     tabs = list_tabs()
     if not tabs:
