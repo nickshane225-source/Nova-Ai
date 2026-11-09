@@ -131,6 +131,7 @@ def execute_plan_batch(
             }
         try:
             t_step_start = time.time()
+            plan["get_active_seconds"] = lambda: accumulated_active + max(0.0, time.time() - t_step_start)
             if runner is not None:
                 if takes_extra_args:
                     res = runner(step, idx, all_steps, completed, step_results)

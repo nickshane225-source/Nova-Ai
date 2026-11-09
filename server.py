@@ -4359,6 +4359,8 @@ def create_plan_step_runner(plan_info, cfg, source="pc", mode="developer", is_ta
 
         if needs_confirm:
             rem_steps = all_steps[idx:] if idx < len(all_steps) else []
+            get_act = plan_info.get("get_active_seconds")
+            cur_active = get_act() if callable(get_act) else plan_info.get("active_seconds", 0.0)
             plan_state = {
                 "plan_id": plan_info.get("plan_id"),
                 "title": plan_info.get("title", "Execution Plan"),
@@ -4372,7 +4374,8 @@ def create_plan_step_runner(plan_info, cfg, source="pc", mode="developer", is_ta
                 "mode": mode,
                 "is_tainted": is_tainted,
                 "conv_id": effective_conv,
-                "active_seconds": plan_info.get("active_seconds", 0.0),
+                "active_seconds": cur_active,
+                "started_at": plan_info.get("started_at", time.time()),
             }
             pending_entry, pending_info, err = create_pending_action(
                 cfg=cfg,
@@ -4699,11 +4702,6 @@ def resume_plan_execution(plan_state: dict, last_result=None, cfg=None, turn_too
             if batch_res.get("paused"):
                 p_info = batch_res.get("pending_info") or {}
                 p_id = p_info.get("id")
-                if p_id:
-                    with PENDING_LOCK:
-                        if p_id in PENDING_ACTIONS and "plan_state" in PENDING_ACTIONS[p_id]:
-                            PENDING_ACTIONS[p_id]["plan_state"]["active_seconds"] = batch_res.get("active_seconds", 0.0)
-                            PENDING_ACTIONS[p_id]["plan_state"]["started_at"] = batch_res.get("started_at", time.time())
                 with ACTIVE_PLANS_LOCK:
                     ACTIVE_PLANS[plan_id] = {
                         "plan_id": plan_id,
@@ -4974,11 +4972,6 @@ def run_skill(cfg, name, arg, source="pc", is_confirmed=False, mode="developer",
             if batch_res.get("paused"):
                 pending = batch_res.get("pending_info")
                 p_id = pending.get("id") if pending else None
-                if p_id:
-                    with PENDING_LOCK:
-                        if p_id in PENDING_ACTIONS and "plan_state" in PENDING_ACTIONS[p_id]:
-                            PENDING_ACTIONS[p_id]["plan_state"]["active_seconds"] = batch_res.get("active_seconds", 0.0)
-                            PENDING_ACTIONS[p_id]["plan_state"]["started_at"] = batch_res.get("started_at", time.time())
                 with ACTIVE_PLANS_LOCK:
                     ACTIVE_PLANS[plan_id] = {
                         "plan_id": plan_id,
