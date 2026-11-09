@@ -133,7 +133,7 @@ class BrowserLaunchResult(dict):
         return bool(self.get("ok", False))
 
 
-def launch_browser(initial_url: str = "about:blank"):
+def launch_browser(initial_url: str = "about:blank", headless: bool = False):
     """Launches Nova Browser with dedicated profile and remote debugging enabled."""
     global _browser_process
     initial_url = normalize_target_url(initial_url or "about:blank")
@@ -162,8 +162,10 @@ def launch_browser(initial_url: str = "about:blank"):
             "--disable-sync",
             "--disable-background-networking",
             "--window-size=1280,850",
-            initial_url or "about:blank"
+            initial_url or "about:blank",
         ]
+        if headless:
+            args.append("--headless=new")
 
         try:
             creationflags = 0
@@ -176,6 +178,11 @@ def launch_browser(initial_url: str = "about:blank"):
                 stderr=subprocess.DEVNULL,
                 creationflags=creationflags
             )
+            _browser_process.spawn_args = list(args)
+            try:
+                (ROOT / ".cdp_port").write_text(str(CDP_PORT), encoding="utf-8")
+            except Exception:
+                pass
         except Exception as e:
             print(f"[Nova Browser] Error launching browser: {e}")
             return BrowserLaunchResult({"ok": False, "error": str(e)})
@@ -190,6 +197,28 @@ def launch_browser(initial_url: str = "about:blank"):
 
 
 # ----------------------------------------------------------------------------
+def close_browser():
+    """Terminates Nova Browser process and cleans up .cdp_port."""
+    global _browser_process
+    with _browser_lock:
+        if _browser_process:
+            try:
+                _browser_process.terminate()
+                _browser_process.wait(timeout=2.0)
+            except Exception:
+                try:
+                    _browser_process.kill()
+                except Exception:
+                    pass
+            _browser_process = None
+        cdp_file = ROOT / ".cdp_port"
+        try:
+            if cdp_file.exists():
+                cdp_file.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
 # URL & Tab Utilities
 # ----------------------------------------------------------------------------
 

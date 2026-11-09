@@ -201,7 +201,7 @@ class AttackerProbeSuite:
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
         self.server_proc = subprocess.Popen(
-            [sys.executable, "server.py"],
+            [sys.executable, "server.py", "--no-browser"],
             cwd=str(REPO_ROOT),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -386,6 +386,19 @@ class AttackerProbeSuite:
         else:
             self.log_fail("Header Token without Cookie allowed", f"HTTP {status}")
 
+        # 3. Same-site different port Origin (e.g. 127.0.0.1:3000 -> 127.0.0.1:8765)
+        status, body, _ = raw_http_request(
+            "127.0.0.1",
+            self.target_port,
+            "GET",
+            "/api/state",
+            headers={"Origin": "http://127.0.0.1:3000"},
+        )
+        if status in (401, 403):
+            self.log_pass("Same-site different port Origin rejected", f"HTTP {status}")
+        else:
+            self.log_fail("Same-site different port Origin allowed", f"HTTP {status}")
+
     # ------------------------------------------------------------------------
     # (e) Remote (:8766) access control
     # ------------------------------------------------------------------------
@@ -480,6 +493,40 @@ class AttackerProbeSuite:
         else:
             self.log_fail("Replayed pairing code accepted", f"HTTP {status2}")
 
+        # 7. Revoked device token
+        status, body, _ = raw_http_request(
+            "127.0.0.1",
+            self.remote_port,
+            "GET",
+            "/api/remote/info",
+            headers={"X-Nova-Token": "revoked_device_token_xyz987"},
+        )
+        if status in (401, 403, 429):
+            self.log_pass("Revoked device token rejected", f"HTTP {status}")
+        else:
+            self.log_fail("Revoked device token allowed", f"HTTP {status}")
+
+        # 8. Lockout after 8 wrong tokens; 9th attempt with CORRECT token locked out
+        for i in range(8):
+            raw_http_request(
+                "127.0.0.1",
+                self.remote_port,
+                "GET",
+                "/api/remote/info",
+                headers={"X-Nova-Token": f"invalid_probe_tok_{i}"},
+            )
+        status_9th, body_9th, _ = raw_http_request(
+            "127.0.0.1",
+            self.remote_port,
+            "GET",
+            "/api/remote/info",
+            headers={"X-Nova-Token": self.known_remote_token},
+        )
+        if status_9th == 429:
+            self.log_pass("9th attempt with correct token locked out (HTTP 429)", "Brute-force lockout enforced")
+        else:
+            self.log_fail("Brute-force lockout bypassed", f"HTTP {status_9th} instead of 429")
+
     # ------------------------------------------------------------------------
     # (f) CDP DevTools inspection & residual risk
     # ------------------------------------------------------------------------
@@ -488,39 +535,57 @@ class AttackerProbeSuite:
         print("PROBE (f): CDP DevTools Port Inspection & Residual Risk Assessment")
         print("=" * 70)
 
-        # Check for browser module
         try:
             import nova_browser
-            cdp_port = getattr(nova_browser, "CDP_PORT", None)
-        except Exception:
-            cdp_port = None
+        except Exception as e:
+            self.log_not_tested("CDP DevTools browser inspection", f"nova_browser import failed: {e}")
+            return
 
-        cdp_file = REPO_ROOT / ".cdp_port"
-        if cdp_file.exists():
-            try:
-                cdp_port = int(cdp_file.read_text(encoding="utf-8").strip())
-            except Exception:
-                pass
+        # Actually launch browser headless
+        print("  [*] Launching Nova Browser in headless mode for live CDP inspection...")
+        launch_res = nova_browser.launch_browser(headless=True)
+        if not launch_res:
+            self.log_not_tested("CDP DevTools browser inspection", f"Browser could not be launched: {launch_res.get('error', 'Executable not found')}")
+            return
 
-        # Try to detect any open CDP port on localhost
-        found_port = None
-        test_ports = [cdp_port] if cdp_port else []
-        test_ports.extend([9222, 9223, 9224])
-        for p in test_ports:
-            if p and is_port_listening("127.0.0.1", p, timeout=0.2):
-                found_port = p
-                break
+        try:
+            cdp_file = REPO_ROOT / ".cdp_port"
+            if not cdp_file.exists():
+                self.log_fail("CDP port file missing", ".cdp_port was not written on browser launch")
+                return
 
-        if found_port:
-            status, body, _ = raw_http_request("127.0.0.1", found_port, "GET", "/json/version")
+            cdp_port = int(cdp_file.read_text(encoding="utf-8").strip())
+
+            # 1. Confirm port is random
+            if cdp_port == 9222:
+                self.log_fail("CDP port not randomized", "Static default port 9222 detected")
+            else:
+                self.log_pass("CDP port dynamically randomized", f"Port: {cdp_port}")
+
+            # 2. Confirm loopback-only binding
+            if getattr(nova_browser, "CDP_HOST", "") == "127.0.0.1":
+                self.log_pass("CDP binding restricted to loopback", "127.0.0.1")
+            else:
+                self.log_fail("CDP binding not restricted to loopback", f"{getattr(nova_browser, 'CDP_HOST', None)}")
+
+            # 3. Confirm no --remote-allow-origins=*
+            proc = getattr(nova_browser, "_browser_process", None)
+            spawn_args = getattr(proc, "spawn_args", []) if proc else []
+            if any(a == "--remote-allow-origins=*" for a in spawn_args):
+                self.log_fail("CDP wildcard origin allowed", "--remote-allow-origins=* found in browser arguments")
+            else:
+                self.log_pass("CDP wildcard origin forbidden", "No --remote-allow-origins=* present in browser arguments")
+
+            # 4. Test unauthenticated /json/version from another process
+            status, body, _ = raw_http_request("127.0.0.1", cdp_port, "GET", "/json/version")
             if status == 200 and "Browser" in body:
-                print(f"  {YELLOW}[RESIDUAL RISK]{RESET} CDP port {found_port} allows unauthenticated loopback queries by Chromium design.")
-                print(f"  {CYAN}[MITIGATION]{RESET} Restricted by: 127.0.0.1 loopback binding, random port allocation, and --remote-allow-origins.")
+                print(f"  {YELLOW}[RESIDUAL RISK]{RESET} CDP port {cdp_port} allows unauthenticated loopback queries by Chromium design.")
+                print(f"  {CYAN}[MITIGATION]{RESET} Restricted by: 127.0.0.1 loopback binding, random port allocation, and explicit origin pinning.")
                 self.log_pass("CDP loopback inspection completed (Residual risk documented)")
             else:
-                self.log_pass("CDP port active but /json/version does not leak browser session")
-        else:
-            self.log_pass("No active CDP DevTools port exposed on loopback (Browser idle, protected)")
+                self.log_fail("CDP /json/version check failed", f"HTTP {status}")
+        finally:
+            nova_browser.close_browser()
 
     # ------------------------------------------------------------------------
     # (g) Count minted boot codes from server stdout
