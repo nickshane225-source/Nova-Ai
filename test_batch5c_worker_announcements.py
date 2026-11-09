@@ -36,6 +36,8 @@ class TestBatch5cWorkerAnnouncements(unittest.TestCase):
         }
         with server.PENDING_LOCK:
             server.PENDING_ACTIONS.clear()
+        with server.ACTIVE_PLANS_LOCK:
+            server.ACTIVE_PLANS.clear()
         with server.LOCK:
             server.EVENTS.clear()
             server.HISTORIES["developer"].clear()
@@ -44,6 +46,8 @@ class TestBatch5cWorkerAnnouncements(unittest.TestCase):
     def tearDown(self):
         with server.PENDING_LOCK:
             server.PENDING_ACTIONS.clear()
+        with server.ACTIVE_PLANS_LOCK:
+            server.ACTIVE_PLANS.clear()
         with server.LOCK:
             server.EVENTS.clear()
             server.HISTORIES["developer"].clear()
