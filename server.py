@@ -4670,6 +4670,11 @@ def resume_plan_execution(plan_state: dict, last_result=None, cfg=None, turn_too
             if batch_res.get("paused"):
                 p_info = batch_res.get("pending_info") or {}
                 p_id = p_info.get("id")
+                if p_id:
+                    with PENDING_LOCK:
+                        if p_id in PENDING_ACTIONS and "plan_state" in PENDING_ACTIONS[p_id]:
+                            PENDING_ACTIONS[p_id]["plan_state"]["active_seconds"] = batch_res.get("active_seconds", 0.0)
+                            PENDING_ACTIONS[p_id]["plan_state"]["started_at"] = batch_res.get("started_at", time.time())
                 with ACTIVE_PLANS_LOCK:
                     ACTIVE_PLANS[plan_id] = {
                         "plan_id": plan_id,
@@ -4940,6 +4945,11 @@ def run_skill(cfg, name, arg, source="pc", is_confirmed=False, mode="developer",
             if batch_res.get("paused"):
                 pending = batch_res.get("pending_info")
                 p_id = pending.get("id") if pending else None
+                if p_id:
+                    with PENDING_LOCK:
+                        if p_id in PENDING_ACTIONS and "plan_state" in PENDING_ACTIONS[p_id]:
+                            PENDING_ACTIONS[p_id]["plan_state"]["active_seconds"] = batch_res.get("active_seconds", 0.0)
+                            PENDING_ACTIONS[p_id]["plan_state"]["started_at"] = batch_res.get("started_at", time.time())
                 with ACTIVE_PLANS_LOCK:
                     ACTIVE_PLANS[plan_id] = {
                         "plan_id": plan_id,
