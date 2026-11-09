@@ -1,4 +1,3 @@
-import html
 #!/usr/bin/env python3
 """
 Nova AI - Agentic Coding Skills Engine
@@ -9,13 +8,16 @@ from skills/developer/*.md and skills/cyber/*.md into Nova's system prompts.
 """
 
 import hashlib
+import html
 import json
 import os
 import re
 import sys
 import threading
 import time
+import unicodedata
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 def get_bundled_skills_dir() -> Path:
     if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
@@ -81,6 +83,12 @@ def validate_skill_name(name: str) -> str:
         raise ValueError(f"Invalid skill name '{name}'. Windows reserved device names are not permitted.")
 
     return name
+
+def normalize_skill_name_for_comparison(name: str) -> str:
+    """Normalizes skill name for robust case-insensitive and Unicode-normalized collision detection."""
+    if not name:
+        return ""
+    return unicodedata.normalize("NFKC", str(name)).strip().casefold()
 
 def resolve_user_skill_path(mode: str, name: str) -> Path:
     """Resolves and confines user skill path within target directory."""
@@ -189,7 +197,13 @@ def get_all_bundled_skill_names() -> set[str]:
         d = b_dir / sub
         if d.exists():
             for bf in d.glob("*.md"):
-                bundled_names.add(bf.stem.lower())
+                bundled_names.add(normalize_skill_name_for_comparison(bf.stem))
+                try:
+                    for line in bf.read_text(encoding="utf-8", errors="replace").splitlines()[:15]:
+                        if ":" in line and line.split(":", 1)[0].strip().lower() == "name":
+                            bundled_names.add(normalize_skill_name_for_comparison(line.split(":", 1)[1].strip()))
+                except Exception:
+                    pass
     return bundled_names
 
 def parse_skill_file(filepath: Path, is_trusted: bool = True) -> Skill:
@@ -212,7 +226,7 @@ def parse_skill_file(filepath: Path, is_trusted: bool = True) -> Skill:
     fm_name = fm.get("name")
     if fm_name:
         clean_fm_name = fm_name.strip()
-        if clean_fm_name.lower() != filepath.stem.lower():
+        if normalize_skill_name_for_comparison(clean_fm_name) != normalize_skill_name_for_comparison(filepath.stem):
             raise ValueError(f"Skill frontmatter name '{clean_fm_name}' must equal filename stem '{filepath.stem}'.")
         name = clean_fm_name
     else:
@@ -221,7 +235,8 @@ def parse_skill_file(filepath: Path, is_trusted: bool = True) -> Skill:
     # Rule 3a: External/user skill must never use the name of a bundled skill
     if not is_trusted:
         bundled_names = get_all_bundled_skill_names()
-        if name.lower() in bundled_names or filepath.stem.lower() in bundled_names:
+        if (normalize_skill_name_for_comparison(name) in bundled_names or
+            normalize_skill_name_for_comparison(filepath.stem) in bundled_names):
             raise ValueError(f"Refused: User skill '{name}' cannot use bundled skill name.")
 
     # Rule 3b: Ignore any 'trusted' field in the markdown file; is_trusted comes solely from manifest/caller
@@ -261,7 +276,7 @@ def install_user_skill(
 
     # Rule 3a: User skill must never use or replace a bundled skill of the same name
     all_bundled = get_all_bundled_skill_names()
-    if clean_name.lower() in all_bundled:
+    if normalize_skill_name_for_comparison(clean_name) in all_bundled:
         raise ValueError(
             f"Refused: User skill '{clean_name}' cannot replace bundled skill of the same name."
         )
@@ -274,9 +289,9 @@ def install_user_skill(
                 k, v = line.split(":", 1)
                 if k.strip().lower() == "name":
                     fm_name = v.strip()
-                    if fm_name.lower() != clean_name.lower():
+                    if normalize_skill_name_for_comparison(fm_name) != normalize_skill_name_for_comparison(clean_name):
                         raise ValueError(f"Skill frontmatter name '{fm_name}' must equal filename stem '{clean_name}'.")
-                    if fm_name.lower() in all_bundled:
+                    if normalize_skill_name_for_comparison(fm_name) in all_bundled:
                         raise ValueError(f"Refused: User skill '{fm_name}' cannot use bundled skill name.")
 
     dest_file = resolve_user_skill_path(mode, clean_name)
@@ -313,10 +328,10 @@ def load_skills(mode: str) -> list:
     bundled_dir = get_bundled_skills_dir() / mode
     user_dir = get_user_skills_dir() / mode
 
-    bundled_files = sorted(bundled_dir.glob("*.md")) if bundled_dir.exists() else []
-    user_files = sorted(user_dir.glob("*.md")) if user_dir.exists() else []
-    all_files = bundled_files + user_files
+    bundled_files = list(bundled_dir.glob("*.md")) if bundled_dir.exists() else []
+    user_files = list(user_dir.glob("*.md")) if user_dir.exists() else []
 
+    all_files = bundled_files + user_files
     if not all_files:
         return []
 
@@ -342,8 +357,8 @@ def load_skills(mode: str) -> list:
             try:
                 skill = parse_skill_file(f, is_trusted=True)
                 skills_by_name[skill.name] = skill
-                bundled_names.add(skill.name.lower())
-                bundled_names.add(f.stem.lower())
+                bundled_names.add(normalize_skill_name_for_comparison(skill.name))
+                bundled_names.add(normalize_skill_name_for_comparison(f.stem))
             except Exception:
                 pass
 
@@ -351,7 +366,7 @@ def load_skills(mode: str) -> list:
         for f in user_files:
             try:
                 skill_stem = f.stem
-                if skill_stem.lower() in bundled_names:
+                if normalize_skill_name_for_comparison(skill_stem) in bundled_names:
                     # User skill must never replace a bundled skill!
                     continue
 
@@ -375,7 +390,7 @@ def load_skills(mode: str) -> list:
 
                 is_trusted = bool(entry.get("trusted", False))
                 skill = parse_skill_file(f, is_trusted=is_trusted)
-                if skill.name.lower() in bundled_names:
+                if normalize_skill_name_for_comparison(skill.name) in bundled_names:
                     continue
 
                 skills_by_name[skill.name] = skill
@@ -455,12 +470,82 @@ def select_skills(mode: str, message: str, limit: int = 2) -> list:
     return [skill for _, skill in scored_skills[:limit]]
 
 
+def sanitize_untrusted_skill(
+    name: str,
+    description: str,
+    content: str,
+    max_body_chars: int = 4000,
+) -> dict:
+    """
+    Unified sanitizer for ALL non-trusted skills before injection into prompt/context:
+    1. Removes any </...DATA> closing sequences (preventing breakout from <UNTRUSTED_SKILL_DATA>)
+    2. Neutralizes [[ and ]] action delimiters to harmless text: [ [ and ] ]
+    3. Strips all '<' and '>' characters
+    4. Escapes XML/HTML attribute characters for name and description
+    5. Enforces size caps (max_body_chars)
+    """
+    # 1. Remove any </...DATA> sequences (case-insensitive, with any whitespace/attributes)
+    content = re.sub(r"</\s*[^>]*DATA\s*>", "", content, flags=re.IGNORECASE)
+    description = re.sub(r"</\s*[^>]*DATA\s*>", "", description, flags=re.IGNORECASE)
+    name = re.sub(r"</\s*[^>]*DATA\s*>", "", name, flags=re.IGNORECASE)
+
+    # 2. Neutralize [[ and ]]
+    content = content.replace("[[", "[ [").replace("]]", "] ]")
+    description = description.replace("[[", "[ [").replace("]]", "] ]")
+    name = name.replace("[[", "[ [").replace("]]", "] ]")
+
+    # 3. Strip < and >
+    content = content.replace("<", "").replace(">", "")
+    description = description.replace("<", "").replace(">", "")
+    name = name.replace("<", "").replace(">", "")
+
+    # 4. Enforce size caps
+    if len(content) > max_body_chars:
+        content = content[:max_body_chars]
+
+    # 5. Escape attributes
+    safe_name = html.escape(name.strip(), quote=True)
+    safe_desc = html.escape(description.strip(), quote=True)
+
+    return {
+        "name": safe_name,
+        "description": safe_desc,
+        "content": content,
+    }
+
+
+def format_skill_for_prompt(skill: Skill, remaining_budget: int = 4000) -> Tuple[bool, str]:
+    """
+    Formats a single skill for prompt injection.
+    Returns (is_trusted, formatted_string).
+    All non-trusted skills pass through sanitize_untrusted_skill.
+    """
+    is_trusted = getattr(skill, "is_trusted", True)
+    if is_trusted:
+        block = f"\n### SKILL: {skill.name.upper()}\n*{skill.description}*\n\nProcedure:\n{skill.content}"
+        return True, block
+    else:
+        sanitized = sanitize_untrusted_skill(
+            skill.name,
+            skill.description,
+            skill.content,
+            max_body_chars=min(4000, max(0, remaining_budget)),
+        )
+        block = (
+            f'<UNTRUSTED_SKILL_DATA name="{sanitized["name"]}" description="{sanitized["description"]}">\n'
+            f'{sanitized["content"]}\n'
+            f'</UNTRUSTED_SKILL_DATA>'
+        )
+        return False, block
+
+
 def build_skill_prompt(mode: str, message: str) -> str:
     """
     Selects relevant skills for the user message and builds a formatted prompt block
     to append to the active system prompt.
-    External-origin skills are isolated inside <UNTRUSTED_SKILL_DATA> blocks with
-    live tags neutralized and strict length caps.
+    All non-trusted skills are routed through format_skill_for_prompt and isolated inside
+    <UNTRUSTED_SKILL_DATA> blocks with live tags neutralized, < > stripped, </...DATA> removed,
+    attributes escaped, and strict length caps.
     """
     matched = select_skills(mode, message, limit=2)
     if not matched:
@@ -470,31 +555,15 @@ def build_skill_prompt(mode: str, message: str) -> str:
     untrusted_blocks = []
     total_untrusted_chars = 0
     MAX_UNTRUSTED_TOTAL = 12000
-    MAX_UNTRUSTED_PER_SKILL = 4000
 
     for s in matched:
-        is_trusted = getattr(s, "is_trusted", True)
+        rem_budget = MAX_UNTRUSTED_TOTAL - total_untrusted_chars
+        is_trusted, block = format_skill_for_prompt(s, remaining_budget=rem_budget)
         if is_trusted:
-            trusted_blocks.append(f"\n### SKILL: {s.name.upper()}\n*{s.description}*\n\nProcedure:\n{s.content}")
+            trusted_blocks.append(block)
         else:
-            # 1. Neutralize [[ and ]]
-            body = s.content.replace("[[", "[ [").replace("]]", "] ]")
-            desc = s.description.replace("[[", "[ [").replace("]]", "] ]")
-            # 2. Strip < and >
-            body = body.replace("<", "").replace(">", "")
-            desc = desc.replace("<", "").replace(">", "")
-            # 3. Per-skill cap
-            body = body[:MAX_UNTRUSTED_PER_SKILL]
-            # 4. Total cap
-            rem = max(0, MAX_UNTRUSTED_TOTAL - total_untrusted_chars)
-            body = body[:rem]
-            total_untrusted_chars += len(body)
-
-            clean_name = html.escape(s.name.replace("<", "").replace(">", ""), quote=True)
-            clean_desc = html.escape(desc.replace("<", "").replace(">", ""), quote=True)
-            untrusted_blocks.append(
-                f'<UNTRUSTED_SKILL_DATA name="{clean_name}" description="{clean_desc}">\n{body}\n</UNTRUSTED_SKILL_DATA>'
-            )
+            untrusted_blocks.append(block)
+            total_untrusted_chars += len(block)
 
     sections = []
     if trusted_blocks:
