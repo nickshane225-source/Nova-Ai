@@ -1096,7 +1096,7 @@ async function renderPanel(name) {
         ${notes.length ? notes.map(n => `
           <div class="note-card">
             <div class="note-header">
-              <span class="note-title">${esc(n.title)}</span>
+              <span class="note-title">${esc(n.title)}${n.tainted ? ' <span style="color:#ff6b6b;font-size:10px;margin-left:6px;">[untrusted source]</span>' : ''}</span>
               <span class="note-cat">${esc(n.category || 'general')}</span>
             </div>
             <div class="note-body">${esc(n.content)}</div>
@@ -1126,7 +1126,7 @@ async function renderPanel(name) {
       list.innerHTML = found.length ? found.map(n => `
         <div class="note-card">
           <div class="note-header">
-            <span class="note-title">${esc(n.title)} ${n.score ? `(Score: ${n.score})` : ''}</span>
+            <span class="note-title">${esc(n.title)} ${n.score ? `(Score: ${n.score})` : ''}${n.tainted ? ' <span style="color:#ff6b6b;font-size:10px;margin-left:6px;">[untrusted source]</span>' : ''}</span>
             <span class="note-cat">${esc(n.category || 'general')}</span>
           </div>
           <div class="note-body">${esc(n.content)}</div>

@@ -80,7 +80,7 @@ class DiscordGateway:
         safe_prompt, _ = server.sanitize_preview(raw_prompt)
         cmd_val = pending.get("command") or pending.get("arg") or pending.get("preview") or ""
         safe_cmd, has_invis = server.sanitize_preview(cmd_val)
-        invis_warn = "\n⚠️ Warning: Command contains hidden or invisible characters." if has_invis else ""
+        invis_warn = "\n⚠️ Warning: Command contains hidden or invisible characters." if (has_invis and "SECURITY WARNING" not in safe_cmd and "SECURITY WARNING" not in safe_prompt) else ""
         backticks = re.findall(r"`+", safe_cmd)
         fence = "`" * max(3, max([len(b) for b in backticks], default=0) + 1)
         full_approval_msg = (

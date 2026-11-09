@@ -269,6 +269,8 @@ class TestPlanMode(unittest.TestCase):
             server.HISTORIES["developer"].clear()
         with server.PENDING_LOCK:
             server.PENDING_ACTIONS.clear()
+        with server.ACTIVE_PLANS_LOCK:
+            server.ACTIVE_PLANS.clear()
 
         mock_plan_deny_reply = (
             "Here is the execution plan:\n"
@@ -291,6 +293,8 @@ class TestPlanMode(unittest.TestCase):
             server.HISTORIES["developer"].clear()
         with server.PENDING_LOCK:
             server.PENDING_ACTIONS.clear()
+        with server.ACTIVE_PLANS_LOCK:
+            server.ACTIVE_PLANS.clear()
 
         with patch("server.call_llm", return_value=mock_plan_deny_reply):
             res_chat_exp = server.chat("run expire pipeline", source="pc", mode="developer")
