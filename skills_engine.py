@@ -1,3 +1,4 @@
+import html
 #!/usr/bin/env python3
 """
 Nova AI - Agentic Coding Skills Engine
@@ -180,6 +181,17 @@ _SKILLS_CACHE = {
 _CACHE_LOCK = threading.Lock()
 
 
+def get_all_bundled_skill_names() -> set[str]:
+    """Returns set of all bundled skill stems across developer and cyber modes."""
+    bundled_names = set()
+    b_dir = get_bundled_skills_dir()
+    for sub in ("developer", "cyber"):
+        d = b_dir / sub
+        if d.exists():
+            for bf in d.glob("*.md"):
+                bundled_names.add(bf.stem.lower())
+    return bundled_names
+
 def parse_skill_file(filepath: Path, is_trusted: bool = True) -> Skill:
     """Parse YAML-like frontmatter between triple dashes (---) and Markdown body."""
     raw = filepath.read_text(encoding="utf-8")
@@ -196,7 +208,23 @@ def parse_skill_file(filepath: Path, is_trusted: bool = True) -> Skill:
             k, v = line.split(":", 1)
             fm[k.strip().lower()] = v.strip()
 
-    name = fm.get("name", filepath.stem)
+    # Rule 3a: Frontmatter name must equal filename stem
+    fm_name = fm.get("name")
+    if fm_name:
+        clean_fm_name = fm_name.strip()
+        if clean_fm_name.lower() != filepath.stem.lower():
+            raise ValueError(f"Skill frontmatter name '{clean_fm_name}' must equal filename stem '{filepath.stem}'.")
+        name = clean_fm_name
+    else:
+        name = filepath.stem
+
+    # Rule 3a: External/user skill must never use the name of a bundled skill
+    if not is_trusted:
+        bundled_names = get_all_bundled_skill_names()
+        if name.lower() in bundled_names or filepath.stem.lower() in bundled_names:
+            raise ValueError(f"Refused: User skill '{name}' cannot use bundled skill name.")
+
+    # Rule 3b: Ignore any 'trusted' field in the markdown file; is_trusted comes solely from manifest/caller
     description = fm.get("description", "")
     raw_triggers = fm.get("triggers", "")
     triggers = [t.strip().lower() for t in raw_triggers.split(",") if t.strip()]
@@ -231,13 +259,25 @@ def install_user_skill(
     mode = "cyber" if mode == "cyber" else "developer"
     clean_name = validate_skill_name(name)
 
-    # Item 2: User skill must never replace a bundled skill of the same name
-    bundled_dir = (get_bundled_skills_dir() / mode).resolve()
-    bundled_names = {f.stem.lower() for f in bundled_dir.glob("*.md")} if bundled_dir.exists() else set()
-    if clean_name.lower() in bundled_names:
+    # Rule 3a: User skill must never use or replace a bundled skill of the same name
+    all_bundled = get_all_bundled_skill_names()
+    if clean_name.lower() in all_bundled:
         raise ValueError(
             f"Refused: User skill '{clean_name}' cannot replace bundled skill of the same name."
         )
+
+    # Check frontmatter name inside content
+    fm_match = re.match(r"^---\s*\n(.*?)\n---\s*\n", content, re.DOTALL)
+    if fm_match:
+        for line in fm_match.group(1).splitlines():
+            if ":" in line:
+                k, v = line.split(":", 1)
+                if k.strip().lower() == "name":
+                    fm_name = v.strip()
+                    if fm_name.lower() != clean_name.lower():
+                        raise ValueError(f"Skill frontmatter name '{fm_name}' must equal filename stem '{clean_name}'.")
+                    if fm_name.lower() in all_bundled:
+                        raise ValueError(f"Refused: User skill '{fm_name}' cannot use bundled skill name.")
 
     dest_file = resolve_user_skill_path(mode, clean_name)
 
@@ -450,9 +490,10 @@ def build_skill_prompt(mode: str, message: str) -> str:
             body = body[:rem]
             total_untrusted_chars += len(body)
 
-            clean_name = s.name.replace("<", "").replace(">", "")
+            clean_name = html.escape(s.name.replace("<", "").replace(">", ""), quote=True)
+            clean_desc = html.escape(desc.replace("<", "").replace(">", ""), quote=True)
             untrusted_blocks.append(
-                f'<UNTRUSTED_SKILL_DATA name="{clean_name}" description="{desc}">\n{body}\n</UNTRUSTED_SKILL_DATA>'
+                f'<UNTRUSTED_SKILL_DATA name="{clean_name}" description="{clean_desc}">\n{body}\n</UNTRUSTED_SKILL_DATA>'
             )
 
     sections = []
