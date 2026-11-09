@@ -2404,7 +2404,7 @@ NO_CONFIRM_TOOLS = {
     "NOTE", "SEARCH_NOTES", "REMIND", "TIMER", "VOLUME", "MEDIA", "PLAY",
     "SCREENSHOT", "ACTIVE_WINDOW", "GET_WINDOW", "BRIEFING", "MORNING_BRIEFING",
     "LIST_AUTOMATIONS", "AUTOMATIONS", "CANCEL_AUTOMATION", "STOP_AUTOMATION",
-    "BROWSER_CLOSE", "BROWSER_RESEARCH", "BROWSER_READ",
+    "BROWSER_CLOSE", "BROWSER_RESEARCH", "BROWSER_READ", "BROWSER_PAGE", "READ_PAGE", "PAGE_CONTENT",
     "LIST_FILES", "READ_FILE", "SEARCH", "PLAN",
 }
 
@@ -2604,11 +2604,7 @@ def check_tool_confirmation_required(cfg, name, arg, is_tainted=False, source="p
                 return True, "Maximum of 5 unconfirmed searches reached for this conversation; user approval required."
 
         if is_tainted or source != "pc":
-            # In a tainted conversation, SEARCH needs confirmation, except SEARCH with <= 80 chars
-            if is_tainted and source == "pc" and len(arg or "") <= 80:
-                pass
-            else:
-                return True, "Running SEARCH during a tainted or non-PC turn requires user approval."
+            return True, "Running SEARCH during a tainted or non-PC turn requires user approval."
     # 1a. WRITE_FILE/EDIT_FILE to executable extensions ALWAYS requires confirmation,
     # even in untainted turns and regardless of confirm_destructive setting.
     if name in ("WRITE_FILE", "EDIT_FILE"):
@@ -5404,14 +5400,6 @@ def execute_model_tags(tags, cfg, jid=None, mode="developer", source="pc", is_ta
                 turn_written_files.add(df)
                 record_workspace_write(df, is_tainted=is_tainted)
 
-        if clean_name in ("READ_FILE", "LIST_FILES"):
-            if is_read_or_list_target_tainted(arg, cfg=cfg):
-                is_tainted = True
-                RUN_CODE_TRUST_STATE.invalidate()
-        elif clean_name in TAINT_SOURCE_TOOLS:
-            is_tainted = True
-            RUN_CODE_TRUST_STATE.invalidate()
-
         if clean_name in ("WRITE_FILE", "EDIT_FILE", "CREATE_PROJECT"):
             try:
                 target_f = Path((arg or "").split("|")[0].strip()).name.lower()
@@ -5420,6 +5408,11 @@ def execute_model_tags(tags, cfg, jid=None, mode="developer", source="pc", is_ta
                     record_workspace_write(target_f, is_tainted=is_tainted)
             except Exception:
                 pass
+
+        if clean_name in ("READ_FILE", "LIST_FILES"):
+            if is_read_or_list_target_tainted(arg, cfg=cfg):
+                is_tainted = True
+                RUN_CODE_TRUST_STATE.invalidate()
 
         # Check Guardian for safety review
         g_verdict = "NONE"
@@ -5469,6 +5462,15 @@ def execute_model_tags(tags, cfg, jid=None, mode="developer", source="pc", is_ta
             prompt_text = pending_info["prompt"]
             actions.append({"skill": clean_name, "arg": arg, "result": f"Awaiting confirmation: {prompt_text}"})
             break
+
+        # Taint conversation when tool is allowed to execute
+        if clean_name in ("READ_FILE", "LIST_FILES"):
+            if is_read_or_list_target_tainted(arg, cfg=cfg):
+                is_tainted = True
+                RUN_CODE_TRUST_STATE.invalidate()
+        elif clean_name in TAINT_SOURCE_TOOLS:
+            is_tainted = True
+            RUN_CODE_TRUST_STATE.invalidate()
 
         act_phase(jid, "running", f"{'HEAL: ' if is_healing else ''}{clean_name}: {(arg or '').strip().splitlines()[0][:70] if (arg or '').strip() else ''}")
         _t0 = time.time()

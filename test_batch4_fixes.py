@@ -674,11 +674,11 @@ class TestBatch4AndFollowUps(unittest.TestCase):
         req_sens, _ = server.check_tool_confirmation_required(cfg, "READ_FILE", str(server.CONFIG_FILE), is_tainted=False, source="pc")
         self.assertTrue(req_sens, "Sensitive READ_FILE must require confirmation even if untainted")
 
-        # Tainted source="pc" -> ALL require confirmation (SEARCH <= 80 allowed, > 80 requires confirm)
+        # Tainted source="pc" -> ALL require confirmation (every SEARCH in tainted turn requires confirm)
         req_s_short, _ = server.check_tool_confirmation_required(cfg, "SEARCH", "short query", is_tainted=True, source="pc")
-        self.assertFalse(req_s_short, "SEARCH <= 80 chars should not require confirmation in tainted turn")
+        self.assertTrue(req_s_short, "Every SEARCH in tainted turn must require confirmation")
         req_s_long, _ = server.check_tool_confirmation_required(cfg, "SEARCH", "A" * 85, is_tainted=True, source="pc")
-        self.assertTrue(req_s_long, "SEARCH > 80 chars must require confirmation in tainted turn")
+        self.assertTrue(req_s_long, "SEARCH in tainted turn must require confirmation")
 
         for tool in ["LIST_FILES", "READ_FILE", "VISION", "OPEN_URL", "BROWSER_OPEN", "GITHUB", "WRITE_FILE"]:
             req_t, _ = server.check_tool_confirmation_required(cfg, tool, "arg", is_tainted=True, source="pc")

@@ -70,10 +70,10 @@ class TestFollowUpBatch4Items(unittest.TestCase):
         server.RUN_CODE_TRUST_STATE.reset()
 
         with server.LOCK:
-            server.HISTORIES["developer"].clear()
-            server.HISTORIES["cyber"].clear()
-            server.CONVERSATION_TAINT["developer"] = False
-            server.CONVERSATION_TAINT["cyber"] = False
+            server.HISTORIES["developer"] = []
+            server.HISTORIES["cyber"] = []
+            server.CONVERSATION_TAINT.clear()
+            server.CONVERSATION_SEARCH_COUNTS.clear()
 
         with server.PENDING_LOCK:
             server.PENDING_ACTIONS.clear()
@@ -93,10 +93,10 @@ class TestFollowUpBatch4Items(unittest.TestCase):
         server.RUN_CODE_TRUST_STATE.reset()
 
         with server.LOCK:
-            server.HISTORIES["developer"].clear()
-            server.HISTORIES["cyber"].clear()
-            server.CONVERSATION_TAINT["developer"] = False
-            server.CONVERSATION_TAINT["cyber"] = False
+            server.HISTORIES["developer"] = []
+            server.HISTORIES["cyber"] = []
+            server.CONVERSATION_TAINT.clear()
+            server.CONVERSATION_SEARCH_COUNTS.clear()
 
         self.tmp_dir.cleanup()
 
@@ -177,11 +177,11 @@ class TestFollowUpBatch4Items(unittest.TestCase):
             self.assertIn("pending", res2b, "READ_FILE in tainted conversation must require confirmation")
             self.assertEqual(res2b["pending"]["action"], "READ_FILE")
 
-        # Turn 2c: SEARCH with <= 80 chars is allowed without confirmation
+        # Turn 2c: In sticky-tainted turn, EVERY SEARCH requires confirmation (<= 80 char exemption removed)
         short_query = "weather today"
         self.assertLessEqual(len(short_query), 80)
         req_short, _ = server.check_tool_confirmation_required(cfg, "SEARCH", short_query, is_tainted=True, source="pc")
-        self.assertFalse(req_short, "SEARCH <= 80 chars should not require confirmation in tainted turn")
+        self.assertTrue(req_short, "Every SEARCH in tainted turn must require confirmation")
 
         # Test Clear Untrusted Context endpoint via live server
         srv, port = self._start_live_server()
