@@ -194,6 +194,7 @@ class AttackerProbeSuite:
         # Set remote enabled and known remote token
         cfg_obj["remote_enabled"] = True
         cfg_obj["remote_port"] = self.remote_port
+        cfg_obj["remote_bind_ip"] = "127.0.0.1"
         cfg_obj["remote_token"] = self.known_remote_token
         self.config_path.write_text(json.dumps(cfg_obj, indent=2), encoding="utf-8")
 

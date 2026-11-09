@@ -1266,6 +1266,11 @@ async function renderPanel(name) {
     const st = await api("/api/remote");
     const on = st.enabled && st.active;
     let html = `<h2>Mobile remote</h2><p class="hint">Control Nova from your phone: scan the QR code, then type (or dictate) commands on the phone and Nova runs them on this PC. Your phone and this PC must be on the same Wi-Fi.</p>`;
+    if (on) {
+      html += `<div style="background:rgba(255,170,0,0.12);border:1px solid #ffaa00;color:#ffaa00;padding:10px 14px;border-radius:6px;margin:12px 0;font-size:12px;line-height:1.4;">
+        ⚠️ <b>Security Notice:</b> Connection is unencrypted HTTP on your local area network (LAN). Do not use on public Wi-Fi networks. Remote will auto-disable after ${st.idle_timeout_minutes || 30} minutes of inactivity.
+      </div>`;
+    }
     if (st.error) html += `<p class="hint" style="color:#ff6b81">${esc(st.error)}</p>`;
     if (on && !st.urls.length) {
       html += `<p class="hint" style="color:#ffd24d">Couldn't find this PC's Wi-Fi/network address. Connect to Wi-Fi and reopen this panel.</p><button class="btn" id="mobOff">Turn off</button>`;

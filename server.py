@@ -5963,14 +5963,19 @@ def remote_state(reveal=True):
     key = cfg.get("remote_key")
     proto = "https" if (cert and key and Path(cert).is_file() and Path(key).is_file()) else "http"
     pair_code = generate_remote_pairing_code(300) if reveal else ""
+    ips = [REMOTE.get("bind_ip")] if REMOTE.get("bind_ip") else lan_ips()
+    urls = [f"{proto}://{ip}:{port}/?pair={pair_code}" for ip in ips if ip] if (reveal and pair_code) else []
     return {
         "enabled": bool(cfg.get("remote_enabled")),
         "active": REMOTE["srv"] is not None,
         "error": REMOTE["error"],
         "port": port,
-        "urls": [f"{proto}://{ip}:{port}/?pair={pair_code}" for ip in lan_ips()] if (reveal and pair_code) else [],
+        "bind_ip": REMOTE.get("bind_ip", ""),
+        "urls": urls,
         "pairing_code": pair_code,
         "seconds_since_phone": ago,
+        "is_unencrypted": proto == "http",
+        "idle_timeout_minutes": float(cfg.get("remote_idle_timeout_minutes", 30)),
     }
 
 def is_phone_remote_request(handler) -> bool:
@@ -5993,12 +5998,43 @@ def is_phone_remote_request(handler) -> bool:
     return False
 
 
+def check_remote_idle() -> bool:
+    """Checks if remote has been idle longer than remote_idle_timeout_minutes and shuts it down."""
+    if not REMOTE.get("srv"):
+        return False
+    cfg = get_config()
+    timeout_mins = float(cfg.get("remote_idle_timeout_minutes", 30))
+    if timeout_mins <= 0:
+        return False
+    timeout_secs = timeout_mins * 60.0
+    last_act = REMOTE.get("last_seen") or REMOTE.get("started_at") or 0.0
+    if last_act and (time.time() - last_act) >= timeout_secs:
+        if sys.stdout:
+            print(f"[Remote Security] Idle auto-disable triggered after {timeout_mins} minutes of inactivity.")
+        set_remote(False)
+        return True
+    return False
+
+
+def _remote_idle_monitor_loop():
+    while REMOTE.get("srv"):
+        time.sleep(10.0)
+        try:
+            check_remote_idle()
+        except Exception:
+            pass
+
+
 def start_remote():
     cfg = get_config()
     port = int(cfg.get("remote_port", 8766))
     REMOTE["error"] = ""
+    bind_ip = cfg.get("remote_bind_ip")
+    if not bind_ip:
+        ips = lan_ips()
+        bind_ip = ips[0] if ips else "127.0.0.1"
     try:
-        srv = SilentThreadingHTTPServer(("0.0.0.0", port), RemoteHandler)
+        srv = SilentThreadingHTTPServer((bind_ip, port), RemoteHandler)
         cert = cfg.get("remote_cert")
         key = cfg.get("remote_key")
         if cert and key and Path(cert).is_file() and Path(key).is_file():
@@ -6007,13 +6043,18 @@ def start_remote():
             ctx.load_cert_chain(certfile=str(cert), keyfile=str(key))
             srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
     except OSError as e:
-        REMOTE["error"] = f"Could not open port {port} ({e}). Close whatever uses it, or change remote_port in data/config.json."
+        REMOTE["error"] = f"Could not open port {port} on {bind_ip} ({e}). Close whatever uses it, or change remote_port in data/config.json."
         return
     except Exception as e:
         REMOTE["error"] = f"Could not initialize remote server: {e}"
         return
     REMOTE["srv"] = srv
+    REMOTE["bind_ip"] = bind_ip
+    now = time.time()
+    REMOTE["started_at"] = now
+    REMOTE["last_seen"] = now
     threading.Thread(target=srv.serve_forever, daemon=True).start()
+    threading.Thread(target=_remote_idle_monitor_loop, daemon=True).start()
 
 
 def stop_remote():

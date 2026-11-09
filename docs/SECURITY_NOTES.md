@@ -57,6 +57,24 @@ Nova AI has undergone extensive security hardening, eliminating all 45 Critical,
   - Invocations enforce `--no-optional-locks`, `-c core.hooksPath=NUL`, `-c core.fsmonitor=false`, and `-c protocol.ext.allow=never`.
   - All `GIT_*` environment variables are stripped prior to execution.
 
+### 2.6 Remote Over Plain HTTP on LAN
+* **Risk Description:** Remote mobile access (`:8766`) operates over unencrypted HTTP on the user's Local Area Network (LAN).
+* **Threat Profile:** An adversary connected to the same local Wi-Fi or LAN could passively capture network traffic, potentially observing unencrypted command text or device authorization tokens.
+* **Mitigating Controls:**
+  - Remote mobile service binds strictly to the private-LAN interface (or loopback) instead of `0.0.0.0`, preventing exposure to WAN/external networks.
+  - Mandatory per-device authorization token validation (`X-Nova-Token` or Bearer) with strict rate limiting and 15-minute brute-force lockout after repeated failures.
+  - In-UI security warning banner prominently displayed whenever mobile remote is enabled.
+  - Configurable idle auto-disable timer (`remote_idle_timeout_minutes`, default 30 minutes) shutting down the port when inactive.
+  - TLS/HTTPS support can be enabled by configuring `remote_cert` and `remote_key` in `data/config.json`.
+
+### 2.7 Nova Browser Profile and Local Service Redirects
+* **Risk Description:** Nova Browser follows redirects to local services; keep personal logins out of its profile.
+* **Threat Profile:** External web pages or links navigated by Nova Browser could attempt redirects to internal localhost web applications. If personal credentials or sessions are stored in Nova Browser's dedicated profile directory, third-party sites could potentially probe them.
+* **Mitigating Controls:**
+  - Nova Browser runs with an isolated user data directory separated from the user's primary desktop browser profiles.
+  - Strict SSRF guard blocks direct fetch and network access to Nova's internal ports (8765, 8766), CDP ports, and unallowed local ports.
+  - Users are explicitly advised to keep personal logins, banking sessions, and sensitive credentials out of Nova Browser's dedicated profile.
+
 ---
 
 ## 3. Summary of Design Guarantees
