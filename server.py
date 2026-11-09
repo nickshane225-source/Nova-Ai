@@ -2110,6 +2110,9 @@ def create_pending_action(
             f"--- FIRST 500 CHARACTERS ---\n{first_500}\n\n"
             f"--- LAST 500 CHARACTERS ---\n{last_500}"
         )
+    elif clean_name in ("INSTALL_SKILL", "ADD_SKILL"):
+        sha_hash = hashlib.sha256(raw_arg.encode("utf-8", errors="replace")).hexdigest()
+        preview_str = f"[SKILL INSTALLATION - SHA-256: {sha_hash}]\n\n{raw_arg}"
     else:
         preview_str = raw_arg
 
@@ -2618,10 +2621,20 @@ def check_tool_confirmation_required(cfg, name, arg, is_tainted=False, source="p
         if is_tainted and ext in TAINTED_MARKUP_EXTENSIONS:
             return True, f"Writing or editing markup file '{target_f}' ({ext}) during a tainted turn requires user approval."
 
+    if name in ("GITHUB", "GH", "GIT_HUB"):
+        # Installing skills from GitHub ALWAYS requires confirmation, even in untainted PC turns
+        if any(act in arg_clean for act in ("install-skills", "install_skills", "skills")):
+            return True, f"Installing skill(s) from GitHub repository '{arg}' always requires user approval."
+        if is_tainted or source != "pc":
+            return True, f"Action '{name}' during a tainted or non-PC turn requires user approval."
+
+    if name in ("INSTALL_SKILL", "ADD_SKILL"):
+        return True, f"Installing skill from external source '{arg}' always requires user approval."
+
     if (is_tainted or source != "pc") and (
         name in (
             "PLAY", "SMART_HOME", "WEBHOOK", "IOT", "VISION", "SCREEN_ANALYZE",
-            "OPEN_URL", "OPEN_FILE", "VIEW_FILE", "GITHUB", "GH", "GIT_HUB",
+            "OPEN_URL", "OPEN_FILE", "VIEW_FILE",
             "WRITE_FILE", "EDIT_FILE", "CREATE_PROJECT",
         )
         or name.startswith("BROWSER_")
@@ -4940,6 +4953,28 @@ def run_skill(cfg, name, arg, source="pc", is_confirmed=False, mode="developer",
                 return f"Plan '{parsed['title']}' executed successfully ({completed_count} steps completed)."
             else:
                 return f"Plan '{parsed['title']}' aborted at step '{batch_res.get('failed_step')}': {batch_res.get('error')}"
+        if name in ("INSTALL_SKILL", "ADD_SKILL"):
+            if not skills_engine:
+                return "Skills engine not available."
+            parts = [p.strip() for p in raw_arg.split("|", 2)]
+            if len(parts) >= 3:
+                s_mode, s_name, s_content = parts[0], parts[1], parts[2]
+            elif len(parts) == 2:
+                s_mode, s_name, s_content = "developer", parts[0], parts[1]
+            else:
+                return "Invalid skill installation format. Expected 'name | content' or 'mode | name | content'."
+            try:
+                dest = skills_engine.install_user_skill(
+                    mode=s_mode,
+                    name=s_name,
+                    content=s_content,
+                    trusted=False,
+                    source="external",
+                )
+                sha = hashlib.sha256(dest.read_bytes()).hexdigest()
+                return f"Successfully installed skill '{s_name}' ({s_mode}, SHA-256: {sha[:12]}...)."
+            except Exception as e:
+                return f"Failed to install skill '{s_name}': {e}"
         if name in ("ORGANIZE", "ORGANIZE_FILES", "ORGANIZE_FOLDER"):
             return skill_organize_folder(raw_arg, cfg=cfg)
         if name == "GIT":
@@ -6663,6 +6698,30 @@ class Handler(BaseHandler):
                 if scheduler_engine:
                     scheduler_engine.SCHEDULER.clear_notifications()
                 return self._send(200, {"ok": True})
+            if path == "/api/skills":
+                if not skills_engine:
+                    return self._send(500, {"ok": False, "error": "Skills engine not available"})
+                s_name = (body.get("name") or "").strip()
+                s_content = (body.get("content") or "").strip()
+                s_mode = (body.get("mode") or "developer").strip()
+                s_desc = (body.get("description") or "").strip()
+                s_triggers = body.get("triggers", [])
+                if not s_name or not s_content:
+                    return self._send(400, {"ok": False, "error": "Missing name or content"})
+                try:
+                    dest = skills_engine.install_user_skill(
+                        mode=s_mode,
+                        name=s_name,
+                        content=s_content,
+                        description=s_desc,
+                        triggers=s_triggers,
+                        trusted=True,
+                        source="user_ui"
+                    )
+                    sha = hashlib.sha256(dest.read_bytes()).hexdigest()
+                    return self._send(200, {"ok": True, "name": s_name, "sha256": sha})
+                except Exception as e:
+                    return self._send(400, {"ok": False, "error": str(e)})
             if path == "/api/github":
                 repo = (body.get("repo") or "").strip()
                 action = (body.get("action") or "info").strip()
