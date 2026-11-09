@@ -109,40 +109,103 @@ The following table documents every tool in Nova AI's runtime, detailing externa
 
 ## 4. Ranking of 16 Medium Findings by Security Impact
 
-The 16 Medium findings from `docs/audit/AUDIT_REPORT.md` are prioritized below according to their real-world security and exploitability impact:
+The 16 Medium findings from `docs/audit/AUDIT_REPORT.md` are prioritized below according to their real-world security and exploitability impact. Each entry details the original defect, reproduction attempt, and remediation result:
 
-1. **MED-01: HTTP Handler Validation (`BaseHandler._body()`)**  
-   *Impact:* High / Type Confusion. Malformed JSON payloads (lists, primitives) could crash request threads or trigger unhandled exceptions leading to denial of service.
-2. **MED-04: Secret Masking Bug (`mask_secrets`)**  
-   *Impact:* High / Information Disclosure. A failure in secret masking risked leaking live API credentials in activity logs, events, and UI error banners.
-3. **MED-13: Guardian Regex Rails (`POWERSHELL`)**  
-   *Impact:* Medium-High / Safety Classifier Bypass. Improper regex patterns could either falsely allow dangerous storage formats or block benign administrative commands.
-4. **MED-05: GitHub Integration Skills Reload (`skills_engine`)**  
-   *Impact:* Medium / Integrity Desynchronization. Installing a skill without reloading cache left outdated skill handlers active in memory.
-5. **MED-09: SQLite Corruption Recovery (`data/nova_brain.db`)**  
-   *Impact:* Medium / Availability & State Loss. Database corruption would render second-brain notes and memory recall permanently inaccessible until manual intervention.
-6. **MED-11: Scheduler Task ID Collision (`add_timer`)**  
-   *Impact:* Medium / Race Condition. In high-frequency automation, millisecond collision allowed one timer to overwrite another scheduled job.
-7. **MED-12: Cross-Platform Python Executable (`skill_run_code`)**  
-   *Impact:* Medium / Execution Failure & Hijacking. Invocations of bare `"python"` rather than `sys.executable` exposed non-Windows systems to path spoofing.
-8. **MED-03: Premature HTTP 200 Streaming (`/api/chat/stream`)**  
-   *Impact:* Low-Medium / Authorization Masking. Streaming 200 SSE headers before verifying budget or tokens masked authentication errors from client telemetry.
-9. **MED-02: HTTP Keep-Alive Framing Resource Exhaustion**  
-   *Impact:* Low-Medium / Resource Exhaustion. Unbounded HTTP/1.1 connections without explicit `Connection: close` could exhaust server thread pools under rapid client reconnects.
-10. **MED-15: Gateway Dynamic Daemon Reload**  
-    *Impact:* Low / State Inconsistency. Changes to Telegram/Discord bot tokens in Settings did not take effect without a complete server restart.
-11. **MED-06: Duplicate Zipball Extraction in GitHub Connector**  
-    *Impact:* Low / Performance & Disk Wear. Redundant code extracted identical zip contents twice during repository cloning.
-12. **MED-07: Pull Request UI Label Formatting**  
-    *Impact:* Low / Cosmetic. PR listings were labeled with `Issue #` prefix rather than `PR #`.
-13. **MED-10: Usage Summary Days Parameter Filter**  
-    *Impact:* Low / Accounting Precision. Requesting 7-day usage returned lifetime usage statistics.
-14. **MED-08: Diagnostics Key Names for Gemini API**  
-    *Impact:* Low / Operational Visibility. Provider health checks reported false warnings when using standard configuration keys.
-15. **MED-16: Dead Code in `memory_engine.py`**  
-    *Impact:* Low / Code Hygiene. Legacy SQLite schema tables were created but never queried.
-16. **MED-14: Installer Wizard Tkinter Threading**  
-    *Impact:* Low / UI Responsiveness. Tkinter GUI methods called from background thread during initial software installation.
+### 1. MED-01: HTTP Handler Validation (`BaseHandler._body()`)
+- **Impact:** High / Type Confusion & Denial of Service.
+- **Original Defect:** `BaseHandler._body()` parsed JSON from request bodies without validating that the decoded root object was a `dict`. Payloads representing JSON arrays (e.g. `[]`), strings, numbers, or booleans caused downstream handler logic invoking `body.get(...)` to crash with an unhandled `AttributeError`, returning HTTP 500 or terminating request worker threads.
+- **Repro Attempt:** Sent HTTP POST requests with body `[]` and `"plain string"` to `/api/config` and `/api/confirm`.
+- **Result:** Fixed. `_body()` now checks `isinstance(data, dict)` and returns HTTP 400 Bad Request with `{"error": "Body must be a JSON object"}` if the root value is not a mapping.
+
+### 2. MED-04: Secret Masking Fallback (`mask_secrets`)
+- **Impact:** High / Information Disclosure.
+- **Original Defect:** `mask_secrets()` referenced a non-existent global `CONFIG` variable when the optional `cfg` parameter was omitted. Invocations without `cfg` raised a `NameError`, which was caught and suppressed by `except Exception: pass`, returning text completely unmasked and leaking sensitive API keys in telemetry and logs.
+- **Repro Attempt:** Invoked `mask_secrets("text with api_key")` without passing the `cfg` argument while live keys were defined in `data/config.json`.
+- **Result:** Fixed. Updated fallback to `conf = cfg if cfg is not None else get_config()`. All configuration secrets and credential regexes are masked properly even when `cfg` is omitted.
+
+### 3. MED-06: GitHub Zip Extraction Traversal, Collisions, and Zip Bombs
+- **Impact:** High / Arbitrary File Overwrite & DoS.
+- **Original Defect:** `GitHubConnector.clone_repo()` contained duplicated extraction loops and extracted zipball members without defending against path traversal (`../`), absolute paths, Windows drive letters (`C:\`), symlink attacks, case-collision duplicate overwrites, reserved Windows device names (`CON`, `PRN`, `AUX`, `NUL`), or zip bombs (file count, total size, compression ratio).
+- **Repro Attempt:** Extracted crafted zip archives containing `../../traversal.txt`, `/etc/passwd`, `C:\Windows\calc.exe`, Unix symlinks, `CON.txt`, case collisions (`File.txt` and `file.txt`), and a 1000:1 compression ratio bomb.
+- **Result:** Fixed. Implemented `safe_extract_zip()` enforcing strict validation for every path component, symlink refusal, case-insensitive collision tracking, Windows reserved device checks, and caps (1000 files, 50MB total, 100:1 ratio).
+
+### 4. MED-13: Guardian Regex Rails (`POWERSHELL`)
+- **Impact:** Medium-High / Safety Classifier Bypass.
+- **Original Defect:** Guardian blocked benign PowerShell inspection cmdlets like `Get-Process | Format-Table` due to overly broad regex substrings.
+- **Repro Attempt:** Submitted `Get-Process | Format-Table` for Guardian safety review.
+- **Result:** Fixed. Regex patterns refined to target destructive operations (`Remove-Item -Recurse`, `Format-Volume`, `Set-ExecutionPolicy Bypass`, `Invoke-Expression`) while permitting safe diagnostic cmdlets.
+
+### 5. MED-05: GitHub Integration Skills Reload (`skills_engine`)
+- **Impact:** Medium / Integrity Desynchronization.
+- **Original Defect:** `GitHubConnector.install_skills_from_repo` invoked `skills_engine.invalidate_cache()`, which was not defined on the `skills_engine` module, resulting in an `AttributeError` after installing community skills.
+- **Repro Attempt:** Triggered `install_skills_from_repo("test/repo")` with mock repository containing a valid skill.
+- **Result:** Fixed. Added `invalidate_cache()` to `skills_engine.py` that refreshes both bundled and user skill indexes and updates hash pinning manifests.
+
+### 6. MED-09: SQLite Corruption Recovery (`data/nova_brain.db`)
+- **Impact:** Medium / Availability & State Loss.
+- **Original Defect:** If `data/nova_brain.db` encountered disk or schema corruption, SQLite raised unhandled `DatabaseError` / `DatabaseCorruptError`, permanently breaking second-brain note saving and retrieval until manual file deletion.
+- **Repro Attempt:** Wrote corrupt non-SQLite headers into `data/nova_brain.db` and called `memory_engine.save_note()`.
+- **Result:** Fixed. `memory_engine.py` detects corruption on connect/query, moves the corrupted database to `nova_brain.db.corrupt_<timestamp>`, re-initializes a fresh database, and logs an alert.
+
+### 7. MED-11: Scheduler Task ID Collision (`add_timer`)
+- **Impact:** Medium / Race Condition.
+- **Original Defect:** Timer IDs were generated using `f"timer_{int(time.time() * 1000) % 100000}"`. Rapid additions within the same millisecond or cycle modulo caused ID collisions, overwriting scheduled jobs.
+- **Repro Attempt:** Invoked `add_timer()` in a loop 10 times in under 1 millisecond.
+- **Result:** Fixed. Timer ID generation incorporates `secrets.token_hex(6)` combined with millisecond timestamp, guaranteeing globally unique IDs.
+
+### 8. MED-12: Cross-Platform Python Executable (`skill_run_code`)
+- **Impact:** Medium / Execution Failure & Hijacking.
+- **Original Defect:** `skill_run_code()` executed code via bare `"python"`, which on non-Windows platforms or virtual environments could invoke a different system Python interpreter rather than the current runtime.
+- **Repro Attempt:** Executed code in an environment where PATH `python` differed from `sys.executable`.
+- **Result:** Fixed. `sys.executable` is used explicitly for all sub-process Python invocations.
+
+### 9. MED-03: Premature HTTP 200 Streaming & Permissive CORS (`/api/chat/stream`)
+- **Impact:** Low-Medium / Authorization Masking & CORS Exposure.
+- **Original Defect:** `/api/chat/stream` sent HTTP 200 headers and `Content-Type: text/event-stream` before completing session authentication and message validation, and unconditionally emitted `Access-Control-Allow-Origin: *`, which could allow arbitrary third-party web origins to observe streaming response data.
+- **Repro Attempt:** Dispatched cross-origin requests to `/api/chat/stream` with `Origin: https://malicious.com` and empty payloads.
+- **Result:** Fixed. Removed `Access-Control-Allow-Origin: *` completely. Added upfront authentication, empty message validation, and 30,000-character payload length checks prior to emitting HTTP 200 SSE stream headers.
+
+### 10. MED-02: HTTP Keep-Alive Framing Resource Exhaustion
+- **Impact:** Low-Medium / Resource Exhaustion.
+- **Original Defect:** HTTP/1.1 persistent connections without explicit keep-alive framing or read timeouts allowed idle or slow client sockets to hang indefinitely in `ThreadingHTTPServer`, exhausting thread pool handles.
+- **Repro Attempt:** Opened a raw TCP socket, transmitted an incomplete HTTP request header, and held the connection idle without terminating newlines.
+- **Result:** Fixed. Enforced strict 15-second socket timeouts, set `Connection: close` across all responses, and added structured teardown in `SilentThreadingHTTPServer`.
+
+### 11. MED-15: Gateway Dynamic Daemon Reload
+- **Impact:** Low / State Inconsistency.
+- **Original Defect:** Changing Telegram or Discord bot tokens in Settings required a full server reboot because gateway instances cached initial configuration at startup.
+- **Repro Attempt:** Updated gateway credentials via `/api/config` and verified whether gateways picked them up without restart.
+- **Result:** Fixed. Gateways support live dynamic reload via `reload_telegram_config()` and `reload_discord_config()` triggered immediately on `server.save_config()`.
+
+### 12. MED-07: Pull Request UI Label Formatting
+- **Impact:** Low / Cosmetic.
+- **Original Defect:** `GitHubConnector.list_pull_requests()` formatted each returned pull request item with `- Issue #{pr_num}` prefix instead of `- PR #{pr_num}`, causing confusion in the chat UI.
+- **Repro Attempt:** Listed pull requests via GitHub connector and inspected text output.
+- **Result:** Fixed. Formatted label corrected to `- PR #{pr_num}: {title}`.
+
+### 13. MED-10: Usage Summary Days Parameter Filter
+- **Impact:** Low / Accounting Precision.
+- **Original Defect:** `usage_tracker.get_usage_summary(days: int = 30)` accepted a `days` filter argument but ignored it, executing `WHERE timestamp >= 0` and always returning lifetime metrics.
+- **Repro Attempt:** Seeded token usage across 60 days and called `get_usage_summary(days=7)`.
+- **Result:** Fixed. Query now calculates `cutoff = time.time() - (days * 86400)` and filters `WHERE timestamp >= ?`.
+
+### 14. MED-08: Diagnostics Key Names for Gemini API
+- **Impact:** Low / Operational Visibility.
+- **Original Defect:** `diagnostics.check_llm_providers()` checked for `"gemini_api_key"` while Nova AI configuration standardized on `"gemini_key"`, causing provider health checks in Doctor to report Gemini as unconfigured even when keys were present.
+- **Repro Attempt:** Configured `gemini_key` in `data/config.json` and executed system diagnostics.
+- **Result:** Fixed. Updated `check_llm_providers()` to check both `"gemini_key"` and `"gemini_api_key"`.
+
+### 15. MED-16: Dead Code in `memory_engine.py`
+- **Impact:** Low / Code Hygiene.
+- **Original Defect:** `memory_engine.py` created unused legacy tables (`context_history`, `raw_embeddings`) during SQLite initialization that were never queried or populated.
+- **Repro Attempt:** Inspected schema migrations and table usages across codebase.
+- **Result:** Fixed. Removed unused tables, streamlining database operations to active tables (`notes`, `audit_trail`).
+
+### 16. MED-14: Installer Wizard Tkinter Threading
+- **Impact:** Low / UI Responsiveness.
+- **Original Defect:** `installer_wizard.py` invoked Tkinter GUI methods directly from a background worker thread, causing thread-safety crashes in Tcl/Tk on macOS and Linux.
+- **Repro Attempt:** Ran installation wizard with background progress callbacks.
+- **Result:** Fixed. All GUI updates dispatched to main thread using `root.after()` message queue.
 
 ---
 

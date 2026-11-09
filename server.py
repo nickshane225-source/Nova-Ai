@@ -3057,7 +3057,7 @@ def mask_secrets(text: str, cfg: dict = None) -> str:
 
     # Mask known config secret values
     try:
-        conf = cfg if cfg is not None else CONFIG
+        conf = cfg if cfg is not None else (get_config() if callable(globals().get("get_config")) else {})
         if isinstance(conf, dict):
             for sec_key in SECRET_FIELDS:
                 val = conf.get(sec_key)
@@ -6607,7 +6607,6 @@ class Handler(BaseHandler):
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")
             self.send_header("Cache-Control", "no-cache")
             self.send_header("Connection", "keep-alive")
-            self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
 
             res = chat(msg, mode=mode, source=source)
@@ -6898,7 +6897,6 @@ class Handler(BaseHandler):
                 self.send_header("Content-Type", "text/event-stream; charset=utf-8")
                 self.send_header("Cache-Control", "no-cache")
                 self.send_header("Connection", "keep-alive")
-                self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
 
                 res = chat(msg, mode=mode, source=source)
