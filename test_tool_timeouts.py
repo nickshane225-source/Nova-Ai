@@ -12,15 +12,13 @@ class TestToolTimeouts(unittest.TestCase):
         res_file = server.fetch_url_content("file:///C:/Windows/win.ini")
         self.assertIn("Refused", res_file)
 
-        # Mock urllib to test timeout
-        with patch("urllib.request.urlopen") as mock_open:
-            mock_resp = MagicMock()
-            mock_resp.read.return_value = ("A" * 8000).encode("utf-8")
-            mock_open.return_value.__enter__.return_value = mock_resp
+        # Mock ssrf_guard to test timeout and cap
+        with patch("ssrf_guard.safe_http_fetch") as mock_fetch:
+            mock_fetch.return_value = (True, "A" * 6000, {})
 
             out = server.fetch_url_content("https://example.com/data.txt", timeout=10.0)
-            mock_open.assert_called()
-            self.assertEqual(mock_open.call_args[1].get("timeout"), 10.0)
+            mock_fetch.assert_called()
+            self.assertEqual(mock_fetch.call_args[1].get("timeout"), 10.0)
             # Must cap output at 6000 characters
             self.assertEqual(len(out), 6000)
 

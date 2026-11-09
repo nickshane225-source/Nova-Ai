@@ -377,7 +377,7 @@ class TestWorkspaceBoundary(unittest.TestCase):
 
         non_local_samples = [
             "localhost:3000/dashboard",
-            "127.0.0.1:8765/x",
+            "example.com:8080/x",
             "react/redux",
             "github.com/user/repo",
             "https://github.com/user/repo",
@@ -387,7 +387,7 @@ class TestWorkspaceBoundary(unittest.TestCase):
             self.assertFalse(nova_browser.is_local_target(sample), f"'{sample}' must NOT be treated as a local target")
 
         # Verify normalize_target_url treats them as web URLs or search queries without raising PermissionError
-        self.assertEqual(nova_browser.normalize_target_url("127.0.0.1:8765/x"), "https://127.0.0.1:8765/x")
+        self.assertEqual(nova_browser.normalize_target_url("example.com:8080/x"), "https://example.com:8080/x")
         self.assertEqual(nova_browser.normalize_target_url("github.com/user/repo"), "https://github.com/user/repo")
         self.assertTrue(nova_browser.normalize_target_url("react/redux").startswith("https://www.google.com/search?q="))
 

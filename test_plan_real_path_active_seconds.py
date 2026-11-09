@@ -31,12 +31,16 @@ class TestPlanRealPathActiveSeconds(unittest.TestCase):
             server.PENDING_ACTIONS.clear()
         with server.ACTIVE_PLANS_LOCK:
             server.ACTIVE_PLANS.clear()
+        server.CONVERSATION_TAINT.clear()
+        server.RUN_CODE_TRUST_STATE.reset()
 
     def tearDown(self):
         with server.PENDING_LOCK:
             server.PENDING_ACTIONS.clear()
         with server.ACTIVE_PLANS_LOCK:
             server.ACTIVE_PLANS.clear()
+        server.CONVERSATION_TAINT.clear()
+        server.RUN_CODE_TRUST_STATE.reset()
 
     def _simulate_api_confirm(self, action_id: str, approve: bool = True):
         """

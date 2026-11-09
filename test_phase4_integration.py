@@ -48,7 +48,7 @@ class TestPhase4Integration(unittest.TestCase):
         local_names = {
             "server", "nova_browser", "memory_engine", "scheduler_engine", "skills_engine",
             "audit_logger", "guardian_agent", "plan_mode", "telegram_gateway", "integrations",
-            "usage_tracker", "diagnostics", "discord_gateway"
+            "usage_tracker", "diagnostics", "discord_gateway", "ssrf_guard"
         }
         
         for node in ast.walk(tree):

@@ -15,6 +15,8 @@ class TestPlanMode(unittest.TestCase):
         if hasattr(server, "ACTIVE_PLANS_LOCK"):
             with server.ACTIVE_PLANS_LOCK:
                 server.ACTIVE_PLANS.clear()
+        server.CONVERSATION_TAINT.clear()
+        server.RUN_CODE_TRUST_STATE.reset()
 
     def tearDown(self):
         import server
@@ -23,6 +25,8 @@ class TestPlanMode(unittest.TestCase):
         if hasattr(server, "ACTIVE_PLANS_LOCK"):
             with server.ACTIVE_PLANS_LOCK:
                 server.ACTIVE_PLANS.clear()
+        server.CONVERSATION_TAINT.clear()
+        server.RUN_CODE_TRUST_STATE.reset()
 
     def test_parse_plan_tag_multiple_steps(self):
         raw_tag = "Refactor auth engine | 1. Backup old config | 2. Implement DPAPI cipher | 3. Run regression tests"
@@ -271,6 +275,8 @@ class TestPlanMode(unittest.TestCase):
             server.PENDING_ACTIONS.clear()
         with server.ACTIVE_PLANS_LOCK:
             server.ACTIVE_PLANS.clear()
+        server.CONVERSATION_TAINT.clear()
+        server.RUN_CODE_TRUST_STATE.reset()
 
         mock_plan_deny_reply = (
             "Here is the execution plan:\n"
@@ -295,6 +301,8 @@ class TestPlanMode(unittest.TestCase):
             server.PENDING_ACTIONS.clear()
         with server.ACTIVE_PLANS_LOCK:
             server.ACTIVE_PLANS.clear()
+        server.CONVERSATION_TAINT.clear()
+        server.RUN_CODE_TRUST_STATE.reset()
 
         with patch("server.call_llm", return_value=mock_plan_deny_reply):
             res_chat_exp = server.chat("run expire pipeline", source="pc", mode="developer")

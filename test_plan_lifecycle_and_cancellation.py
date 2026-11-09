@@ -29,6 +29,8 @@ class TestPlanLifecycleAndCancellation(unittest.TestCase):
         }
         with server.ACTIVE_PLANS_LOCK:
             server.ACTIVE_PLANS.clear()
+        server.CONVERSATION_TAINT.clear()
+        server.RUN_CODE_TRUST_STATE.reset()
         with server.PENDING_LOCK:
             server.PENDING_ACTIONS.clear()
         with server.LOCK:
@@ -38,6 +40,8 @@ class TestPlanLifecycleAndCancellation(unittest.TestCase):
     def tearDown(self):
         with server.ACTIVE_PLANS_LOCK:
             server.ACTIVE_PLANS.clear()
+        server.CONVERSATION_TAINT.clear()
+        server.RUN_CODE_TRUST_STATE.reset()
         with server.PENDING_LOCK:
             server.PENDING_ACTIONS.clear()
 

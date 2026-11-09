@@ -5410,6 +5410,9 @@ def execute_model_tags(tags, cfg, jid=None, mode="developer", source="pc", is_ta
         conv_id = f"{source}:{mode}" if source == "pc" else f"{source}:{jid}"
     if turn_tool_executions is None:
         turn_tool_executions = [0]
+    if is_tainted:
+        CONVERSATION_TAINT[conv_id] = True
+        RUN_CODE_TRUST_STATE.invalidate()
     actions = []
     feedback_items = []
     pending_info = None

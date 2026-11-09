@@ -75,6 +75,7 @@ class TestBatch4AndFollowUps(unittest.TestCase):
         cfg["telegram_allowed_user_ids"] = []
         server.save_config(cfg)
         server.RUN_CODE_TRUST_STATE.reset()
+        server.CONVERSATION_TAINT.clear()
 
         with server.PENDING_LOCK:
             server.PENDING_ACTIONS.clear()
@@ -92,6 +93,7 @@ class TestBatch4AndFollowUps(unittest.TestCase):
         audit_logger._AUDIT_FILE = self.orig_audit_file
         server.Handler.DEFAULT_PORT = self.orig_default_port
         server.RUN_CODE_TRUST_STATE.reset()
+        server.CONVERSATION_TAINT.clear()
         with server.WORKSPACE_WRITES_LOCK:
             server.WORKSPACE_WRITES_HISTORY.clear()
             server.SESSION_WORKSPACE_WRITES_COUNT = 0

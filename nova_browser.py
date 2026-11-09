@@ -277,7 +277,7 @@ def activate_tab(tab_id: str) -> bool:
         return False
 
 
-def open_new_tab(target_url: str) -> dict or None:
+def open_new_tab(target_url: str, allow_localhost_dev: bool = False) -> dict or None:
     """Opens a new tab with target_url via CDP."""
     target_url = normalize_target_url(target_url, allow_localhost_dev=allow_localhost_dev)
     if not is_cdp_available(timeout=0.5):
