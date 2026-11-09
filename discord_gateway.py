@@ -23,6 +23,15 @@ logger = logging.getLogger("nova_ai.discord_gateway")
 DISCORD_API_BASE = "https://discord.com/api/v10"
 
 
+ACTIVE_DISCORD_GATEWAYS: list["DiscordGateway"] = []
+
+def reload_discord_config(new_cfg: dict[str, Any]) -> None:
+    for gw in list(ACTIVE_DISCORD_GATEWAYS):
+        try:
+            gw.reload_config(new_cfg)
+        except Exception:
+            pass
+
 class DiscordGateway:
     def __init__(
         self,
@@ -45,6 +54,23 @@ class DiscordGateway:
         self._running = False
         self._thread: threading.Thread | None = None
         self.bot_id: str | None = None
+        if self not in ACTIVE_DISCORD_GATEWAYS:
+            ACTIVE_DISCORD_GATEWAYS.append(self)
+
+    def reload_config(self, new_cfg: dict[str, Any] | None = None) -> None:
+        cfg = new_cfg
+        if cfg is None:
+            try:
+                import server
+                if hasattr(server, "get_config"):
+                    cfg = server.get_config()
+            except Exception:
+                pass
+        if isinstance(cfg, dict):
+            if "discord_allowed_user_ids" in cfg:
+                self.allowed_user_ids = [str(x).strip() for x in (cfg.get("discord_allowed_user_ids") or []) if str(x).strip()]
+            if "discord_channel_ids" in cfg:
+                self.channel_ids = [str(x).strip() for x in (cfg.get("discord_channel_ids") or []) if str(x).strip()]
 
     def _api_request(self, endpoint: str, data: dict[str, Any] | None = None, method: str = "GET") -> Any:
         url = f"{DISCORD_API_BASE}{endpoint}"
@@ -188,20 +214,37 @@ class DiscordGateway:
                 msg["channel_id"] = channel_id
             self.process_raw_message(msg)
 
+    def _get_live_allowlists(self) -> tuple[list[str], list[str]]:
+        uids = self.allowed_user_ids
+        cids = self.channel_ids
+        if callable(uids):
+            try:
+                uids = [str(uid).strip() for uid in (uids() or []) if str(uid).strip()]
+            except Exception:
+                pass
+        if callable(cids):
+            try:
+                cids = [str(cid).strip() for cid in (cids() or []) if str(cid).strip()]
+            except Exception:
+                pass
+        return uids, cids
+
     def is_authorized(self, user_id: str | int, channel_id: str | int = "") -> bool:
         """
         Verify message sender and channel authorization:
         - Must return False whenever allowed_user_ids is empty (regardless of channel_ids).
         - Must require BOTH a listed user and, if channel_ids is set, a listed channel.
+        - Always checks live config dynamically so allowlist changes take effect immediately without restart.
         """
-        if not self.allowed_user_ids:
+        allowed_users, allowed_channels = self._get_live_allowlists()
+        if not allowed_users:
             return False
         uid = str(user_id or "").strip()
-        if not uid or uid not in self.allowed_user_ids:
+        if not uid or uid not in allowed_users:
             return False
-        if self.channel_ids:
+        if allowed_channels:
             cid = str(channel_id or "").strip()
-            if not cid or cid not in self.channel_ids:
+            if not cid or cid not in allowed_channels:
                 return False
         return True
 
@@ -231,7 +274,8 @@ class DiscordGateway:
             if not self.allow_dms:
                 logger.warning(f"[Discord Security] Ignored DM because DMs are disabled: user={user_id}")
                 return
-            if not self.allowed_user_ids or effective_author not in self.allowed_user_ids:
+            allowed_users, _ = self._get_live_allowlists()
+            if not allowed_users or effective_author not in allowed_users:
                 logger.warning(f"[Discord Security] Ignored DM from unauthorized user: user={user_id}")
                 return
         else:

@@ -89,6 +89,15 @@ def handle_remote_confirm(action_id: str, approve: bool, notify: Optional[Callab
         return {"ok": False, "error": str(e)}
 
 
+ACTIVE_TELEGRAM_GATEWAYS: list["TelegramGateway"] = []
+
+def reload_telegram_config(new_cfg: Dict[str, Any]) -> None:
+    for gw in list(ACTIVE_TELEGRAM_GATEWAYS):
+        try:
+            gw.reload_config(new_cfg)
+        except Exception:
+            pass
+
 class TelegramGateway:
     def __init__(self, cfg: Dict[str, Any], chat_callback: Optional[Callable[..., Any]] = None):
         self.cfg = cfg or {}
@@ -97,6 +106,26 @@ class TelegramGateway:
         self.running = False
         self.thread: Optional[threading.Thread] = None
         self.offset = 0
+        if self not in ACTIVE_TELEGRAM_GATEWAYS:
+            ACTIVE_TELEGRAM_GATEWAYS.append(self)
+
+    def reload_config(self, new_cfg: Optional[Dict[str, Any]] = None) -> None:
+        if new_cfg is not None:
+            if isinstance(self.cfg, dict):
+                self.cfg.update(new_cfg)
+            else:
+                self.cfg = new_cfg
+        else:
+            try:
+                import server
+                if hasattr(server, "get_config"):
+                    live = server.get_config()
+                    if isinstance(self.cfg, dict):
+                        self.cfg.update(live)
+                    else:
+                        self.cfg = live
+            except Exception:
+                pass
 
     def get_api_url(self, method: str) -> str:
         return f"https://api.telegram.org/bot{self.token}/{method}"
@@ -149,6 +178,16 @@ class TelegramGateway:
         else:
             self.send_message(chat_id, full_approval_msg)
 
+    def _get_live_cfg(self) -> dict:
+        if callable(self.cfg):
+            try:
+                res = self.cfg()
+                if isinstance(res, dict):
+                    return res
+            except Exception:
+                pass
+        return self.cfg if isinstance(self.cfg, dict) else {}
+
     def is_authorized(self, chat_id: Any, user_id: Any = None, chat_type: str = "private") -> bool:
         """
         Verify Telegram sender and chat authorization:
@@ -156,15 +195,17 @@ class TelegramGateway:
           unless telegram_allowed_user_ids is omitted/empty AND telegram_allowed_chat_ids is set AND chat is strictly 'private').
         - If only chat IDs are set, group/supergroup/channel chats are strictly refused and only private chats accepted.
         - If both chat IDs and user IDs are set, BOTH must match.
+        - Always reads live config dynamically so allowlist changes take effect immediately without restart.
         """
         cid = str(chat_id).strip() if chat_id is not None else ""
         uid = str(user_id).strip() if user_id is not None else ""
         ctype = str(chat_type or "").strip().lower()
 
-        raw_chats = self.cfg.get("telegram_allowed_chat_ids") or []
+        cfg = self._get_live_cfg()
+        raw_chats = cfg.get("telegram_allowed_chat_ids") or []
         allowed_chat_ids = [str(x).strip() for x in raw_chats if str(x).strip()]
 
-        raw_users = self.cfg.get("telegram_allowed_user_ids") or []
+        raw_users = cfg.get("telegram_allowed_user_ids") or []
         allowed_user_ids = [str(x).strip() for x in raw_users if str(x).strip()]
 
         if not allowed_chat_ids and not allowed_user_ids:
@@ -173,7 +214,7 @@ class TelegramGateway:
         if allowed_chat_ids and cid not in allowed_chat_ids:
             return False
 
-        allow_groups = bool(self.cfg.get("telegram_allow_groups", False))
+        allow_groups = bool(cfg.get("telegram_allow_groups", False))
 
         if allowed_user_ids:
             if not uid or uid not in allowed_user_ids:
@@ -231,9 +272,10 @@ class TelegramGateway:
         # Command: /allow <id> or /allow@botname <id> (exact command parsing; not /allowance)
         if is_allow_cmd:
             # /allow and /deny MUST strictly come from an allowlisted user.id
-            raw_users = self.cfg.get("telegram_allowed_user_ids") or []
+            cfg = self._get_live_cfg()
+            raw_users = cfg.get("telegram_allowed_user_ids") or []
             allowed_uids = [str(x).strip() for x in raw_users if str(x).strip()]
-            raw_chats = self.cfg.get("telegram_allowed_chat_ids") or []
+            raw_chats = cfg.get("telegram_allowed_chat_ids") or []
             allowed_cids = [str(x).strip() for x in raw_chats if str(x).strip()]
             effective_allowed_users = allowed_uids if allowed_uids else allowed_cids
             if not user_id or str(user_id) not in effective_allowed_users:
@@ -283,9 +325,10 @@ class TelegramGateway:
         # Command: /deny <id> or /deny@botname <id> (exact command parsing; not /denying)
         if is_deny_cmd:
             # /allow and /deny MUST strictly come from an allowlisted user.id
-            raw_users = self.cfg.get("telegram_allowed_user_ids") or []
+            cfg = self._get_live_cfg()
+            raw_users = cfg.get("telegram_allowed_user_ids") or []
             allowed_uids = [str(x).strip() for x in raw_users if str(x).strip()]
-            raw_chats = self.cfg.get("telegram_allowed_chat_ids") or []
+            raw_chats = cfg.get("telegram_allowed_chat_ids") or []
             allowed_cids = [str(x).strip() for x in raw_chats if str(x).strip()]
             effective_allowed_users = allowed_uids if allowed_uids else allowed_cids
             if not user_id or str(user_id) not in effective_allowed_users:
@@ -315,9 +358,10 @@ class TelegramGateway:
         # Command: /stopplan or /stopplan@botname (sender allowlist applies)
         is_stopplan_cmd = (first_word == "/stopplan" or (first_word.startswith("/stopplan@") and len(first_word) > 10))
         if is_stopplan_cmd:
-            raw_users = self.cfg.get("telegram_allowed_user_ids") or []
+            cfg = self._get_live_cfg()
+            raw_users = cfg.get("telegram_allowed_user_ids") or []
             allowed_uids = [str(x).strip() for x in raw_users if str(x).strip()]
-            raw_chats = self.cfg.get("telegram_allowed_chat_ids") or []
+            raw_chats = cfg.get("telegram_allowed_chat_ids") or []
             allowed_cids = [str(x).strip() for x in raw_chats if str(x).strip()]
             effective_allowed_users = allowed_uids if allowed_uids else allowed_cids
             if not user_id or str(user_id) not in effective_allowed_users:

@@ -522,6 +522,19 @@ def save_config(cfg):
                 except Exception:
                     pass
 
+        try:
+            import telegram_gateway
+            if hasattr(telegram_gateway, "reload_telegram_config"):
+                telegram_gateway.reload_telegram_config(to_save)
+        except Exception:
+            pass
+        try:
+            import discord_gateway
+            if hasattr(discord_gateway, "reload_discord_config"):
+                discord_gateway.reload_discord_config(to_save)
+        except Exception:
+            pass
+
 
 def cleanup_leftover_temp_files():
     """Clean leftover temporary files (.tmp_*, _run_temp.*) in DATA and WORKSPACE at startup."""
