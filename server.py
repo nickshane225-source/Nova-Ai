@@ -344,6 +344,7 @@ DEFAULT_CONFIG = {
     "discord_channel_ids": [],
     "discord_allowed_user_ids": [],
     "monthly_budget_usd": 0.0,
+    "dev_localhost_ports": [3000, 3001, 4200, 5000, 5173, 8000, 8080],
 }
 
 PRESETS = {
@@ -6866,6 +6867,7 @@ class Handler(BaseHandler):
                     "telegram_allow_groups",
                     "monthly_budget_usd", "discord_enabled",
                     "discord_channel_ids", "discord_allowed_user_ids",
+                    "dev_localhost_ports",
                 } | SECRET_FIELDS | {f"clear_{sec}" for sec in SECRET_FIELDS}
                 # Reject unknown keys
                 for k in body:
@@ -6949,7 +6951,7 @@ class Handler(BaseHandler):
 
                 def _is_sensitive_key_changed(k, incoming_val):
                     cur_val = current_cfg.get(k, DEFAULT_CONFIG.get(k))
-                    if k in ("discord_channel_ids", "discord_allowed_user_ids", "telegram_allowed_chat_ids", "telegram_allowed_user_ids", "smart_home_hosts"):
+                    if k in ("discord_channel_ids", "discord_allowed_user_ids", "telegram_allowed_chat_ids", "telegram_allowed_user_ids", "smart_home_hosts", "dev_localhost_ports"):
                         inc_norm = [str(x).strip() for x in (incoming_val or []) if str(x).strip()]
                         cur_norm = [str(x).strip() for x in (cur_val or []) if str(x).strip()]
                         return inc_norm != cur_norm

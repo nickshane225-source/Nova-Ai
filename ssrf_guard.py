@@ -4,9 +4,11 @@ ssrf_guard.py - Unified Server-Side Request Forgery (SSRF) Protection & Secure H
 Provides:
 - validate_url_target: parses URL, rejects non-http/https, userinfo, decimal/hex/octal forms,
   resolves DNS once, validates IP ranges (loopback, private, link-local, CGNAT 100.64/10, multicast,
-  reserved, unspecified, own-interface, IPv4-mapped IPv6), and blocks sensitive ports (8765, 8766, CDP).
+  reserved, unspecified, own-interface, IPv4-mapped IPv6, NAT64 WKP, 6to4, Teredo), enforces
+  explicit dev localhost port allowlist (dev_localhost_ports, default [3000, 3001, 4200, 5000, 5173, 8000, 8080]),
+  and blocks sensitive ports (8765, 8766, CDP).
 - safe_http_fetch: securely performs HTTP/HTTPS requests by connecting directly to the resolved IP,
-  preserving Host header & SNI, following redirects (max 3) with re-validation on every hop,
+  preserving Host header & SNI hostname verification, following redirects (max 3) with re-validation on every hop,
   capping response size, enforcing text-only content types, and wrapping output in <UNTRUSTED_TOOL_OUTPUT>.
 """
 
@@ -22,7 +24,9 @@ import socket
 import ssl
 import sys
 import urllib.parse
-from typing import Any, Callable, Dict, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+
+DEFAULT_DEV_LOCALHOST_PORTS: List[int] = [3000, 3001, 4200, 5000, 5173, 8000, 8080]
 
 
 def wrap_untrusted_tool_output(data: Any, max_chars: int = 6000) -> str:
@@ -38,6 +42,22 @@ def wrap_untrusted_tool_output(data: Any, max_chars: int = 6000) -> str:
     if len(text) > max_chars:
         text = text[:max_chars]
     return f"<UNTRUSTED_TOOL_OUTPUT>\n{text}\n</UNTRUSTED_TOOL_OUTPUT>"
+
+
+def get_dev_localhost_ports(cfg: Optional[Dict[str, Any]] = None) -> Set[int]:
+    """Returns the set of explicitly allowed local development server ports."""
+    if cfg and "dev_localhost_ports" in cfg:
+        raw = cfg.get("dev_localhost_ports")
+        if isinstance(raw, (list, tuple, set)):
+            ports: Set[int] = set()
+            for p in raw:
+                try:
+                    ports.add(int(p))
+                except (ValueError, TypeError):
+                    pass
+            if ports:
+                return ports
+    return set(DEFAULT_DEV_LOCALHOST_PORTS)
 
 
 def get_blocked_ports(cfg: Optional[Dict[str, Any]] = None) -> Set[int]:
@@ -56,7 +76,7 @@ def get_blocked_ports(cfg: Optional[Dict[str, Any]] = None) -> Set[int]:
     # CDP port detection
     try:
         import nova_browser
-        cdp_p = getattr(nova_browser, "_CDP_PORT", None)
+        cdp_p = getattr(nova_browser, "CDP_PORT", None)
         if cdp_p:
             blocked.add(int(cdp_p))
     except Exception:
@@ -90,31 +110,78 @@ def check_ip_security(
     ip: ipaddress.IPv4Address | ipaddress.IPv6Address,
     port: int,
     allow_localhost_dev: bool = False,
+    dev_localhost_ports: Optional[Set[int]] = None,
     blocked_ports: Optional[Set[int]] = None,
 ) -> Optional[str]:
     """
-    Validates an IP address against forbidden network ranges.
+    Validates an IP address against forbidden network ranges:
+    - IPv4-mapped IPv6 (::ffff:x.x.x.x)
+    - NAT64 Well-Known Prefix (64:ff9b::/96)
+    - 6to4 prefix (2002::/16)
+    - Teredo prefix (2001::/32)
+    - Loopback (with strict explicit port allowlist)
+    - Link-local (cloud metadata)
+    - Private RFC 1918 / RFC 4193
+    - CGNAT (100.64.0.0/10)
+    - Multicast, reserved, unspecified, own-interface
     Returns None if safe, or an error string if forbidden.
     """
     blocked_ports = blocked_ports or {8765, 8766}
+    allowed_dev_ports = (
+        (dev_localhost_ports if dev_localhost_ports is not None else set(DEFAULT_DEV_LOCALHOST_PORTS))
+        - blocked_ports
+    )
 
-    # IPv4-mapped IPv6 (e.g. ::ffff:127.0.0.1)
+    # 1. IPv4-mapped IPv6 (e.g. ::ffff:127.0.0.1, ::ffff:10.0.0.1)
     if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
-        return check_ip_security(ip.ipv4_mapped, port, allow_localhost_dev, blocked_ports)
+        return check_ip_security(ip.ipv4_mapped, port, allow_localhost_dev, dev_localhost_ports, blocked_ports)
 
-    # Localhost / Loopback policy
+    # 2. NAT64 Well-Known Prefix (RFC 6052: 64:ff9b::/96)
+    if isinstance(ip, ipaddress.IPv6Address) and ip in ipaddress.ip_network("64:ff9b::/96"):
+        embedded_ipv4 = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+        err = check_ip_security(embedded_ipv4, port, allow_localhost_dev, dev_localhost_ports, blocked_ports)
+        if err:
+            return f"NAT64 embedded address ({embedded_ipv4}) is forbidden: {err}"
+
+    # 3. 6to4 Prefix (RFC 3056: 2002::/16)
+    if isinstance(ip, ipaddress.IPv6Address) and ip in ipaddress.ip_network("2002::/16"):
+        embedded_ipv4 = ipaddress.IPv4Address((int(ip) >> 80) & 0xFFFFFFFF)
+        err = check_ip_security(embedded_ipv4, port, allow_localhost_dev, dev_localhost_ports, blocked_ports)
+        if err:
+            return f"6to4 embedded address ({embedded_ipv4}) is forbidden: {err}"
+
+    # 4. Teredo Prefix (RFC 4380: 2001::/32)
+    if isinstance(ip, ipaddress.IPv6Address) and ip in ipaddress.ip_network("2001::/32"):
+        teredo_info = ip.teredo
+        if teredo_info:
+            server_ip, client_ip = teredo_info
+            err_server = check_ip_security(server_ip, port, allow_localhost_dev, dev_localhost_ports, blocked_ports)
+            if err_server:
+                return f"Teredo server address ({server_ip}) is forbidden: {err_server}"
+            err_client = check_ip_security(client_ip, port, allow_localhost_dev, dev_localhost_ports, blocked_ports)
+            if err_client:
+                return f"Teredo client address ({client_ip}) is forbidden: {err_client}"
+        # Also check raw lower 32 bits
+        raw_lower_ipv4 = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+        err_raw = check_ip_security(raw_lower_ipv4, port, allow_localhost_dev, dev_localhost_ports, blocked_ports)
+        if err_raw:
+            return f"Teredo embedded address ({raw_lower_ipv4}) is forbidden: {err_raw}"
+
+    # 5. Localhost / Loopback policy
     if ip.is_loopback:
         if allow_localhost_dev:
             if port in blocked_ports:
                 return f"Loopback connection to port {port} is blocked (Nova / CDP service port)."
-            return None  # Allowed for local development server in untainted PC mode
+            if port in allowed_dev_ports:
+                return None  # Permitted dev localhost port
+            return f"Loopback port {port} is not in allowed dev ports {sorted(list(allowed_dev_ports))}."
         return "Loopback address (127.0.0.0/8, ::1) is forbidden."
 
-    # Port restriction for any other address
+    # 6. Port restriction for any other address (never Nova or CDP)
     if port in blocked_ports:
         return f"Destination port {port} is blocked (Nova / CDP service port)."
 
-    # Prohibited IP ranges
+    # 7. Prohibited IP ranges
     if ip.is_link_local:
         return f"Link-local address ({ip}) is forbidden."
     if ip.is_private:
@@ -143,7 +210,9 @@ def check_ip_security(
 def validate_url_target(
     url: str,
     allow_localhost_dev: bool = False,
+    dev_localhost_ports: Optional[Set[int]] = None,
     blocked_ports: Optional[Set[int]] = None,
+    cfg: Optional[Dict[str, Any]] = None,
     custom_resolver: Optional[Callable[[str, int], list]] = None,
 ) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
     """
@@ -151,7 +220,8 @@ def validate_url_target(
     - Enforces http/https only
     - Rejects userinfo (@)
     - Rejects decimal/hex/octal IP obfuscations
-    - Resolves hostname once and inspects all resolved IP addresses
+    - Resolves hostname once and inspects all resolved IP addresses (refuses if ANY are insecure)
+    - Enforces dev_localhost_ports allowlist on loopback dev connections
     - Returns (is_valid, error_reason, target_info)
     """
     if not url or not isinstance(url, str):
@@ -195,14 +265,21 @@ def validate_url_target(
     if not port:
         port = 443 if scheme == "https" else 80
 
-    ports_to_block = blocked_ports if blocked_ports is not None else get_blocked_ports()
+    ports_to_block = blocked_ports if blocked_ports is not None else get_blocked_ports(cfg)
+    allowed_dev_ports = (
+        (dev_localhost_ports if dev_localhost_ports is not None else get_dev_localhost_ports(cfg))
+        - ports_to_block
+    )
 
     # Check for direct loopback hostname
     is_direct_loopback_host = (host.lower() in ("localhost", "127.0.0.1", "::1"))
     if is_direct_loopback_host and not allow_localhost_dev:
         return False, "SSRF Protection: Loopback address (127.0.0.0/8, ::1) is forbidden.", None
-    if is_direct_loopback_host and port in ports_to_block:
-        return False, f"SSRF Protection: Loopback connection to port {port} is blocked (Nova / CDP service port).", None
+    if is_direct_loopback_host:
+        if port in ports_to_block:
+            return False, f"SSRF Protection: Loopback connection to port {port} is blocked (Nova / CDP service port).", None
+        if port not in allowed_dev_ports:
+            return False, f"SSRF Protection: Loopback port {port} is not in allowed dev ports {sorted(list(allowed_dev_ports))}.", None
 
     # DNS Resolution
     if custom_resolver:
@@ -221,14 +298,20 @@ def validate_url_target(
 
     resolved_ips = [entry[4][0] for entry in addr_info]
 
-    # Validate EVERY resolved IP address
+    # Validate EVERY resolved IP address - if ANY IP is insecure, refuse!
     for ip_str in resolved_ips:
         try:
             ip_obj = ipaddress.ip_address(ip_str)
         except ValueError:
             return False, f"Invalid resolved IP '{ip_str}'.", None
 
-        err = check_ip_security(ip_obj, port, allow_localhost_dev=allow_localhost_dev, blocked_ports=ports_to_block)
+        err = check_ip_security(
+            ip_obj,
+            port,
+            allow_localhost_dev=allow_localhost_dev,
+            dev_localhost_ports=allowed_dev_ports,
+            blocked_ports=ports_to_block,
+        )
         if err:
             return False, f"SSRF Protection: {err}", None
 
@@ -247,7 +330,7 @@ def validate_url_target(
 
 
 class PinnedHTTPSConnection(http.client.HTTPSConnection):
-    """HTTPS connection that connects directly to a pre-resolved IP while enforcing SNI hostname."""
+    """HTTPS connection that connects directly to a pre-resolved IP while enforcing SNI hostname and cert verification."""
     def __init__(self, ip: str, port: int, hostname: str, timeout: float = 10.0, context: Optional[ssl.SSLContext] = None):
         super().__init__(ip, port, timeout=timeout, context=context)
         self._server_hostname = hostname
@@ -263,6 +346,7 @@ def safe_http_fetch(
     max_size: int = 6000,
     max_redirects: int = 3,
     allow_localhost_dev: bool = False,
+    dev_localhost_ports: Optional[Set[int]] = None,
     wrap_output: bool = True,
     blocked_ports: Optional[Set[int]] = None,
     cfg: Optional[Dict[str, Any]] = None,
@@ -270,7 +354,7 @@ def safe_http_fetch(
 ) -> Tuple[bool, str, Dict[str, Any]]:
     """
     Executes a hardened HTTP/HTTPS GET request with strict SSRF defense:
-    - Resolves hostname once and connects directly to the pinned IP (preserving Host header & SNI)
+    - Resolves hostname once and connects directly to the pinned IP (preserving Host header & SNI hostname verification)
     - Re-validates every redirect hop (up to max_redirects)
     - Enforces text-only content types
     - Caps response size at max_size
@@ -282,12 +366,18 @@ def safe_http_fetch(
         "Accept": "text/html,application/xhtml+xml,application/json,text/plain,*/*;q=0.8",
     }
     ports_to_block = blocked_ports if blocked_ports is not None else get_blocked_ports(cfg)
+    allowed_dev_ports = (
+        (dev_localhost_ports if dev_localhost_ports is not None else get_dev_localhost_ports(cfg))
+        - ports_to_block
+    )
 
     for hop in range(max_redirects + 1):
         ok, reason, target = validate_url_target(
             current_url,
             allow_localhost_dev=allow_localhost_dev,
+            dev_localhost_ports=allowed_dev_ports,
             blocked_ports=ports_to_block,
+            cfg=cfg,
             custom_resolver=custom_resolver,
         )
         if not ok or not target:

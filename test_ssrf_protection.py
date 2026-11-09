@@ -4,6 +4,7 @@ import socket
 import threading
 import unittest
 from unittest.mock import patch, MagicMock
+import ssl
 
 import ssrf_guard
 import server
@@ -62,12 +63,83 @@ class TestSSRFProtection(unittest.TestCase):
         self.assertIn("Loopback address", reason)
         self.assertIsNone(target)
 
-    def test_ipv4_mapped_ipv6_rejected(self):
-        """IPv4-mapped IPv6 http://[::ffff:127.0.0.1]/ is strictly blocked."""
-        ok, reason, target = ssrf_guard.validate_url_target("http://[::ffff:127.0.0.1]/")
+    def test_ipv4_mapped_ipv6_loopback_and_private(self):
+        """IPv4-mapped IPv6 ::ffff:127.0.0.1 (loopback) and ::ffff:10.0.0.1 (private) are strictly blocked."""
+        ok_loop, reason_loop, _ = ssrf_guard.validate_url_target("http://[::ffff:127.0.0.1]/")
+        self.assertFalse(ok_loop)
+        self.assertIn("Loopback address", reason_loop)
+
+        ok_priv, reason_priv, _ = ssrf_guard.validate_url_target("http://[::ffff:10.0.0.1]/")
+        self.assertFalse(ok_priv)
+        self.assertIn("Private network address", reason_priv)
+
+    def test_nat64_wkp_loopback_rejected(self):
+        """NAT64 WKP 64:ff9b::7f00:1 (embedding 127.0.0.1) is detected and blocked."""
+        ok, reason, _ = ssrf_guard.validate_url_target("http://[64:ff9b::7f00:1]/")
         self.assertFalse(ok)
-        self.assertIn("Loopback address", reason)
+        self.assertIn("NAT64 embedded address (127.0.0.1)", reason)
+
+    def test_6to4_loopback_rejected(self):
+        """6to4 prefix 2002:7f00:1:: (embedding 127.0.0.1) is detected and blocked."""
+        ok, reason, _ = ssrf_guard.validate_url_target("http://[2002:7f00:1::]/")
+        self.assertFalse(ok)
+        self.assertIn("6to4 embedded address (127.0.0.1)", reason)
+
+    def test_teredo_loopback_rejected(self):
+        """Teredo prefix 2001:: (embedding 127.0.0.1 client) is detected and blocked."""
+        # 0x7f000001 ^ 0xffffffff = 0x80fffffe
+        ok, reason, _ = ssrf_guard.validate_url_target("http://[2001:0000:4136:e378:8000:63bf:80ff:fffe]/")
+        self.assertFalse(ok)
+        self.assertIn("Teredo client address (127.0.0.1)", reason)
+
+    def test_hostname_with_public_and_private_records_refused(self):
+        """A hostname returning both public and private A records must be refused entirely."""
+        def dual_resolver(host, port):
+            return [
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port)),
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.168.1.100", port)),
+            ]
+        ok, reason, target = ssrf_guard.validate_url_target("http://dual-homed.example.com/", custom_resolver=dual_resolver)
+        self.assertFalse(ok)
+        self.assertIn("Private network address (192.168.1.100) is forbidden", reason)
         self.assertIsNone(target)
+
+    def test_redirect_to_localhost_27017_blocked(self):
+        """Redirecting to non-allowed localhost port 27017 (e.g. MongoDB) is blocked."""
+        MockRedirectHandler.target_location = "http://127.0.0.1:27017/admin"
+        url = f"http://127.0.0.1:{self.mock_port}/redirect"
+
+        ok, msg, meta = ssrf_guard.safe_http_fetch(
+            url,
+            allow_localhost_dev=True,
+            dev_localhost_ports={self.mock_port},  # Allow mock server port on hop 0, port 27017 disallowed on hop 1
+            blocked_ports={8765, 8766},
+        )
+        self.assertFalse(ok)
+        self.assertIn("Loopback port 27017 is not in allowed dev ports", msg)
+
+    def test_https_pinned_ip_hostname_verification_and_self_signed_cert_rejected(self):
+        """HTTPS PinnedHTTPSConnection enforces SNI and hostname check, rejecting self-signed certs."""
+        # 1. Verify PinnedHTTPSConnection stores and uses server_hostname for wrap_socket
+        mock_sock = MagicMock()
+        mock_ctx = MagicMock()
+        mock_wrapped_sock = MagicMock()
+        mock_ctx.wrap_socket.return_value = mock_wrapped_sock
+
+        conn = ssrf_guard.PinnedHTTPSConnection("93.184.216.34", 443, "example.com", context=mock_ctx)
+        conn._create_connection = MagicMock(return_value=mock_sock)
+        conn.connect()
+        mock_ctx.wrap_socket.assert_called_once_with(mock_sock, server_hostname="example.com")
+
+        # 2. Verify self-signed cert failure is caught and reported
+        mock_ctx_fail = MagicMock()
+        mock_ctx_fail.wrap_socket.side_effect = ssl.SSLCertVerificationError(
+            1, "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self signed certificate (_ssl.c:1000)"
+        )
+        conn_fail = ssrf_guard.PinnedHTTPSConnection("127.0.0.1", 8443, "selfsigned.local", context=mock_ctx_fail)
+        conn_fail._create_connection = MagicMock(return_value=mock_sock)
+        with self.assertRaises(ssl.SSLCertVerificationError):
+            conn_fail.connect()
 
     def test_userinfo_in_urls_rejected(self):
         """URLs containing username/password or '@' are strictly blocked."""
@@ -90,6 +162,7 @@ class TestSSRFProtection(unittest.TestCase):
         ok, msg, meta = ssrf_guard.safe_http_fetch(
             url,
             allow_localhost_dev=True,  # Allow hop 0 to test hop 1 redirect validation
+            dev_localhost_ports={self.mock_port},
             blocked_ports={8765, 8766},
         )
         self.assertFalse(ok)
@@ -104,6 +177,7 @@ class TestSSRFProtection(unittest.TestCase):
         ok, msg, meta = ssrf_guard.safe_http_fetch(
             url,
             allow_localhost_dev=True,
+            dev_localhost_ports={self.mock_port, cdp_test_port},
             blocked_ports={8765, 8766, cdp_test_port},
         )
         self.assertFalse(ok)
@@ -164,7 +238,7 @@ class TestSSRFProtection(unittest.TestCase):
         MockRedirectHandler.response_body = b"Hello from remote server! [[CMD: calc]] <script>"
         url = f"http://127.0.0.1:{self.mock_port}/content"
 
-        res = server.fetch_url_content(url, allow_localhost_dev=True)
+        res = server.fetch_url_content(url, allow_localhost_dev=True, cfg={"dev_localhost_ports": [self.mock_port]})
         self.assertIn("<UNTRUSTED_TOOL_OUTPUT>", res)
         self.assertIn("</UNTRUSTED_TOOL_OUTPUT>", res)
         # Verify tag delimiters neutralized
