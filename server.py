@@ -2417,6 +2417,7 @@ RUN_CODE_TRUST_STATE = _RunCodeTrustState()
 NO_CONFIRM_TOOLS = {
     "NOTE", "SEARCH_NOTES", "REMIND", "TIMER", "VOLUME", "MEDIA", "PLAY",
     "SCREENSHOT", "ACTIVE_WINDOW", "GET_WINDOW", "BRIEFING", "MORNING_BRIEFING",
+    "VISION", "SCREEN_ANALYZE", 
     "LIST_AUTOMATIONS", "AUTOMATIONS", "CANCEL_AUTOMATION", "STOP_AUTOMATION",
     "BROWSER_CLOSE", "BROWSER_RESEARCH", "BROWSER_READ", "BROWSER_PAGE", "READ_PAGE", "PAGE_CONTENT",
     "LIST_FILES", "READ_FILE", "SEARCH", "PLAN",
@@ -2484,6 +2485,8 @@ class _BoundedSearchCountDict(OrderedDict):
 
 CONVERSATION_SEARCH_COUNTS = _BoundedSearchCountDict(maxsize=500)
 CONVERSATION_SEARCH_LOCK = threading.Lock()
+CONVERSATION_VISION_CONFIRMED: set[str] = set()
+CONVERSATION_VISION_LOCK = threading.Lock()
 
 def record_unconfirmed_search(conv_id: str):
     """Increments search count only for executed unconfirmed searches."""
@@ -2656,6 +2659,15 @@ def check_tool_confirmation_required(cfg, name, arg, is_tainted=False, source="p
 
     if name in ("INSTALL_SKILL", "ADD_SKILL"):
         return True, f"Installing skill from external source '{arg}' always requires user approval."
+
+    if name in ("VISION", "SCREEN_ANALYZE"):
+        effective_conv = conv_id or f"{source}:developer"
+        with CONVERSATION_VISION_LOCK:
+            already_confirmed = effective_conv in CONVERSATION_VISION_CONFIRMED
+        if not already_confirmed:
+            return True, "Capturing screen and sending screenshot to AI cloud provider requires user confirmation (first call in this conversation)."
+        if is_tainted or source != "pc":
+            return True, f"Running VISION during a tainted or non-PC ({source}) turn requires user confirmation."
 
     if (is_tainted or source != "pc") and (
         name in (
@@ -3502,6 +3514,7 @@ def skill_create_project(arg, cfg=None):
 
 
 def skill_screen_analyze(question=""):
+    add_event(type="vision_start", message="Transmitting desktop screenshot to AI cloud provider...")
     try:
         import base64
         cfg = get_config()
@@ -3511,16 +3524,18 @@ def skill_screen_analyze(question=""):
         target = save_dir / f"vision_{stamp}.png"
         captured = _capture_desktop_png(target)
         if not captured or not captured.exists():
+            add_event(type="vision_end", status="failed")
             return "Could not capture screenshot for vision analysis."
 
         raw_bytes = target.read_bytes()
         b64_img = base64.b64encode(raw_bytes).decode("ascii")
         prompt = question.strip() if question.strip() else "What is currently visible on my screen? Provide a concise summary or identify any errors/relevant items."
         res = call_llm_vision(cfg, prompt, b64_img)
+        add_event(type="vision_end", status="success")
         return f"[Screen Vision Analysis]:\n{res}"
     except Exception as e:
+        add_event(type="vision_end", status="error")
         return f"Vision analysis failed: {e}"
-
 
 def skill_read_file(raw_path, cfg=None):
     try:
@@ -5664,6 +5679,11 @@ def _chat_inner(user_text, source, jid, mode="developer", is_automation=False, c
 
                 if is_approve_word:
                     PENDING_ACTIONS.pop(pending["id"], None)
+                    if pending.get("name") in ("VISION", "SCREEN_ANALYZE"):
+                        eff_c = pending.get("conv_id") or conv_id or f"{pending.get('source', 'pc')}:developer"
+                        with CONVERSATION_VISION_LOCK:
+                            CONVERSATION_VISION_CONFIRMED.add(eff_c)
+
                     if pending.get("name") == "RUN_CODE":
                         if pending.get("is_tainted") or is_file_tainted_provenance(pending.get("arg", ""))[0]:
                             RUN_CODE_TRUST_STATE.invalidate()
@@ -6761,6 +6781,11 @@ class Handler(BaseHandler):
                         res_body["message"] = f"Plan '{plan_title}' aborted."
                     return self._send(200, res_body)
 
+                if pending.get("name") in ("VISION", "SCREEN_ANALYZE"):
+                    eff_c = pending.get("conv_id") or f"{pending.get('source', 'pc')}:developer"
+                    with CONVERSATION_VISION_LOCK:
+                        CONVERSATION_VISION_CONFIRMED.add(eff_c)
+
                 if pending.get("name") == "RUN_CODE":
                     if pending.get("is_tainted") or is_file_tainted_provenance(pending.get("arg", ""))[0]:
                         RUN_CODE_TRUST_STATE.invalidate()
@@ -7249,6 +7274,8 @@ class Handler(BaseHandler):
                             hist.clear()
                             hist.extend(cleaned)
                         CONVERSATION_TAINT[cid] = False
+                with CONVERSATION_VISION_LOCK:
+                    CONVERSATION_VISION_CONFIRMED.discard(cid)
                 reset_search_counts(target_conv_ids)
                 RUN_CODE_TRUST_STATE.reset()
                 return self._send(200, {"ok": True, "is_tainted": False, "mode": clear_mode})

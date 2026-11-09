@@ -2036,6 +2036,22 @@ async function handlePhone(ev) {
   setMode("idle");
   scheduleListen(100);
 }
+function showVisionBanner(show, msg) {
+  let el = document.getElementById("visionBanner");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "visionBanner";
+    el.style.cssText = "position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:99999;background:rgba(255,59,48,0.95);color:#fff;padding:10px 20px;border-radius:8px;box-shadow:0 4px 20px rgba(255,59,48,0.4);font-size:13px;font-weight:600;display:flex;align-items:center;gap:10px;transition:opacity 0.2s;";
+    document.body.appendChild(el);
+  }
+  if (show) {
+    el.innerHTML = `<span style="display:inline-block;width:10px;height:10px;background:#fff;border-radius:50%;"></span> <span>📸 ${esc(msg || "Transmitting desktop screenshot to AI cloud provider...")}</span>`;
+    el.style.display = "flex";
+  } else {
+    el.style.display = "none";
+  }
+}
+
 async function pollEvents() {
   try {
     const r = await api("/api/events?after=" + (lastEvent == null ? 0 : lastEvent));
@@ -2044,6 +2060,11 @@ async function pollEvents() {
     } else {
       for (const ev of r.events) {
         lastEvent = ev.id;
+        if (ev.type === "vision_start") {
+          showVisionBanner(true, ev.message);
+        } else if (ev.type === "vision_end") {
+          showVisionBanner(false);
+        }
         if (ev.type === "plan_paused") {
           try {
             const pRes = await api("/api/pending");
