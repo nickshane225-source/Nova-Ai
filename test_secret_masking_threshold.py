@@ -69,6 +69,44 @@ class TestSecretMaskingAndLockout(unittest.TestCase):
             self.assertEqual(req.status, 429)
             self.assertIn("15 minutes", req.data.get("error", ""))
 
+    def test_valid_device_on_different_ip_not_locked_out_by_other_ip_failures(self):
+        """
+        Item 6: Lockout Scoping
+        - Attacker IP (192.168.1.99) sends 8 failures and is locked out on the 9th attempt.
+        - Legitimate device on distinct IP (192.168.1.50) with valid token is NOT locked out (returns 200).
+        """
+        valid_token = "valid_real_remote_token_32_chars"
+
+        class MockRemoteRequest(server.RemoteHandler):
+            def __init__(self, ip="192.168.1.100", headers=None):
+                self.client_address = (ip, 12345)
+                self.headers = headers or {"X-Nova-Token": "wrong-token-value"}
+                self.path = "/api/remote/info"
+                self.status = None
+                self.data = None
+
+            def _send(self, status, data, ctype="application/json"):
+                self.status = status
+                self.data = data
+
+        with patch("server.get_config", return_value={"remote_enabled": True, "remote_token": valid_token}):
+            # Attacker on IP 192.168.1.99 fails 8 times
+            attacker_req = MockRemoteRequest(ip="192.168.1.99", headers={"X-Nova-Token": "bad-pass"})
+            for i in range(8):
+                ok = attacker_req._auth()
+                self.assertFalse(ok)
+                self.assertEqual(attacker_req.status, 401)
+
+            # 9th attempt from attacker is locked out (429)
+            ok = attacker_req._auth()
+            self.assertFalse(ok)
+            self.assertEqual(attacker_req.status, 429)
+
+            # Legitimate device on IP 192.168.1.50 with valid token
+            valid_req = MockRemoteRequest(ip="192.168.1.50", headers={"X-Nova-Token": valid_token})
+            ok_valid = valid_req._auth()
+            self.assertTrue(ok_valid, "Valid device on distinct IP must NOT be locked out by attacker IP failures")
+
 
 if __name__ == "__main__":
     unittest.main()
