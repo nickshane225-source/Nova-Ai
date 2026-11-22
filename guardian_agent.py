@@ -51,6 +51,7 @@ def is_exec_capable_tag(tool_name: str, argument: str) -> bool:
 _DESTRUCTIVE_PATTERNS = [
     re.compile(r"\brm\s+-(?:r|f|rf|fr)\b", re.IGNORECASE),
     re.compile(r"\bformat\s+[a-zA-Z]:", re.IGNORECASE),
+    re.compile(r"\bformat-volume\b", re.IGNORECASE),
     re.compile(r"\bdel\s+(?:/[a-zA-Z\s]+)*[a-zA-Z]:\\(?:windows|system32)", re.IGNORECASE),
     re.compile(r"\brd\s+(?:/[a-zA-Z\s]+)*[a-zA-Z]:\\", re.IGNORECASE),
     re.compile(r"\bremove-item\b.*-(?:recurse|force)\b.*(?:windows|system32|\$home|~|\$env:userprofile|[a-zA-Z]:\\)", re.IGNORECASE),
