@@ -98,7 +98,7 @@ function setMode(m) {
     speaking: "text-[#37d6ff] drop-shadow-[0_0_8px_rgba(55,214,255,0.6)]"
   };
   el.className = `text-xs tracking-[0.25em] flex-1 font-semibold uppercase transition-colors duration-200 ${colors[m] || colors.idle}`;
-  const isWake = active && state && state.config && state.config.wake_word_enabled !== false;
+  const isWake = active && state && state.config && state.config.wake_word_enabled === true;
   let label = { idle: active ? "STANDBY" : "OFFLINE", listening: "LISTENING", thinking: "THINKING", speaking: "SPEAKING" }[m];
   if (m === "listening" && isWake) {
     label = typeof wakeWordAwake !== "undefined" && wakeWordAwake ? "AWAKE (COMMAND)" : "STANDBY (WAKE WORD)";
@@ -500,7 +500,27 @@ function showVoiceNetworkNotice(show, msg) {
   }
 }
 
+function updateMicIndicator(isListening, isWake) {
+  let el = document.getElementById("micLiveIndicator");
+  if (!el && isListening && document.body) {
+    el = document.createElement("div");
+    el.id = "micLiveIndicator";
+    el.style.cssText = "position:fixed;top:14px;right:18px;z-index:9998;background:rgba(255,59,48,0.92);color:#fff;padding:5px 12px;border-radius:999px;font-size:11px;font-weight:700;letter-spacing:0.04em;display:flex;align-items:center;gap:6px;box-shadow:0 0 14px rgba(255,59,48,0.45);";
+    document.body.appendChild(el);
+  }
+  if (!el) return;
+  if (isListening) {
+    el.textContent = isWake ? "● MIC LIVE — WAKE WORD (Cloud Speech)" : "● MIC LIVE — PUSH-TO-TALK (Cloud Speech)";
+    el.style.display = "flex";
+    if (el.classList && el.classList.remove) el.classList.remove("hidden");
+  } else {
+    el.style.display = "none";
+    if (el.classList && el.classList.add) el.classList.add("hidden");
+  }
+}
+
 function micBlocked(msg) {
+  updateMicIndicator(false, false);
   active = false;
   $("#start").textContent = "Start AI";
   setMode("idle");
@@ -558,14 +578,16 @@ function startListening() {
   const mine = () => rec === me;
   me.lang = state.config.language || "en-US";
   me.interimResults = true;
-  me.continuous = true;
+  const isWakeStart = Boolean(state.config && state.config.wake_word_enabled === true);
+  me.continuous = isWakeStart;
   let finalText = "";
   let interimText = "";
 
   me.onstart = () => {
     if (!mine()) return;
     setMode("listening");
-    const isWake = state.config && state.config.wake_word_enabled !== false;
+    const isWake = state.config && state.config.wake_word_enabled === true;
+    updateMicIndicator(true, isWake);
     if (!keepReply) {
       subtitle("", isWake ? (wakeWordAwake ? "Listening for command…" : "Listening… say 'Hey Nova' or 'Jarvis'.") : "Listening… speak now.");
     }
@@ -617,7 +639,7 @@ function startListening() {
     if (!current) return;
 
     clearTimeout(silenceTimer);
-    const isWakeWordMode = state.config && state.config.wake_word_enabled !== false;
+    const isWakeWordMode = state.config && state.config.wake_word_enabled === true;
 
     if (isWakeWordMode) {
       if (!wakeWordAwake) {
@@ -749,7 +771,8 @@ function startListening() {
     clearTimeout(silenceTimer);
     if (!mine()) return;
     rec = null;
-    const isWakeWordMode = state.config && state.config.wake_word_enabled !== false;
+    updateMicIndicator(false, false);
+    const isWakeWordMode = state.config && state.config.wake_word_enabled === true;
     const textToSend = (finalText || interimText).trim();
     finalText = "";
     interimText = "";
@@ -775,7 +798,12 @@ function startListening() {
       }
     } else if (active && !micMuted && mode !== "thinking" && mode !== "speaking") {
       setMode("idle");
-      scheduleListen(300);
+      if (isWakeWordMode) {
+        scheduleListen(300);
+      } else {
+        active = false;
+        if ($("#start")) $("#start").textContent = "Start AI";
+      }
     } else if (mode === "listening") {
       setMode("idle");
     }
@@ -785,6 +813,7 @@ function startListening() {
   } catch (err) {
     console.error("[Nova AI] Failed to start speech recognition:", err);
     rec = null;
+    updateMicIndicator(false, false);
     setMode("idle");
     if (active && !micMuted) {
       scheduleListen(1000);
@@ -1847,8 +1876,8 @@ async function renderPanel(name) {
       <h3>Voice Interaction Modes</h3>
       <div style="display:flex; flex-direction:column; gap:8px; margin-bottom:16px;">
         <label style="display:flex; align-items:center; gap:8px; text-transform:none; font-size:12px; color:#cfe9f5; cursor:pointer">
-          <input type="checkbox" id="chkWake" ${c.wake_word_enabled !== false ? 'checked' : ''} style="width:auto">
-          <span>Enable <b>'Hey Nova'</b> & <b>'Jarvis'</b> Voice Wake-Word</span>
+          <input type="checkbox" id="chkWake" ${c.wake_word_enabled === true ? 'checked' : ''} style="width:auto">
+          <span>Enable <b>'Hey Nova'</b> & <b>'Jarvis'</b> Wake-Word (opt-in: continuous listening via browser cloud speech)</span>
         </label>
         <label style="display:flex; align-items:center; gap:8px; text-transform:none; font-size:12px; color:#cfe9f5; cursor:pointer">
           <input type="checkbox" id="chkBarge" ${c.barge_in_enabled === true ? 'checked' : ''} style="width:auto">

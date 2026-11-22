@@ -75,6 +75,13 @@ Nova AI has undergone extensive security hardening, eliminating all 45 Critical,
   - Strict SSRF guard blocks direct fetch and network access to Nova's internal ports (8765, 8766), CDP ports, and unallowed local ports.
   - Users are explicitly advised to keep personal logins, banking sessions, and sensitive credentials out of Nova Browser's dedicated profile.
 
+### 2.8 Voice Input & Browser Cloud Speech Service
+* **Risk Description:** Browser-based voice recognition (`SpeechRecognition` / `webkitSpeechRecognition`) relies on the browser vendor's cloud speech service (e.g., Google or Microsoft). Microphone audio leaves the PC over the network whenever voice listening is active. If wake-word mode is enabled, the microphone listens continuously while active.
+* **Mitigating Controls:**
+  - **Push-to-Talk Default:** Wake-word continuous listening (`wake_word_enabled`) is **opt-in (default OFF)**. By default, Nova AI uses single-turn push-to-talk listening and stops automatically after each utterance.
+  - **Visible Microphone Indicator:** A prominent live microphone indicator badge is displayed in the UI whenever the browser microphone is actively capturing audio.
+  - **Text-Only Operation:** Users can operate Nova AI entirely via text input without granting microphone permissions.
+
 ---
 
 ## 3. Summary of Design Guarantees

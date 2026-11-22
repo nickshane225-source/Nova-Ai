@@ -323,6 +323,28 @@ function runNetworkErrorLimitTest() {
   scope.rec.onerror({ error: "network" });
   assert.strictEqual(scope.active, false, "Must stop auto-restarting after 3 consecutive network errors");
   console.log("[PASS] TEST 7 passed: Visible UI banner shown and auto-restart halted after 3 consecutive network errors.\n");
+  runPushToTalkDefaultTest();
+}
+
+// --- TEST 8: Push-to-talk default (wake word opt-in OFF) + visible mic indicator ---
+function runPushToTalkDefaultTest() {
+  console.log("--- TEST 8: Push-to-talk default (wake word OFF) and visible mic indicator ---");
+  const { scope, context } = createMockEnvironment();
+  scope.active = true;
+  scope.micMuted = false;
+  delete scope.state.config.wake_word_enabled; // default unset => OFF
+  scope.startListening();
+
+  assert.strictEqual(scope.rec.continuous, false, "Push-to-talk default must set continuous=false");
+  const ind = context.document.getElementById("micLiveIndicator");
+  assert.strictEqual(ind.style.display, "flex", "Visible mic indicator must be shown while listening");
+  assert.ok(ind.textContent.includes("PUSH-TO-TALK"), "Mic indicator must indicate push-to-talk mode");
+
+  // When recognition ends in push-to-talk mode, active becomes false and indicator hides
+  scope.rec.onend();
+  assert.strictEqual(scope.active, false, "Push-to-talk mode must not auto-restart listening on end");
+  assert.strictEqual(ind.style.display, "none", "Mic indicator must hide when recognition ends");
+  console.log("[PASS] TEST 8 passed: Push-to-talk default & live mic indicator verified.\n");
 
   console.log("=================================================");
   console.log("ALL REAL APP.JS VOICE REGRESSION TESTS PASSED!");

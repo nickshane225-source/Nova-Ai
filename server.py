@@ -317,7 +317,7 @@ DEFAULT_CONFIG = {
     "voice_rate": 1.0,
     "voice_pitch": 1.0,
     "voice_volume": 1.0,
-    "wake_word_enabled": True,
+    "wake_word_enabled": False,
     "barge_in_enabled": False,
     "llm_timeout": 60,
     "debug_llm": False,

@@ -183,7 +183,7 @@ Detailed reproduction steps, root causes, and verification notes are documented 
 ## 🔒 Security & Privacy Model
 
 - **Local-First Architecture:** The HTTP server binds exclusively to `127.0.0.1` and blocks requests with invalid `Host` or cross-site `Sec-Fetch-Site` headers.
-- **Zero Telemetry:** Nova AI collects zero analytics, telemetry, or user logs. All chat histories, notes, and metrics remain on your local drive.
+- **Privacy & Cloud Disclosure:** Nova AI collects no product analytics or crash telemetry, and chat histories, notes, and metrics stay on your local drive. However, **voice input uses your browser's cloud speech recognition service** (microphone audio leaves your PC while listening), and LLM/vision prompts are sent to your configured AI provider (unless using local Ollama). **Push-to-talk is the default** with a visible live microphone indicator; continuous **wake-word listening is opt-in (default OFF)** because it keeps the microphone streaming while active.
 - **Credential Storage:** API keys and sensitive tokens are encrypted using Windows DPAPI (`CryptProtectData`) before being written to disk.
 - **Isolated Workspace:** File read/write and script execution are jailed inside the `./workspace/` directory by default, preventing unintended modifications to host operating system files.
 
