@@ -120,6 +120,13 @@ def safe_extract_zip(
                 if ".." in clean_parts:
                     raise ValueError(f"Zip extraction rejected: path traversal sequence detected in '{member.filename}'.")
 
+            # (b2) NTFS alternate data streams (':' / '::$DATA') and trailing dot/space components
+            if ":" in fname or "::$data" in fname.lower():
+                raise ValueError(f"Zip extraction rejected: colon or NTFS stream detected in '{member.filename}'.")
+            for part in norm_parts:
+                if part not in (".", "..") and (part.endswith(".") or part.endswith(" ")):
+                    raise ValueError(f"Zip extraction rejected: trailing dot or space in component '{part}' of '{member.filename}'.")
+
             # (c) Windows reserved device names
             for part in norm_parts:
                 stem = Path(part).stem.upper()
@@ -167,6 +174,12 @@ def safe_extract_zip(
                     dst.write(chunk)
 
             extracted_files.append(dest_file)
+            try:
+                import server as _srv
+                if hasattr(_srv, "mark_file_tainted"):
+                    _srv.mark_file_tainted(str(dest_file), is_tainted=True)
+            except Exception:
+                pass
 
     if isinstance(zip_source, zipfile.ZipFile):
         _process_zf(zip_source)

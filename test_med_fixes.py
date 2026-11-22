@@ -169,6 +169,38 @@ class TestMedFixes(unittest.TestCase):
             self.assertNotIn(test_key, masked)
             self.assertIn("sk-l****", masked)
 
+    def test_11_zip_trailing_dot_space_and_ntfs_streams_refused(self):
+        """Trailing dot/space names, ':' streams, and '::$DATA' must be rejected."""
+        bad_names = [
+            "repo-main/file.txt.",
+            "repo-main/file.txt ",
+            "repo-main/dir. /ok.txt",
+            "repo-main/file.txt:hidden",
+            "repo-main/file.txt::$DATA",
+        ]
+        for bad in bad_names:
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w") as zf:
+                zf.writestr(bad, b"payload")
+            buf.seek(0)
+            with tempfile.TemporaryDirectory() as td:
+                with self.assertRaises(ValueError, msg=f"Must reject {bad}"):
+                    safe_extract_zip(buf, Path(td))
+
+    def test_12_zip_extracted_files_marked_tainted(self):
+        """Every file extracted by safe_extract_zip must be marked tainted via mark_file_tainted."""
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("repo-main/README.md", b"# Hello")
+            zf.writestr("repo-main/src/app.py", b"print('hi')")
+        buf.seek(0)
+        with tempfile.TemporaryDirectory() as td:
+            extracted = safe_extract_zip(buf, Path(td))
+            self.assertEqual(len(extracted), 2)
+            for fpath in extracted:
+                is_tainted, _ = server.is_file_tainted_provenance(str(fpath))
+                self.assertTrue(is_tainted, f"Extracted file {fpath} must be marked tainted")
+
 
 if __name__ == "__main__":
     unittest.main()
