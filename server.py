@@ -2331,6 +2331,7 @@ def create_pending_action(
             pass
 
     # 3. Preview formatting & large tainted WRITE_FILE summary
+    image_preview = None
     if clean_name == "WRITE_FILE" and is_tainted and len(raw_arg) > 20000:
         first_500 = raw_arg[:500]
         last_500 = raw_arg[-500:]
@@ -2340,8 +2341,7 @@ def create_pending_action(
             f"--- FIRST 500 CHARACTERS ---\n{first_500}\n\n"
             f"--- LAST 500 CHARACTERS ---\n{last_500}"
         )
-    image_preview = None
-    if clean_name in ("VISION", "SCREEN_ANALYZE"):
+    elif clean_name in ("VISION", "SCREEN_ANALYZE"):
         cfg_vision = cfg if isinstance(cfg, dict) else get_config()
         preview_opt = cfg_vision.get("vision_preview")
         should_preview = preview_opt if isinstance(preview_opt, bool) else (is_tainted or source != "pc")

@@ -137,14 +137,14 @@ class TestSkillsSecurity(unittest.TestCase):
         self.assertTrue(req)
         self.assertIn("always requires user approval", reason)
 
-        # CPA preview format with SHA-256
+        # CPA preview format with SHA-256 over exact written content
         skill_body = "demo_skill | echo 'safe procedure'"
         p_entry, p_info, err = server.create_pending_action(cfg, "INSTALL_SKILL", skill_body, source="pc")
         self.assertIsNone(err)
         self.assertIsNotNone(p_entry)
-        expected_sha = hashlib.sha256(skill_body.encode("utf-8")).hexdigest()
+        _, final_bytes, expected_sha = skills_engine.prepare_skill_content_to_write("developer", "demo_skill", "echo 'safe procedure'")
         self.assertIn(expected_sha, p_entry["preview"])
-        self.assertIn(skill_body, p_entry["preview"])
+        self.assertIn("echo 'safe procedure'", p_entry["preview"])
 
     def test_manifest_tracking_and_tamper_rejection(self):
         """Skill must be recorded in manifest; if file content changes on disk, it must be ignored until re-approved."""
