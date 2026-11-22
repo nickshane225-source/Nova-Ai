@@ -806,6 +806,169 @@ def _call_single_llm(cfg, system, messages):
         raise err
 
 
+def detect_api_key_provider_mismatch(provider: str, api_key: str, base_url: str = "") -> str | None:
+    """Detects obvious mismatches between an API key prefix and the chosen provider."""
+    key = str(api_key or "").strip()
+    if not key:
+        return None
+    prov_raw = str(provider or "").strip().lower()
+    base_low = str(base_url or "").strip().lower()
+    if prov_raw == "anthropic":
+        effective = "anthropic"
+    elif prov_raw == "gemini" or (prov_raw == "openai" and "generativelanguage.googleapis.com" in base_low):
+        effective = "gemini"
+    elif prov_raw == "ollama" or (prov_raw == "openai" and ("localhost" in base_low or "127.0.0.1" in base_low)):
+        effective = "ollama"
+    else:
+        effective = "openai"
+
+    if key.startswith("sk-ant-"):
+        if effective != "anthropic":
+            return f"This key starts with 'sk-ant-' (Anthropic Claude), but provider is set to '{effective}'."
+    elif key.startswith("AIza") or key.startswith("AQ."):
+        if effective != "gemini":
+            return f"This key starts with '{key[:4]}' (Google Gemini), but provider is set to '{effective}'."
+    elif key.startswith("sk-") and not key.startswith("sk-or-"):
+        if effective in ("anthropic", "gemini"):
+            return f"This key starts with 'sk-' (OpenAI), but provider is set to '{effective}'."
+    return None
+
+
+def test_llm_connection(provider: str, api_key: str, model: str, base_url: str = "", timeout: int = 15) -> dict:
+    """Runs a minimal 1-token request to test the provider/key/model configuration."""
+    cfg_cur = get_config()
+    raw_key = str(api_key or "").strip()
+    if not raw_key:
+        raw_key = str(cfg_cur.get("api_key", "") or "").strip()
+    if raw_key.startswith("dpapi:"):
+        raw_key = decrypt_dpapi(raw_key)
+
+    prov_raw = str(provider or cfg_cur.get("provider", "anthropic")).strip().lower()
+    base = str(base_url if base_url is not None else cfg_cur.get("base_url", "")).strip()
+    if prov_raw == "gemini":
+        prov_eff = "openai"
+        if not base or "generativelanguage.googleapis.com" not in base.lower():
+            base = PRESETS["gemini"]["base_url"]
+    elif prov_raw == "ollama":
+        prov_eff = "openai"
+        if not base:
+            base = PRESETS["ollama"]["base_url"]
+    else:
+        prov_eff = prov_raw
+
+    mdl = str(model or cfg_cur.get("model", "")).strip()
+    mismatch = detect_api_key_provider_mismatch(prov_raw, raw_key, base)
+
+    is_local_ollama = prov_eff == "openai" and ("localhost" in base.lower() or "127.0.0.1" in base.lower())
+    if not raw_key and not is_local_ollama:
+        return {
+            "ok": False,
+            "category": "invalid_key",
+            "message": "No API key provided. Paste your API key and try again.",
+            "mismatch_warning": mismatch,
+        }
+
+    try:
+        if prov_eff == "anthropic":
+            http_post(
+                "https://api.anthropic.com/v1/messages",
+                {
+                    "content-type": "application/json",
+                    "x-api-key": raw_key,
+                    "anthropic-version": "2023-06-01",
+                },
+                {
+                    "model": mdl or PRESETS["anthropic"]["model"],
+                    "max_tokens": 1,
+                    "messages": [{"role": "user", "content": "hi"}],
+                },
+                timeout=timeout,
+            )
+        else:
+            if not base:
+                return {
+                    "ok": False,
+                    "category": "network",
+                    "message": "Base URL is required for OpenAI-compatible providers.",
+                    "mismatch_warning": mismatch,
+                }
+            headers = {"content-type": "application/json"}
+            if raw_key:
+                headers["authorization"] = f"Bearer {raw_key}"
+            http_post(
+                base.rstrip("/") + "/chat/completions",
+                headers,
+                {
+                    "model": mdl or PRESETS["openai"]["model"],
+                    "max_tokens": 1,
+                    "messages": [{"role": "user", "content": "hi"}],
+                },
+                timeout=timeout,
+            )
+        return {
+            "ok": True,
+            "category": "ok",
+            "message": f"Connection successful ({mdl or prov_raw}).",
+            "mismatch_warning": mismatch,
+        }
+    except LLMError as e:
+        err_s = mask_secrets(str(e), cfg_cur)
+        if raw_key and raw_key in err_s:
+            err_s = err_s.replace(raw_key, "[REDACTED]")
+        low = err_s.lower()
+        if "api error 401" in low or "api error 403" in low or "authentication_error" in low or "invalid x-api-key" in low or "invalid_api_key" in low or "api_key_invalid" in low or "unauthorized" in low:
+            if mismatch:
+                return {
+                    "ok": False,
+                    "category": "wrong_provider",
+                    "message": f"Wrong provider: {mismatch}",
+                    "mismatch_warning": mismatch,
+                }
+            return {
+                "ok": False,
+                "category": "invalid_key",
+                "message": "Invalid API key: authentication failed (401/403). Check that you copied the full key for the selected provider.",
+                "mismatch_warning": mismatch,
+            }
+        if "api error 429" in low or "quota" in low or "rate_limit" in low or "insufficient_quota" in low:
+            return {
+                "ok": False,
+                "category": "quota",
+                "message": "Quota or rate limit exceeded (429). Check your provider plan and billing details.",
+                "mismatch_warning": mismatch,
+            }
+        if "api error 404" in low or "not found" in low or "does not exist" in low:
+            return {
+                "ok": False,
+                "category": "invalid_model",
+                "message": f"Model '{mdl}' was not found (404) on this provider.",
+                "mismatch_warning": mismatch,
+            }
+        if "could not reach" in low or "timed out" in low or "timeout" in low or "urlopen error" in low or "connection refused" in low or "name or service not known" in low or "getaddrinfo" in low:
+            return {
+                "ok": False,
+                "category": "network",
+                "message": "Network error: could not reach the AI provider. Check your internet connection, VPN/proxy, or Base URL.",
+                "mismatch_warning": mismatch,
+            }
+        return {
+            "ok": False,
+            "category": "error",
+            "message": f"Connection test failed: {err_s[:220]}",
+            "mismatch_warning": mismatch,
+        }
+    except Exception as e:
+        err_s = mask_secrets(str(e), cfg_cur)
+        if raw_key and raw_key in err_s:
+            err_s = err_s.replace(raw_key, "[REDACTED]")
+        return {
+            "ok": False,
+            "category": "network",
+            "message": f"Network error: {err_s[:200]}",
+            "mismatch_warning": mismatch,
+        }
+
+
 def call_llm_with_fallback(cfg, system, messages):
     """Executes LLM call with automated failover across configured fallback_providers."""
     if usage_tracker and cfg.get("monthly_budget_usd"):
@@ -6934,9 +7097,17 @@ class Handler(BaseHandler):
                 self.wfile.write(f"data: {done_ev}\n\n".encode("utf-8"))
                 self.wfile.flush()
                 return
+            if path == "/api/config/test":
+                res = test_llm_connection(
+                    provider=body.get("provider", ""),
+                    api_key=body.get("api_key", ""),
+                    model=body.get("model", ""),
+                    base_url=body.get("base_url", ""),
+                )
+                return self._send(200, res)
             if path == "/api/config":
                 VALID_CONFIG_KEYS = {
-                    "provider", "model", "base_url", "api_key", "clear_key",
+                    "provider", "model", "base_url", "api_key", "clear_key", "verify_key", "force_save_key",
                     "character", "user_name", "language",
                     "voice_rate", "voice_pitch", "voice_volume",
                     "wake_word_enabled", "barge_in_enabled",
@@ -7074,6 +7245,21 @@ class Handler(BaseHandler):
                         })
 
                 cfg = get_config()
+                if body.get("verify_key") and str(body.get("api_key") or "").strip() and not body.get("force_save_key"):
+                    t_res = test_llm_connection(
+                        provider=str(body.get("provider", cfg.get("provider", "anthropic"))),
+                        api_key=str(body.get("api_key", "")),
+                        model=str(body.get("model", cfg.get("model", ""))),
+                        base_url=str(body.get("base_url", cfg.get("base_url", ""))),
+                    )
+                    if not t_res.get("ok"):
+                        return self._send(400, {
+                            "ok": False,
+                            "test_failed": True,
+                            "category": t_res.get("category", "error"),
+                            "error": t_res.get("message", "API key connection test failed."),
+                            "mismatch_warning": t_res.get("mismatch_warning"),
+                        })
                 for k in ("provider", "model", "base_url", "user_name", "language", "character", "llm_reasoning_effort"):
                     if k in body:
                         cfg[k] = str(body[k])

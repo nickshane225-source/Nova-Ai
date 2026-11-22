@@ -1779,6 +1779,15 @@ async function renderPanel(name) {
     body.innerHTML = `<h2>Settings</h2>
       <label>AI provider</label><select id="prov"><option value="anthropic">Anthropic (Claude)</option><option value="gemini">Google Gemini</option><option value="openai">OpenAI-compatible (OpenAI, OpenRouter, Groq…)</option><option value="ollama">Ollama / LM Studio (local, free)</option></select>
       <label>API key ${c.has_key ? "(saved — leave blank to keep)" : ""}</label><input id="key" type="password" placeholder="${c.has_key ? "••••••••" : "paste your key"}">
+      <div id="keyMismatchWarn" class="hidden" style="color:#ffaa00; background:rgba(255,170,0,0.12); border:1px solid #ffaa00; padding:7px 10px; border-radius:4px; margin:6px 0; font-size:12px;"></div>
+      <div style="display:flex; align-items:center; gap:8px; margin:6px 0 10px 0;">
+        <button class="btn" id="btnTestConn" type="button" style="padding:4px 12px; font-size:12px;">Test connection</button>
+        <span id="connTestResult" style="font-size:12px;"></span>
+      </div>
+      <label id="forceSaveWrap" class="hidden" style="display:none; align-items:center; gap:8px; text-transform:none; font-size:12px; color:#ffaa00; cursor:pointer; margin:6px 0;">
+        <input type="checkbox" id="chkForceSaveKey" style="width:auto">
+        <span>Save anyway (override failed connection test)</span>
+      </label>
       <label>Model</label><input id="model" value="${esc(c.model)}">
       <label>Base URL (OpenAI-compatible only)</label><input id="base" value="${esc(c.base_url)}">
       <label>Your name</label><input id="uname" value="${esc(c.user_name)}">
@@ -1841,7 +1850,79 @@ async function renderPanel(name) {
       <button class="btn" id="exitApp" style="color:#ff6b81">Exit Nova AI</button>
       <p class="hint">Your key is saved only in data/config.json on this PC and sent only to your chosen provider.</p>`;
     $("#prov").value = c.provider === "openai" ? (/generativelanguage/.test(c.base_url) ? "gemini" : /11434|1234/.test(c.base_url) ? "ollama" : "openai") : c.provider;
-    $("#prov").onchange = () => { const p = state.presets[$("#prov").value]; if (p) { $("#model").value = p.model; $("#base").value = p.base_url; } };
+    function detectKeyProviderMismatch(provVal, keyVal, baseVal) {
+      const k = String(keyVal || "").trim();
+      if (!k) return "";
+      const b = String(baseVal || "").toLowerCase();
+      let eff = provVal;
+      if (eff === "openai" && b.includes("generativelanguage.googleapis.com")) eff = "gemini";
+      else if (eff === "openai" && (b.includes("localhost") || b.includes("127.0.0.1"))) eff = "ollama";
+      if (k.startsWith("sk-ant-") && eff !== "anthropic") {
+        return `Warning: Key starts with "sk-ant-" (Anthropic Claude), but AI provider is set to "${eff}".`;
+      }
+      if ((k.startsWith("AIza") || k.startsWith("AQ.")) && eff !== "gemini") {
+        return `Warning: Key starts with "${k.slice(0, 4)}" (Google Gemini), but AI provider is set to "${eff}".`;
+      }
+      if (k.startsWith("sk-") && !k.startsWith("sk-ant-") && !k.startsWith("sk-or-") && (eff === "anthropic" || eff === "gemini")) {
+        return `Warning: Key starts with "sk-" (OpenAI), but AI provider is set to "${eff}".`;
+      }
+      return "";
+    }
+    function updateMismatchWarning() {
+      const warnEl = $("#keyMismatchWarn");
+      if (!warnEl) return;
+      const msg = detectKeyProviderMismatch($("#prov").value, $("#key").value, $("#base").value);
+      if (msg) {
+        warnEl.textContent = msg;
+        warnEl.classList.remove("hidden");
+      } else {
+        warnEl.textContent = "";
+        warnEl.classList.add("hidden");
+      }
+    }
+    $("#prov").onchange = () => {
+      const p = state.presets[$("#prov").value];
+      if (p) { $("#model").value = p.model; $("#base").value = p.base_url; }
+      updateMismatchWarning();
+    };
+    $("#key").oninput = () => {
+      updateMismatchWarning();
+      const fw = $("#forceSaveWrap");
+      if (fw) { fw.classList.add("hidden"); fw.style.display = "none"; }
+      if ($("#chkForceSaveKey")) $("#chkForceSaveKey").checked = false;
+    };
+    $("#base").oninput = updateMismatchWarning;
+    $("#btnTestConn").onclick = async () => {
+      const resEl = $("#connTestResult");
+      const btn = $("#btnTestConn");
+      if (btn) btn.disabled = true;
+      if (resEl) { resEl.style.color = "#8fd4f0"; resEl.textContent = "Testing connection..."; }
+      let prov = $("#prov").value;
+      const apiProv = (prov === "ollama" || prov === "gemini") ? "openai" : prov;
+      try {
+        const r = await api("/api/config/test", {
+          provider: apiProv,
+          api_key: $("#key").value,
+          model: $("#model").value,
+          base_url: $("#base").value,
+        });
+        if (r && r.ok) {
+          if (resEl) { resEl.style.color = "#2ed573"; resEl.textContent = "✓ " + (r.message || "Connection successful"); }
+          const fw = $("#forceSaveWrap");
+          if (fw) { fw.classList.add("hidden"); fw.style.display = "none"; }
+        } else {
+          if (resEl) { resEl.style.color = "#ff4757"; resEl.textContent = "✗ " + ((r && r.message) || "Connection test failed"); }
+          if ($("#key").value.trim()) {
+            const fw = $("#forceSaveWrap");
+            if (fw) { fw.classList.remove("hidden"); fw.style.display = "flex"; }
+          }
+        }
+      } catch (e) {
+        if (resEl) { resEl.style.color = "#ff4757"; resEl.textContent = "✗ Network error: " + (e.message || "request failed"); }
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    };
 
     $("#vrate").oninput = () => { $("#lblRate").textContent = $("#vrate").value + "x"; };
     $("#vpitch").oninput = () => { $("#lblPitch").textContent = $("#vpitch").value; };
@@ -1865,6 +1946,8 @@ async function renderPanel(name) {
       const payload = {
         provider: prov,
         api_key: $("#key").value,
+        verify_key: Boolean($("#key").value.trim()),
+        force_save_key: Boolean($("#chkForceSaveKey") && $("#chkForceSaveKey").checked),
         model: $("#model").value,
         base_url: $("#base").value,
         user_name: $("#uname").value,
@@ -1889,6 +1972,10 @@ async function renderPanel(name) {
         res = { ok: false, error: e.message || "Network error while saving settings." };
       }
       if (!res || res.ok === false || res.error) {
+        if (res && res.test_failed) {
+          const fw = $("#forceSaveWrap");
+          if (fw) { fw.classList.remove("hidden"); fw.style.display = "flex"; }
+        }
         const msg = (res && res.error) ? res.error : "Failed to save settings.";
         if (errEl) {
           errEl.textContent = msg;
