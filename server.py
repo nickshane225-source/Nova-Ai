@@ -318,6 +318,8 @@ DEFAULT_CONFIG = {
     "voice_pitch": 1.0,
     "voice_volume": 1.0,
     "wake_word_enabled": False,
+    "vision_block_sensitive_windows": True,
+    "vision_blocked_window_patterns": [],
     "barge_in_enabled": False,
     "llm_timeout": 60,
     "debug_llm": False,
@@ -2648,7 +2650,37 @@ class _BoundedSearchCountDict(OrderedDict):
 
 CONVERSATION_SEARCH_COUNTS = _BoundedSearchCountDict(maxsize=500)
 CONVERSATION_SEARCH_LOCK = threading.Lock()
-CONVERSATION_VISION_CONFIRMED: set[str] = set()
+class _BoundedConfirmedSet:
+    """Thread-compatible bounded LRU set for tracking per-conversation VISION confirmation."""
+    def __init__(self, maxsize: int = 500):
+        self.maxsize = maxsize
+        self._data: collections.OrderedDict[str, bool] = collections.OrderedDict()
+
+    def add(self, item: str):
+        if item in self._data:
+            self._data.move_to_end(item)
+        else:
+            self._data[item] = True
+            if len(self._data) > self.maxsize:
+                self._data.popitem(last=False)
+
+    def discard(self, item: str):
+        self._data.pop(item, None)
+
+    def clear(self):
+        self._data.clear()
+
+    def __contains__(self, item: object) -> bool:
+        return item in self._data
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+    def __iter__(self):
+        return iter(self._data)
+
+
+CONVERSATION_VISION_CONFIRMED = _BoundedConfirmedSet(maxsize=500)
 CONVERSATION_VISION_LOCK = threading.Lock()
 
 def record_unconfirmed_search(conv_id: str):
@@ -3743,7 +3775,58 @@ def skill_create_project(arg, cfg=None):
         return f"Created project '{name}' with modern HTML5/CSS/JS template at {dest}."
 
 
+DEFAULT_VISION_BLOCKED_PATTERNS = [
+    "1password", "bitwarden", "keepass", "lastpass", "dashlane",
+    "proton pass", "vaultwarden", "nordpass", "enpass", "password manager",
+    "online banking", "chase", "wells fargo", "bank of america", "citibank",
+    "paypal", "stripe", "coinbase", "binance", "metamask", "bank",
+]
+
+
+def get_active_window_title() -> str:
+    """Return the title of the currently focused foreground window on Windows, or empty string."""
+    if OS != "Windows":
+        return ""
+    try:
+        user32 = ctypes.windll.user32
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return ""
+        length = user32.GetWindowTextLengthW(hwnd)
+        if length <= 0:
+            return ""
+        buf = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(hwnd, buf, length + 1)
+        return buf.value or ""
+    except Exception:
+        return ""
+
+
+def is_sensitive_vision_window(title: str, cfg: dict = None) -> tuple[bool, str]:
+    """Check if the active window title matches a configured password-manager or banking pattern."""
+    conf = cfg if isinstance(cfg, dict) else get_config()
+    if conf.get("vision_block_sensitive_windows", True) is False:
+        return False, ""
+    t_low = str(title or "").strip().lower()
+    if not t_low:
+        return False, ""
+    patterns = conf.get("vision_blocked_window_patterns")
+    if not isinstance(patterns, list) or not patterns:
+        patterns = DEFAULT_VISION_BLOCKED_PATTERNS
+    for pat in patterns:
+        p = str(pat or "").strip().lower()
+        if p and p in t_low:
+            return True, p
+    return False, ""
+
+
 def skill_screen_analyze(question=""):
+    cfg_check = get_config()
+    active_title = get_active_window_title()
+    blocked, matched_pat = is_sensitive_vision_window(active_title, cfg=cfg_check)
+    if blocked:
+        add_event(type="vision_end", status="blocked")
+        return f"Vision capture refused: active window matches sensitive pattern '{matched_pat}' (password manager / banking protection)."
     add_event(type="vision_start", message="Transmitting desktop screenshot to AI cloud provider...")
     try:
         import base64
@@ -7269,7 +7352,7 @@ class Handler(BaseHandler):
                     "telegram_allow_groups",
                     "monthly_budget_usd", "discord_enabled",
                     "discord_channel_ids", "discord_allowed_user_ids",
-                    "dev_localhost_ports",
+                    "dev_localhost_ports", "vision_block_sensitive_windows", "vision_blocked_window_patterns",
                 } | SECRET_FIELDS | {f"clear_{sec}" for sec in SECRET_FIELDS}
                 # Reject unknown keys
                 for k in body:
@@ -7579,6 +7662,9 @@ class Handler(BaseHandler):
                         HISTORIES[reset_mode].clear()
                         CONVERSATION_TAINT[f"pc:{reset_mode}"] = False
                         reset_search_counts([f"pc:{reset_mode}"])
+                        with CONVERSATION_VISION_LOCK:
+                            CONVERSATION_VISION_CONFIRMED.discard(f"pc:{reset_mode}")
+                            CONVERSATION_VISION_CONFIRMED.discard(reset_mode)
                     else:
                         HISTORIES["developer"].clear()
                         HISTORIES["cyber"].clear()
@@ -7587,6 +7673,8 @@ class Handler(BaseHandler):
                         CONVERSATION_HISTORIES["pc:developer"] = HISTORIES["developer"]
                         CONVERSATION_HISTORIES["pc:cyber"] = HISTORIES["cyber"]
                         reset_search_counts()
+                        with CONVERSATION_VISION_LOCK:
+                            CONVERSATION_VISION_CONFIRMED.clear()
                 RUN_CODE_TRUST_STATE.reset()
                 return self._send(200, {"ok": True, "is_tainted": False})
             if path == "/api/clear_untrusted_context":
@@ -7621,7 +7709,8 @@ class Handler(BaseHandler):
                             hist.extend(cleaned)
                         CONVERSATION_TAINT[cid] = False
                 with CONVERSATION_VISION_LOCK:
-                    CONVERSATION_VISION_CONFIRMED.discard(cid)
+                    for cid_v in target_conv_ids:
+                        CONVERSATION_VISION_CONFIRMED.discard(cid_v)
                 reset_search_counts(target_conv_ids)
                 RUN_CODE_TRUST_STATE.reset()
                 return self._send(200, {"ok": True, "is_tainted": False, "mode": clear_mode})

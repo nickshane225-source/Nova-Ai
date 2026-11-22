@@ -2207,6 +2207,8 @@ async function handlePhone(ev) {
   setMode("idle");
   scheduleListen(100);
 }
+let _visionBannerShownAt = 0;
+let _visionBannerHideTimer = null;
 function showVisionBanner(show, msg) {
   let el = document.getElementById("visionBanner");
   if (!el) {
@@ -2216,10 +2218,25 @@ function showVisionBanner(show, msg) {
     document.body.appendChild(el);
   }
   if (show) {
+    if (_visionBannerHideTimer) {
+      clearTimeout(_visionBannerHideTimer);
+      _visionBannerHideTimer = null;
+    }
+    _visionBannerShownAt = Date.now();
     el.innerHTML = `<span style="display:inline-block;width:10px;height:10px;background:#fff;border-radius:50%;"></span> <span>📸 ${esc(msg || "Transmitting desktop screenshot to AI cloud provider...")}</span>`;
     el.style.display = "flex";
   } else {
-    el.style.display = "none";
+    const elapsed = Date.now() - _visionBannerShownAt;
+    const remaining = Math.max(0, 3000 - elapsed);
+    if (remaining > 0) {
+      if (_visionBannerHideTimer) clearTimeout(_visionBannerHideTimer);
+      _visionBannerHideTimer = setTimeout(() => {
+        _visionBannerHideTimer = null;
+        el.style.display = "none";
+      }, remaining);
+    } else {
+      el.style.display = "none";
+    }
   }
 }
 

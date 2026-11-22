@@ -126,6 +126,72 @@ class TestVisionSecurity(unittest.TestCase):
             self.assertIn("vision_start", event_types)
             self.assertIn("vision_end", event_types)
 
+    def test_06_vision_confirmed_set_is_bounded(self):
+        with server.CONVERSATION_VISION_LOCK:
+            for i in range(600):
+                server.CONVERSATION_VISION_CONFIRMED.add(f"pc:conv_{i}")
+            self.assertLessEqual(len(server.CONVERSATION_VISION_CONFIRMED), 500)
+            self.assertNotIn("pc:conv_0", server.CONVERSATION_VISION_CONFIRMED)
+            self.assertIn("pc:conv_599", server.CONVERSATION_VISION_CONFIRMED)
+
+    def test_07_vision_confirmed_resets_on_reset_and_clear_untrusted(self):
+        import json, threading, urllib.request
+        srv = server.SilentThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        port = srv.server_address[1]
+        t = threading.Thread(target=srv.serve_forever, daemon=True)
+        t.start()
+        try:
+            headers = {
+                "Content-Type": "application/json",
+                "Cookie": f"nova_session={server.SESSION_TOKEN}",
+                "X-Nova-Token": server.API_SESSION_TOKEN,
+                "Origin": f"http://127.0.0.1:{port}",
+            }
+            with server.CONVERSATION_VISION_LOCK:
+                server.CONVERSATION_VISION_CONFIRMED.add("pc:developer")
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/reset",
+                data=json.dumps({"mode": "developer"}).encode("utf-8"),
+                headers=headers,
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                self.assertEqual(resp.status, 200)
+            with server.CONVERSATION_VISION_LOCK:
+                self.assertNotIn("pc:developer", server.CONVERSATION_VISION_CONFIRMED)
+
+            with server.CONVERSATION_VISION_LOCK:
+                server.CONVERSATION_VISION_CONFIRMED.add("pc:developer")
+            req2 = urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/clear_untrusted_context",
+                data=json.dumps({"mode": "developer"}).encode("utf-8"),
+                headers=headers,
+                method="POST",
+            )
+            with urllib.request.urlopen(req2, timeout=5) as resp:
+                self.assertEqual(resp.status, 200)
+            with server.CONVERSATION_VISION_LOCK:
+                self.assertNotIn("pc:developer", server.CONVERSATION_VISION_CONFIRMED)
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
+    def test_08_vision_refuses_password_manager_and_banking_windows(self):
+        for title in ("1Password - Vault", "Bitwarden Password Manager", "Chase Online Banking - Chrome"):
+            with patch("server.get_active_window_title", return_value=title), \
+                 patch("server._capture_desktop_png") as mock_cap:
+                res = server.skill_screen_analyze("read my screen")
+                self.assertIn("refused", res.lower())
+                mock_cap.assert_not_called()
+
+        with patch("server.get_active_window_title", return_value="server.py - Visual Studio Code"), \
+             patch("server._capture_desktop_png", return_value=Path("test_dummy.png")), \
+             patch("pathlib.Path.exists", return_value=True), \
+             patch("pathlib.Path.read_bytes", return_value=b"fake"), \
+             patch("server.call_llm_vision", return_value="Code editor"):
+            res = server.skill_screen_analyze("read my screen")
+            self.assertIn("Code editor", res)
+
 
 if __name__ == "__main__":
     unittest.main()

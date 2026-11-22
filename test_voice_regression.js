@@ -176,7 +176,8 @@ function createMockEnvironment() {
       cancelSpeech,
       scheduleListen,
       startListening,
-      speak
+      speak,
+      showVisionBanner
     })`,
     context
   );
@@ -345,6 +346,18 @@ function runPushToTalkDefaultTest() {
   assert.strictEqual(scope.active, false, "Push-to-talk mode must not auto-restart listening on end");
   assert.strictEqual(ind.style.display, "none", "Mic indicator must hide when recognition ends");
   console.log("[PASS] TEST 8 passed: Push-to-talk default & live mic indicator verified.\n");
+  runVisionBannerMinDurationTest();
+}
+
+// --- TEST 9: Vision banner stays visible >= 3s even if vision_start and vision_end arrive together ---
+function runVisionBannerMinDurationTest() {
+  console.log("--- TEST 9: Vision banner stays visible >= 3s on same-poll start+end ---");
+  const { scope, context } = createMockEnvironment();
+  scope.showVisionBanner(true, "Transmitting screenshot...");
+  scope.showVisionBanner(false);
+  const el = context.document.getElementById("visionBanner");
+  assert.strictEqual(el.style.display, "flex", "Vision banner must stay visible immediately after same-poll end");
+  console.log("[PASS] TEST 9 passed: Vision banner enforces minimum 3s display duration.\n");
 
   console.log("=================================================");
   console.log("ALL REAL APP.JS VOICE REGRESSION TESTS PASSED!");
