@@ -6,8 +6,13 @@ test_immediate_revocation.py - Verify live revocation without restart for:
 4. remote device revocation
 """
 
+import json
+import tempfile
+import threading
 import unittest
+import urllib.request
 import secrets
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 import server
 from telegram_gateway import TelegramGateway, ACTIVE_TELEGRAM_GATEWAYS
@@ -19,12 +24,16 @@ class TestImmediateRevocation(unittest.TestCase):
     def setUp(self):
         ACTIVE_TELEGRAM_GATEWAYS.clear()
         ACTIVE_DISCORD_GATEWAYS.clear()
-        self.orig_config = server.get_config()
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.orig_cfg_file = server.CONFIG_FILE
+        server.CONFIG_FILE = Path(self.tmpdir.name) / "config.json"
+        server.save_config(dict(server.DEFAULT_CONFIG))
 
     def tearDown(self):
         ACTIVE_TELEGRAM_GATEWAYS.clear()
         ACTIVE_DISCORD_GATEWAYS.clear()
-        server.save_config(self.orig_config)
+        server.CONFIG_FILE = self.orig_cfg_file
+        self.tmpdir.cleanup()
 
     def test_01_telegram_allowed_chat_ids_revocation(self):
         """Changes to telegram_allowed_chat_ids take effect immediately on config save without restart."""
@@ -149,6 +158,91 @@ class TestImmediateRevocation(unittest.TestCase):
         # Immediate re-auth attempt MUST fail with 401
         self.assertFalse(handler._auth())
         handler._send.assert_called_with(401, {"error": "Not paired. Scan the QR code on your PC again."})
+
+    def test_05_real_api_config_route_revokes_user_without_restart(self):
+        """Changing allowlist via real POST /api/config immediately refuses next message from removed user."""
+        cfg = server.get_config()
+        cfg["telegram_allowed_chat_ids"] = ["chat_1"]
+        cfg["telegram_allowed_user_ids"] = ["user_keep", "user_remove"]
+        cfg["discord_allowed_user_ids"] = ["dc_keep", "dc_remove"]
+        cfg["discord_channel_ids"] = ["chan_1"]
+        server.save_config(cfg)
+
+        tg_chat = MagicMock(return_value={"reply": "ok"})
+        tg = TelegramGateway(cfg=server.get_config(), chat_callback=tg_chat)
+        dc_chat = MagicMock(return_value={"reply": "ok"})
+        dg = DiscordGateway(
+            bot_token="fake_bot_token",
+            channel_ids=["chan_1"],
+            allowed_user_ids=["dc_keep", "dc_remove"],
+            chat_handler=dc_chat,
+        )
+
+        self.assertTrue(tg.is_authorized(chat_id="chat_1", user_id="user_remove", chat_type="private"))
+        self.assertTrue(dg.is_authorized(user_id="dc_remove", channel_id="chan_1"))
+
+        srv = server.SilentThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        port = srv.server_address[1]
+        t = threading.Thread(target=srv.serve_forever, daemon=True)
+        t.start()
+        try:
+            headers = {
+                "Content-Type": "application/json",
+                "Cookie": f"nova_session={server.SESSION_TOKEN}",
+                "X-Nova-Token": server.API_SESSION_TOKEN,
+                "Origin": f"http://127.0.0.1:{port}",
+            }
+            payload = {
+                "telegram_allowed_user_ids": ["user_keep"],
+                "discord_allowed_user_ids": ["dc_keep"],
+            }
+            # Step 1: /api/config requests confirmation token for sensitive allowlist change
+            req1 = urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/config",
+                data=json.dumps(payload).encode("utf-8"),
+                headers=headers,
+                method="POST",
+            )
+            with urllib.request.urlopen(req1, timeout=5) as r1:
+                d1 = json.loads(r1.read().decode("utf-8"))
+            self.assertTrue(d1.get("need_confirm"))
+            tok = d1["token"]
+
+            # Step 2: Confirm via real /api/config
+            req2 = urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/config",
+                data=json.dumps({**payload, "confirm_token": tok}).encode("utf-8"),
+                headers=headers,
+                method="POST",
+            )
+            with urllib.request.urlopen(req2, timeout=5) as r2:
+                self.assertEqual(r2.status, 200)
+
+            # Next message from removed users MUST be refused immediately without restart
+            tg.process_update({
+                "update_id": 1001,
+                "message": {
+                    "chat": {"id": "chat_1", "type": "private"},
+                    "from": {"id": "user_remove"},
+                    "text": "hello after revoke",
+                },
+            })
+            tg_chat.assert_not_called()
+
+            dg.process_raw_message({
+                "id": "m1",
+                "channel_id": "chan_1",
+                "author": {"id": "dc_remove", "bot": False},
+                "content": "hello after revoke",
+            })
+            dc_chat.assert_not_called()
+
+            # Kept users still authorized
+            self.assertTrue(tg.is_authorized(chat_id="chat_1", user_id="user_keep", chat_type="private"))
+            self.assertTrue(dg.is_authorized(user_id="dc_keep", channel_id="chan_1"))
+        finally:
+            srv.shutdown()
+            srv.server_close()
 
 
 if __name__ == "__main__":

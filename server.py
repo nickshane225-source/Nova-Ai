@@ -528,14 +528,16 @@ def save_config(cfg):
             import telegram_gateway
             if hasattr(telegram_gateway, "reload_telegram_config"):
                 telegram_gateway.reload_telegram_config(to_save)
-        except Exception:
-            pass
+        except Exception as e:
+            if sys.stderr:
+                print(f"[Config Reload Warning] Failed to reload Telegram gateway config: {mask_secrets(str(e), to_save)}", file=sys.stderr)
         try:
             import discord_gateway
             if hasattr(discord_gateway, "reload_discord_config"):
                 discord_gateway.reload_discord_config(to_save)
-        except Exception:
-            pass
+        except Exception as e:
+            if sys.stderr:
+                print(f"[Config Reload Warning] Failed to reload Discord gateway config: {mask_secrets(str(e), to_save)}", file=sys.stderr)
 
 
 def cleanup_leftover_temp_files():
