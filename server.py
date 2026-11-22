@@ -773,7 +773,12 @@ def _call_single_llm(cfg, system, messages):
         )
         return "".join(b.get("text", "") for b in data.get("content", []))
     # OpenAI-compatible (OpenAI, OpenRouter, Groq, Ollama, LM Studio ...)
-    base = cfg["base_url"].rstrip("/")
+    base = cfg.get("base_url", "").strip()
+    if base:
+        valid, err_msg = validate_base_url_scheme(base)
+        if not valid:
+            raise LLMError(f"Refused by SSRF Protection: {err_msg}")
+    base = base.rstrip("/")
     headers = {"content-type": "application/json"}
     if key:
         headers["authorization"] = f"Bearer {key}"
@@ -1042,9 +1047,27 @@ def call_llm_with_fallback(cfg, system, messages):
             pass
 
     t0 = time.time()
+    # SSRF: Re-check base_url and fallback URLs for https at call time, not only at save
+    primary_base = str(cfg.get("base_url") or "").strip()
+    if primary_base:
+        valid, err_msg = validate_base_url_scheme(primary_base)
+        if not valid:
+            raise LLMError(f"Refused by SSRF Protection: {err_msg}")
+
     fallbacks = cfg.get("fallback_providers") or []
     if not isinstance(fallbacks, list):
         fallbacks = [fallbacks]
+
+    for fb in fallbacks:
+        fb_base = ""
+        if isinstance(fb, dict):
+            fb_base = str(fb.get("base_url") or "").strip()
+        elif isinstance(fb, str) and fb.startswith("http"):
+            fb_base = fb.strip()
+        if fb_base:
+            valid, err_msg = validate_base_url_scheme(fb_base)
+            if not valid:
+                raise LLMError(f"Refused by SSRF Protection in fallback provider: {err_msg}")
 
     res = None
     answered_prov = "gemini" if "generativelanguage" in cfg.get("base_url", "") else cfg.get("provider", "unknown")
@@ -1163,6 +1186,12 @@ def call_llm_vision(cfg, prompt, base64_png):
             pass
 
     t0 = time.time()
+    # SSRF: Re-check base_url for https at call time, not only at save
+    primary_base = str(cfg.get("base_url") or "").strip()
+    if primary_base:
+        valid, err_msg = validate_base_url_scheme(primary_base)
+        if not valid:
+            raise LLMError(f"Refused by SSRF Protection: {err_msg}")
     provider = cfg["provider"]
     key = cfg.get("api_key", "")
     if isinstance(key, str) and key.startswith("dpapi:"):

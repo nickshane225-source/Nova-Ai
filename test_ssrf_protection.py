@@ -248,6 +248,81 @@ class TestSSRFProtection(unittest.TestCase):
         self.assertNotIn("<script>", res)
         self.assertIn("script", res)
 
+    def test_safe_http_fetch_slow_drip_server_cut_off(self):
+        """A slow-drip local server trickling bytes slower than deadline is cut off by safe_http_fetch."""
+        import socket
+        import threading
+        # Create a socket server that trickles 1 byte every 0.3s using chunked transfer
+        server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server_sock.bind(("127.0.0.1", 0))
+        drip_port = server_sock.getsockname()[1]
+        server_sock.listen(1)
+
+        def _drip_worker():
+            try:
+                conn, _ = server_sock.accept()
+                req = conn.recv(1024)
+                conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\n\r\n")
+                for _ in range(10):
+                    time.sleep(0.3)
+                    conn.sendall(b"1\r\nx\r\n")
+                conn.sendall(b"0\r\n\r\n")
+                conn.close()
+            except Exception:
+                pass
+            finally:
+                try:
+                    server_sock.close()
+                except Exception:
+                    pass
+
+        t = threading.Thread(target=_drip_worker, daemon=True)
+        t.start()
+
+        # safe_http_fetch with total deadline of 0.5s
+        ok, reason, _ = ssrf_guard.safe_http_fetch(
+            f"http://127.0.0.1:{drip_port}/drip",
+            timeout=0.5,
+            allow_localhost_dev=True,
+            dev_localhost_ports={drip_port},
+        )
+        self.assertFalse(ok)
+        self.assertIn("deadline exceeded", reason.lower())
+        self.assertIn("deadline exceeded", reason.lower())
+
+    def test_hand_edited_http_evil_example_refused_at_call_time(self):
+        """http://evil.example in config.json edited by hand is refused at call time."""
+        # Primary provider with hand-edited http URL
+        cfg_primary = {
+            "provider": "openai",
+            "model": "gpt-4o-mini",
+            "base_url": "http://evil.example/v1",
+            "api_key": "sk-proj-test12345678",
+        }
+        with self.assertRaises(server.LLMError) as ctx:
+            server.call_llm(cfg_primary, "You are helpful", [{"role": "user", "content": "hello"}])
+        self.assertIn("Refused by SSRF Protection", str(ctx.exception))
+        self.assertIn("http://evil.example", str(ctx.exception))
+
+        # Fallback provider with hand-edited http URL
+        cfg_fallback = {
+            "provider": "anthropic",
+            "model": "claude-3-5-sonnet",
+            "base_url": "",
+            "api_key": "sk-ant-test12345678",
+            "fallback_providers": [
+                {"provider": "custom", "base_url": "http://evil.example/fallback", "model": "m1"}
+            ],
+        }
+        with self.assertRaises(server.LLMError) as ctx:
+            server.call_llm(cfg_fallback, "You are helpful", [{"role": "user", "content": "hello"}])
+        self.assertIn("Refused by SSRF Protection", str(ctx.exception))
+        self.assertIn("http://evil.example", str(ctx.exception))
+
+        # Localhost (e.g. Ollama http://localhost:11434) is accepted
+        valid_local, _ = server.validate_base_url_scheme("http://localhost:11434/v1")
+        self.assertTrue(valid_local)
+
 
 if __name__ == "__main__":
     unittest.main()

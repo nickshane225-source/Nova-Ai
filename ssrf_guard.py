@@ -23,6 +23,7 @@ import re
 import socket
 import ssl
 import sys
+import time
 import urllib.parse
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
@@ -214,6 +215,7 @@ def validate_url_target(
     blocked_ports: Optional[Set[int]] = None,
     cfg: Optional[Dict[str, Any]] = None,
     custom_resolver: Optional[Callable[[str, int], list]] = None,
+    dns_timeout: float = 5.0,
 ) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
     """
     Validates a URL target against SSRF vulnerabilities:
@@ -288,10 +290,14 @@ def validate_url_target(
         except Exception as e:
             return False, f"DNS resolution failed for '{host}': {e}", None
     else:
+        orig_to = socket.getdefaulttimeout()
         try:
+            socket.setdefaulttimeout(dns_timeout)
             addr_info = socket.getaddrinfo(host, port, family=socket.AF_UNSPEC, type=socket.SOCK_STREAM)
         except Exception as e:
             return False, f"DNS resolution failed for '{host}': {e}", None
+        finally:
+            socket.setdefaulttimeout(orig_to)
 
     if not addr_info:
         return False, f"No IP addresses resolved for '{host}'.", None
@@ -342,7 +348,7 @@ class PinnedHTTPSConnection(http.client.HTTPSConnection):
 
 def safe_http_fetch(
     url: str,
-    timeout: float = 10.0,
+    timeout: float = 15.0,
     max_size: int = 6000,
     max_redirects: int = 3,
     allow_localhost_dev: bool = False,
@@ -351,6 +357,7 @@ def safe_http_fetch(
     blocked_ports: Optional[Set[int]] = None,
     cfg: Optional[Dict[str, Any]] = None,
     custom_resolver: Optional[Callable[[str, int], list]] = None,
+    dns_timeout: float = 5.0,
 ) -> Tuple[bool, str, Dict[str, Any]]:
     """
     Executes a hardened HTTP/HTTPS GET request with strict SSRF defense:
@@ -359,6 +366,7 @@ def safe_http_fetch(
     - Enforces text-only content types
     - Caps response size at max_size
     - Wraps output in <UNTRUSTED_TOOL_OUTPUT> if wrap_output is True
+    - Enforces total deadline across connect, headers, and body reading (default 15.0s)
     """
     current_url = url
     headers = {
@@ -371,7 +379,14 @@ def safe_http_fetch(
         - ports_to_block
     )
 
+    deadline = time.time() + timeout
+
     for hop in range(max_redirects + 1):
+        rem = deadline - time.time()
+        if rem <= 0:
+            return False, f"Total fetch deadline exceeded ({timeout}s)", {}
+
+        cur_dns_timeout = min(dns_timeout, rem)
         ok, reason, target = validate_url_target(
             current_url,
             allow_localhost_dev=allow_localhost_dev,
@@ -379,9 +394,14 @@ def safe_http_fetch(
             blocked_ports=ports_to_block,
             cfg=cfg,
             custom_resolver=custom_resolver,
+            dns_timeout=cur_dns_timeout,
         )
         if not ok or not target:
             return False, f"Refused by SSRF Protection: {reason}", {}
+
+        rem = deadline - time.time()
+        if rem <= 0:
+            return False, f"Total fetch deadline exceeded ({timeout}s)", {}
 
         ip = target["ip"]
         port = target["port"]
@@ -396,11 +416,12 @@ def safe_http_fetch(
             req_headers["Host"] = f"{hostname}:{port}"
 
         try:
+            conn_timeout = max(0.001, rem)
             if scheme == "https":
                 ctx = ssl.create_default_context()
-                conn: http.client.HTTPConnection = PinnedHTTPSConnection(ip, port, hostname, timeout=timeout, context=ctx)
+                conn: http.client.HTTPConnection = PinnedHTTPSConnection(ip, port, hostname, timeout=conn_timeout, context=ctx)
             else:
-                conn = http.client.HTTPConnection(ip, port, timeout=timeout)
+                conn = http.client.HTTPConnection(ip, port, timeout=conn_timeout)
 
             conn.request("GET", path, headers=req_headers)
             resp = conn.getresponse()
@@ -435,7 +456,29 @@ def safe_http_fetch(
                 conn.close()
                 return False, f"Refused: non-text Content-Type '{ctype}'. Only text content is permitted.", {"status": resp.status}
 
-            raw_data = resp.read(max_size + 1)
+            # Enforce deadline while reading body chunks
+            raw_chunks = []
+            bytes_read = 0
+            while bytes_read < max_size + 1:
+                cur_rem = deadline - time.time()
+                if cur_rem <= 0:
+                    conn.close()
+                    return False, f"Total fetch deadline exceeded ({timeout}s)", {}
+                if hasattr(conn, "sock") and conn.sock:
+                    try:
+                        conn.sock.settimeout(cur_rem)
+                    except Exception:
+                        pass
+                chunk = resp.read(min(1024, max_size + 1 - bytes_read))
+                if not chunk:
+                    break
+                raw_chunks.append(chunk)
+                bytes_read += len(chunk)
+                if time.time() > deadline:
+                    conn.close()
+                    return False, f"Total fetch deadline exceeded ({timeout}s)", {}
+
+            raw_data = b"".join(raw_chunks)
             conn.close()
 
             truncated = len(raw_data) > max_size
@@ -455,6 +498,8 @@ def safe_http_fetch(
             }
 
         except Exception as e:
+            if time.time() >= (deadline - 0.2) or isinstance(e, (socket.timeout, TimeoutError, http.client.IncompleteRead)):
+                return False, f"Total fetch deadline exceeded ({timeout}s): {e}", {}
             return False, f"Failed to fetch {current_url}: {e}", {}
 
     return False, f"Too many redirects (exceeded maximum of {max_redirects} hops)", {}
