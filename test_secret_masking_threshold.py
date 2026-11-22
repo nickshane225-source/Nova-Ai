@@ -26,20 +26,20 @@ class TestSecretMaskingAndLockout(unittest.TestCase):
         self.assertIn("short", masked_server)
         self.assertIn("1234567", masked_server)
         self.assertNotIn("secretDiscordToken123456", masked_server)
-        self.assertIn("secr****", masked_server)
+        self.assertIn("[REDACTED:key]", masked_server)
 
         # Audit logger mask_secrets
         masked_audit = audit_logger.mask_secrets(sample_text, cfg=cfg)
         self.assertIn("short", masked_audit)
         self.assertIn("1234567", masked_audit)
         self.assertNotIn("secretDiscordToken123456", masked_audit)
-        self.assertIn("[MASKED_SECRET]", masked_audit)
+        self.assertIn("[REDACTED:key]", masked_audit)
 
     def test_pattern_masking_still_active_for_pattern_keys(self):
         sample_text = "Here is an Anthropic key: sk-ant-api03-abcdefghijklmnopqrstuvwxyz1234567890"
         masked = server.mask_secrets(sample_text, cfg={})
         self.assertNotIn("sk-ant-api03-abcdefghijklmnopqrstuvwxyz1234567890", masked)
-        self.assertIn("sk-ant-****", masked)
+        self.assertIn("[REDACTED:key]", masked)
 
     def test_remote_lockout_8_failures_9th_locked_out(self):
         class MockRemoteRequest(server.RemoteHandler):

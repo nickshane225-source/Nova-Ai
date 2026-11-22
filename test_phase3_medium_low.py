@@ -103,7 +103,7 @@ class TestPhase3MediumLow(unittest.TestCase):
         sample1 = "Authorization: Bearer sk-1234567890abcdef"
         masked1 = server.mask_secrets(sample1)
         self.assertNotIn("1234567890abcdef", masked1)
-        self.assertIn("Authorization: Bearer sk-1****", masked1)
+        self.assertIn("Authorization: Bearer [REDACTED:token]", masked1)
 
         sample2 = "Connection string: api_key=sk-1234567890&token=sec9876543210"
         masked2 = server.mask_secrets(sample2)

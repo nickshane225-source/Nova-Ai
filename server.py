@@ -3423,84 +3423,84 @@ def mask_secrets(text: str, cfg: dict = None) -> str:
     # Values shorter than 8 characters are skipped to avoid corrupting common words/tokens
     for val in _collect_configured_secrets(cfg):
         if len(val) >= 8 and val in text:
-            text = text.replace(val, val[:4] + "****")
+            text = text.replace(val, "[REDACTED:key]")
     try:
         conf = cfg if cfg is not None else (get_config() if callable(globals().get("get_config")) else {})
         if isinstance(conf, dict):
             for sec_key in SECRET_FIELDS:
                 val = conf.get(sec_key)
                 if val and isinstance(val, str) and len(val) >= 8:
-                    text = text.replace(val, val[:4] + "****")
+                    text = text.replace(val, "[REDACTED:key]")
     except Exception:
         pass
 
     # Authorization: Bearer <token>
     text = re.sub(
         r'(?i)(Authorization:\s*(?:Bearer\s+)?)([^\s,;\'"]+)',
-        lambda m: m.group(1) + (m.group(2)[:4] + "****" if len(m.group(2)) > 4 else "****"),
+        r'\1[REDACTED:token]',
         text
     )
 
     # Bearer <token>
     text = re.sub(
         r'(?i)(\bBearer\s+)([A-Za-z0-9_\-\.]{8,})',
-        lambda m: m.group(1) + m.group(2)[:4] + "****",
+        r'\1[REDACTED:token]',
         text
     )
 
     # key=..., token=..., secret=..., password=..., api_key=...
     text = re.sub(
         r'(?i)(\b(?:api[_-]?key|token|secret|password|access[_-]?token)\s*[:=]\s*[\'"]?)([^\s,;\'"&]{4,})([\'"]?)',
-        lambda m: m.group(1) + m.group(2)[:4] + "****" + m.group(3),
+        r'\1[REDACTED:key]\3',
         text
     )
 
     # sk- prefixed keys: e.g. sk-1234567890abcdef
     text = re.sub(
         r'\bsk-[a-zA-Z0-9_\-]{8,}\b',
-        lambda m: m.group(0)[:7] + "****",
+        '[REDACTED:key]',
         text
     )
 
     # Google AI Studio AQ. keys
     text = re.sub(
         r'AQ\.[A-Za-z0-9_.\-]{20,}',
-        'AQ.****',
+        '[REDACTED:key]',
         text
     )
 
     # Google legacy AIza keys
     text = re.sub(
         r'AIza[0-9A-Za-z\-_]{15,}',
-        'AIza****',
+        '[REDACTED:key]',
         text
     )
 
     # GitHub tokens
     text = re.sub(
         r'\b(?:ghp_[A-Za-z0-9]{10,}|github_pat_[A-Za-z0-9_]{10,})\b',
-        lambda m: m.group(0)[:4] + "****",
+        '[REDACTED:token]',
         text
     )
 
     # Telegram bot token
     text = re.sub(
         r'\b\d{8,12}:[A-Za-z0-9_\-]{25,}\b',
-        '****:****',
+        '[REDACTED:token]',
         text
     )
 
     # Discord bot token
     text = re.sub(
         r'\b[MN][A-Za-z\d]{23,28}\.[\w-]{6}\.[\w-]{27,40}\b',
-        '****.****.****',
+        '[REDACTED:token]',
         text
     )
 
     # Long hex strings (32-128 hex chars)
     text = re.sub(
         r'\b[0-9a-fA-F]{32,128}\b',
-        lambda m: m.group(0)[:4] + "****",
+        '[REDACTED:secret]',
         text
     )
 

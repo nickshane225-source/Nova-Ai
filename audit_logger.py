@@ -87,9 +87,9 @@ def mask_secrets(text: str, cfg: dict = None) -> str:
             pass
     for val in sorted(set(secret_vals), key=len, reverse=True):
         if len(val) >= 8 and val in masked:
-            masked = masked.replace(val, "[MASKED_SECRET]")
+            masked = masked.replace(val, "[REDACTED:key]")
     for pat in _SECRET_PATTERNS:
-        masked = pat.sub("[MASKED_SECRET]", masked)
+        masked = pat.sub("[REDACTED:key]", masked)
     return masked
 
 
