@@ -76,10 +76,22 @@ function showWakeWordBanner(show) {
     el = document.createElement("div");
     el.id = "wakeWordOptInBanner";
     el.style.cssText = "position:fixed;top:60px;left:50%;transform:translateX(-50%);z-index:9999;max-width:560px;background:rgba(0,180,255,0.18);border:1px solid #00b4ff;color:#cceeff;padding:10px 16px;border-radius:8px;font-size:13px;font-weight:600;display:flex;align-items:center;justify-content:space-between;gap:12px;backdrop-filter:blur(8px);box-shadow:0 4px 20px rgba(0,180,255,0.2);";
-    el.innerHTML = `<span>Wake word is now opt-in; enable it in Settings</span><button style="background:none;border:none;color:#fff;font-size:16px;cursor:pointer;padding:0 4px;" onclick="this.parentElement.remove()">&times;</button>`;
+    el.innerHTML = `<span>Wake word is now opt-in; enable it in Settings</span><button id="dismissWakeWordBannerBtn" style="background:none;border:none;color:#fff;font-size:16px;cursor:pointer;padding:0 4px;" onclick="dismissWakeWordBanner()">&times;</button>`;
     document.body.appendChild(el);
   } else if (el && !show) {
     el.remove();
+  }
+}
+
+async function dismissWakeWordBanner() {
+  const el = document.getElementById("wakeWordOptInBanner");
+  if (el) el.remove();
+  try {
+    await api("/api/config/dismiss_wake_word_banner", {});
+  } catch (e) {
+    try {
+      await api("/api/config", { wake_word_migrated_banner: false });
+    } catch(err) {}
   }
 }
 if ($("#clearUntrustedBtn")) {

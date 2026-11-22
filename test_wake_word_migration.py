@@ -96,6 +96,64 @@ class TestWakeWordMigration(unittest.TestCase):
         self.assertTrue(saved["wake_word_user_choice"])
         self.assertFalse(saved["wake_word_migrated_banner"])
 
+    def test_config_secrets_remain_encrypted_on_disk_after_load_config_migration(self):
+        """
+        Item 3 Config migration:
+        - Shows that config.json secrets remain encrypted on disk after load_config runs the migration.
+        - Uses update_json for atomic migration without decrypting secrets.
+        """
+        encrypted_secret = "dpapi:AQAAANCMnd8BFdERjHoAwE/Cl+sBAAAA_TEST_ENCRYPTED_KEY_VALUE"
+        initial_disk_config = {
+            "api_key": encrypted_secret,
+            "wake_word_enabled": True,
+            "encrypt_keys": True,
+        }
+        with open(server.CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(initial_disk_config, f, indent=2)
+
+        # Execute load_config (alias to get_config)
+        self.assertTrue(hasattr(server, "load_config"))
+        cfg = server.load_config()
+
+        # In-memory config has migrated wake-word
+        self.assertFalse(cfg["wake_word_enabled"])
+        self.assertTrue(cfg["wake_word_migrated_banner"])
+
+        # Read the raw file directly from disk to verify secrets remained encrypted
+        with open(server.CONFIG_FILE, "r", encoding="utf-8") as f:
+            disk_after = json.load(f)
+
+        self.assertFalse(disk_after["wake_word_enabled"])
+        self.assertFalse(disk_after["wake_word_user_choice"])
+        self.assertTrue(disk_after["wake_word_migrated_banner"])
+        # CRITICAL ASSERTION: The secret on disk is still the exact encrypted ciphertext!
+        self.assertEqual(disk_after["api_key"], encrypted_secret)
+
+    def test_dismiss_wake_word_banner_clears_flag_on_disk(self):
+        """Clear wake_word_migrated_banner when the user dismisses the banner."""
+        with open(server.CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump({"wake_word_enabled": True}, f)
+
+        # Trigger migration
+        cfg = server.load_config()
+        self.assertTrue(cfg["wake_word_migrated_banner"])
+
+        # Dismiss banner route
+        code, data = self._post("/api/config/dismiss_wake_word_banner", {})
+        self.assertEqual(code, 200)
+        self.assertTrue(data.get("ok"))
+        self.assertFalse(data.get("wake_word_migrated_banner"))
+
+        # Verify disk file has banner cleared
+        with open(server.CONFIG_FILE, "r", encoding="utf-8") as f:
+            disk_after = json.load(f)
+        self.assertFalse(disk_after.get("wake_word_migrated_banner", False))
+
+        # Also test dismissal via POST /api/config
+        code2, data2 = self._post("/api/config", {"wake_word_migrated_banner": False})
+        self.assertEqual(code2, 200)
+        self.assertTrue(data2.get("ok"))
+
 
 if __name__ == "__main__":
     unittest.main()

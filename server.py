@@ -604,18 +604,20 @@ def get_config():
 
         # One-time migration: on upgrade, if saved config has wake_word_enabled true and no wake_word_user_choice, set to false
         if raw_saved.get("wake_word_enabled") is True and "wake_word_user_choice" not in raw_saved:
-            migrated_ww = dict(raw_saved)
-            migrated_ww["wake_word_enabled"] = False
-            migrated_ww["wake_word_user_choice"] = False
+            def _ww_migrate_fn(cur):
+                if isinstance(cur, dict):
+                    cur["wake_word_enabled"] = False
+                    cur["wake_word_user_choice"] = False
+                    cur["wake_word_migrated_banner"] = True
+                return cur
+            try:
+                raw_saved = update_json(CONFIG_FILE, _ww_migrate_fn, default=raw_saved)
+                atomic_write_json(bak_path, raw_saved)
+            except Exception:
+                pass
             cfg["wake_word_enabled"] = False
             cfg["wake_word_user_choice"] = False
             cfg["wake_word_migrated_banner"] = True
-            raw_saved = migrated_ww
-            try:
-                atomic_write_json(CONFIG_FILE, migrated_ww)
-                atomic_write_json(bak_path, migrated_ww)
-            except Exception:
-                pass
 
         # Decrypt any DPAPI encrypted fields for in-memory use
         for k, v in list(cfg.items()):
@@ -639,6 +641,9 @@ def get_config():
                     pass
 
         return cfg
+
+
+load_config = get_config
 
 
 def get_memory():
@@ -7454,6 +7459,18 @@ class Handler(BaseHandler):
                 self.wfile.write(f"data: {done_ev}\n\n".encode("utf-8"))
                 self.wfile.flush()
                 return
+            if path == "/api/config/dismiss_wake_word_banner":
+                def _dismiss_ww_banner(cur):
+                    if isinstance(cur, dict):
+                        cur["wake_word_migrated_banner"] = False
+                    return cur
+                try:
+                    update_json(CONFIG_FILE, _dismiss_ww_banner, default={})
+                    bak_path = CONFIG_FILE.with_name(CONFIG_FILE.name + ".bak")
+                    update_json(bak_path, _dismiss_ww_banner, default={})
+                except Exception:
+                    pass
+                return self._send(200, {"ok": True, "wake_word_migrated_banner": False})
             if path == "/api/config/test":
                 t_base = str(body.get("base_url") or "").strip()
                 t_prov = str(body.get("provider") or "").strip()
@@ -7681,6 +7698,8 @@ class Handler(BaseHandler):
                         cfg[k] = bool(body[k])
                 if "vision_preview" in body:
                     cfg["vision_preview"] = None if body["vision_preview"] is None else bool(body["vision_preview"])
+                if "wake_word_migrated_banner" in body:
+                    cfg["wake_word_migrated_banner"] = bool(body["wake_word_migrated_banner"])
                 if "wake_word_enabled" in body:
                     cfg["wake_word_user_choice"] = True
                     cfg["wake_word_migrated_banner"] = False
