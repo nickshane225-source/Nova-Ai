@@ -147,6 +147,9 @@ class TestBatch3AndFollowUps(unittest.TestCase):
                 "llm_timeout": 45,
             }
             code, res, _ = self._api_req(port, "/api/config", method="POST", body=ui_payload, cookie=auth_cookie, token=auth_token)
+            if res.get("need_confirm"):
+                ui_payload["confirm_token"] = res["token"]
+                code, res, _ = self._api_req(port, "/api/config", method="POST", body=ui_payload, cookie=auth_cookie, token=auth_token)
             self.assertEqual(code, 200)
             self.assertTrue(res.get("ok"), f"Expected ok=True, got: {res}")
 

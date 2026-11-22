@@ -838,6 +838,37 @@ def detect_api_key_provider_mismatch(provider: str, api_key: str, base_url: str 
     return None
 
 
+def is_local_host(hostname: str) -> bool:
+    if not hostname:
+        return False
+    h = hostname.strip().lower()
+    if h in ("localhost", "127.0.0.1", "::1"):
+        return True
+    try:
+        ip = ipaddress.ip_address(h)
+        return ip.is_loopback
+    except ValueError:
+        return False
+
+
+def validate_base_url_scheme(url_str: str) -> tuple[bool, str]:
+    """Validates that base_url uses https unless pointing to a loopback/local address."""
+    s = (url_str or "").strip()
+    if not s:
+        return True, ""
+    try:
+        p = urllib.parse.urlparse(s)
+    except Exception as e:
+        return False, f"Invalid URL format: {e}"
+    if p.scheme not in ("http", "https"):
+        return False, "base_url must begin with https:// or http:// for local addresses."
+    if p.scheme == "http":
+        h = p.hostname or ""
+        if not is_local_host(h):
+            return False, f"Non-local base_url must use https:// (got http://{h})"
+    return True, ""
+
+
 def test_llm_connection(provider: str, api_key: str, model: str, base_url: str = "", timeout: int = 15) -> dict:
     """Runs a minimal 1-token request to test the provider/key/model configuration."""
     cfg_cur = get_config()
@@ -7339,11 +7370,39 @@ class Handler(BaseHandler):
                 self.wfile.flush()
                 return
             if path == "/api/config/test":
+                t_base = str(body.get("base_url") or "").strip()
+                t_prov = str(body.get("provider") or "").strip()
+                t_key = str(body.get("api_key") or "").strip()
+                t_model = str(body.get("model") or "").strip()
+
+                if t_base:
+                    valid, err_msg = validate_base_url_scheme(t_base)
+                    if not valid:
+                        return self._send(400, {"ok": False, "error": err_msg, "category": "invalid_url"})
+
+                cfg_cur = get_config()
+                if not t_key:
+                    # Security check: testing with saved key is only permitted for the currently saved provider & base_url
+                    saved_prov = str(cfg_cur.get("provider", "anthropic")).strip()
+                    saved_base = str(cfg_cur.get("base_url", "")).strip()
+                    if t_prov and t_prov.lower() != saved_prov.lower():
+                        return self._send(400, {
+                            "ok": False,
+                            "error": "Testing with saved API key is only allowed for the currently saved provider.",
+                            "category": "forbidden",
+                        })
+                    if t_base and t_base.rstrip("/") != saved_base.rstrip("/"):
+                        return self._send(400, {
+                            "ok": False,
+                            "error": "Testing with saved API key is only allowed for the currently saved base_url.",
+                            "category": "forbidden",
+                        })
+
                 res = test_llm_connection(
-                    provider=body.get("provider", ""),
-                    api_key=body.get("api_key", ""),
-                    model=body.get("model", ""),
-                    base_url=body.get("base_url", ""),
+                    provider=t_prov,
+                    api_key=t_key,
+                    model=t_model,
+                    base_url=t_base,
                 )
                 return self._send(200, res)
             if path == "/api/config":
@@ -7369,6 +7428,21 @@ class Handler(BaseHandler):
                 for k in body:
                     if k not in VALID_CONFIG_KEYS:
                         return self._send(400, {"ok": False, "error": f"Unknown configuration key: {k}"})
+
+                # Validate URL schemes (non-local base_url must use https)
+                if "base_url" in body:
+                    b_val = str(body["base_url"]).strip()
+                    valid, err_msg = validate_base_url_scheme(b_val)
+                    if not valid:
+                        return self._send(400, {"ok": False, "error": err_msg})
+                if "fallback_providers" in body:
+                    fps = body["fallback_providers"]
+                    if isinstance(fps, list):
+                        for fp in fps:
+                            if isinstance(fp, str) and (fp.startswith("http://") or fp.startswith("https://")):
+                                valid, err_msg = validate_base_url_scheme(fp)
+                                if not valid:
+                                    return self._send(400, {"ok": False, "error": f"Invalid fallback URL: {err_msg}"})
 
                 # Validate types and ranges before confirmation gating
                 if "run_code_trusted_minutes" in body:
@@ -7446,17 +7520,26 @@ class Handler(BaseHandler):
                     "telegram_allowed_chat_ids",
                     "telegram_allowed_user_ids",
                     "telegram_allow_groups",
+                    "dev_localhost_ports",
+                    "provider",
+                    "base_url",
+                    "remote_bind_ip",
+                    "fallback_providers",
                 }
                 current_cfg = get_config()
 
                 def _is_sensitive_key_changed(k, incoming_val):
                     cur_val = current_cfg.get(k, DEFAULT_CONFIG.get(k))
-                    if k in ("discord_channel_ids", "discord_allowed_user_ids", "telegram_allowed_chat_ids", "telegram_allowed_user_ids", "smart_home_hosts", "dev_localhost_ports"):
+                    if k in ("discord_channel_ids", "discord_allowed_user_ids", "telegram_allowed_chat_ids", "telegram_allowed_user_ids", "smart_home_hosts", "dev_localhost_ports", "fallback_providers"):
                         inc_norm = [str(x).strip() for x in (incoming_val or []) if str(x).strip()]
                         cur_norm = [str(x).strip() for x in (cur_val or []) if str(x).strip()]
                         return inc_norm != cur_norm
                     if k == "run_code_trusted_minutes":
                         return int(incoming_val or 0) != int(cur_val or 0)
+                    if k == "base_url":
+                        return str(incoming_val or "").strip().rstrip("/") != str(cur_val or "").strip().rstrip("/")
+                    if k in ("provider", "remote_bind_ip"):
+                        return str(incoming_val or "").strip() != str(cur_val or "").strip()
                     if isinstance(cur_val, bool) or k in ("confirm_destructive", "allow_outside_workspace", "remote_allow_dangerous", "encrypt_keys"):
                         return bool(incoming_val) != bool(cur_val)
                     return str(incoming_val or "") != str(cur_val or "")

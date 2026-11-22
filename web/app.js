@@ -1874,6 +1874,7 @@ async function renderPanel(name) {
       </label>
       <label>Model</label><input id="model" value="${esc(c.model)}">
       <label>Base URL (OpenAI-compatible only)</label><input id="base" value="${esc(c.base_url)}">
+      <div id="baseHostInfo" style="font-size:11px; color:#70a1ff; margin-top:-2px; margin-bottom:8px;"></div>
       <label>Your name</label><input id="uname" value="${esc(c.user_name)}">
       <label>Speech language (e.g. en-US, en-GB, ur-PK, hi-IN)</label><input id="lang" value="${esc(c.language)}">
       <label>LLM Read Timeout (seconds, max 90s; total wait with retry is kept under 100s)</label><input id="llmTimeout" type="number" min="5" max="90" value="${c.llm_timeout || 60}">
@@ -1964,10 +1965,28 @@ async function renderPanel(name) {
         warnEl.classList.add("hidden");
       }
     }
+    function updateBaseHost() {
+      const hostEl = $("#baseHostInfo");
+      if (!hostEl) return;
+      const val = ($("#base")?.value || "").trim();
+      if (!val) {
+        hostEl.textContent = "";
+        return;
+      }
+      try {
+        const u = new URL(val);
+        hostEl.textContent = `Destination host: ${u.host} (${u.protocol.replace(':', '')})`;
+      } catch (e) {
+        hostEl.textContent = `Destination host: (invalid URL format)`;
+      }
+    }
+    updateMismatchWarning();
+    updateBaseHost();
     $("#prov").onchange = () => {
       const p = state.presets[$("#prov").value];
       if (p) { $("#model").value = p.model; $("#base").value = p.base_url; }
       updateMismatchWarning();
+      updateBaseHost();
     };
     $("#key").oninput = () => {
       updateMismatchWarning();
@@ -1975,7 +1994,10 @@ async function renderPanel(name) {
       if (fw) { fw.classList.add("hidden"); fw.style.display = "none"; }
       if ($("#chkForceSaveKey")) $("#chkForceSaveKey").checked = false;
     };
-    $("#base").oninput = updateMismatchWarning;
+    $("#base").oninput = () => {
+      updateMismatchWarning();
+      updateBaseHost();
+    };
     $("#btnTestConn").onclick = async () => {
       const resEl = $("#connTestResult");
       const btn = $("#btnTestConn");
