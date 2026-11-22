@@ -295,6 +295,34 @@ function runEchoGuardTest() {
   rec.onspeechstart();
   assert.strictEqual(scope.mode, "listening", "Barge-in should trigger after 600ms when enabled");
   console.log("[PASS] TEST 6 passed: Echo guard properly shields initial audio playback.\n");
+  runNetworkErrorLimitTest();
+}
+
+// --- TEST 7: Speech network error shows visible UI message + stops auto-restart after 3 consecutive errors ---
+function runNetworkErrorLimitTest() {
+  console.log("--- TEST 7: Network speech error shows UI banner and stops after 3 consecutive errors ---");
+  const { scope, context } = createMockEnvironment();
+  scope.active = true;
+  scope.micMuted = false;
+  scope.startListening();
+
+  // Error 1: visible UI message shown, still active
+  scope.rec.onerror({ error: "network" });
+  const banner = context.document.getElementById("voiceNetworkBanner");
+  assert.strictEqual(banner.style.display, "block", "Voice network banner must be visible on network error");
+  assert.ok(banner.innerHTML.includes("Chrome/Edge"), "Banner must suggest Chrome/Edge");
+  assert.ok(banner.innerHTML.includes("VPN/proxy"), "Banner must mention VPN/proxy");
+  assert.ok(banner.innerHTML.includes("Voice troubleshooting"), "Banner must include Voice troubleshooting hint");
+  assert.strictEqual(scope.active, true, "Should remain active after 1st network error");
+
+  // Error 2: still active
+  scope.rec.onerror({ error: "network" });
+  assert.strictEqual(scope.active, true, "Should remain active after 2nd network error");
+
+  // Error 3: stops auto-restarting (active becomes false)
+  scope.rec.onerror({ error: "network" });
+  assert.strictEqual(scope.active, false, "Must stop auto-restarting after 3 consecutive network errors");
+  console.log("[PASS] TEST 7 passed: Visible UI banner shown and auto-restart halted after 3 consecutive network errors.\n");
 
   console.log("=================================================");
   console.log("ALL REAL APP.JS VOICE REGRESSION TESTS PASSED!");

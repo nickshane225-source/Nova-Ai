@@ -460,6 +460,7 @@ async function ensureMic() {
   return { ok: true };
 }
 let micErrors = 0;
+let consecutiveNetworkErrors = 0;
 let keepReply = false;
 let silenceTimer = null;
 let abortStreak = [];
@@ -477,6 +478,26 @@ function scheduleListen(delay = 300) {
       startListening();
     }
   }, delay);
+}
+
+function showVoiceNetworkNotice(show, msg) {
+  let el = document.getElementById("voiceNetworkBanner");
+  if (!el && show && document.body) {
+    el = document.createElement("div");
+    el.id = "voiceNetworkBanner";
+    el.style.cssText = "position:fixed;bottom:78px;left:50%;transform:translateX(-50%);z-index:9999;max-width:560px;background:rgba(255,170,0,0.16);border:1px solid #ffaa00;color:#ffe299;padding:10px 14px;border-radius:8px;font-size:12px;line-height:1.45;backdrop-filter:blur(8px);";
+    document.body.appendChild(el);
+  }
+  if (!el) return;
+  if (show) {
+    const text = msg || "Browser speech service is unreachable. Try Chrome/Edge, turn off VPN/proxy, or type your message below.";
+    el.innerHTML = `<div><b>Voice unavailable:</b> ${esc(text)}</div><details style="margin-top:4px;font-size:11px;color:#cfe9f5;cursor:pointer;"><summary>Voice troubleshooting</summary><div style="margin-top:4px;">Voice uses your browser's cloud speech service (audio leaves this PC while listening). Use Google Chrome or Microsoft Edge, disable VPN/proxy blocking Google speech servers (in Brave, enable Google speech in brave://settings/extensions), or type in the chat box below.</div></details>`;
+    el.style.display = "block";
+    if (el.classList && el.classList.remove) el.classList.remove("hidden");
+  } else {
+    el.style.display = "none";
+    if (el.classList && el.classList.add) el.classList.add("hidden");
+  }
 }
 
 function micBlocked(msg) {
@@ -581,6 +602,8 @@ function startListening() {
     }
     abortStreak = [];
     micErrors = 0;
+    consecutiveNetworkErrors = 0;
+    showVoiceNetworkNotice(false);
     keepReply = false;
     let interim = "";
     for (let i = e.resultIndex; i < e.results.length; ++i) {
@@ -699,7 +722,15 @@ function startListening() {
       }
     } else if (e.error === "network") {
       micErrors++;
-      subtitle("", "Voice recognition can't reach the browser speech service. Check your internet connection.");
+      consecutiveNetworkErrors++;
+      const netMsg = "Browser speech service is unreachable. Try Chrome/Edge, turn off VPN/proxy, or type below.";
+      showVoiceNetworkNotice(true, netMsg);
+      if (consecutiveNetworkErrors >= 3) {
+        console.warn("[Nova AI] 3 consecutive network speech errors, stopping auto-restart.");
+        micBlocked("Browser speech service is unreachable after 3 attempts. Try Chrome/Edge, turn off VPN/proxy, or type below.");
+        return;
+      }
+      subtitle("", netMsg);
     } else if (e.error === "aborted") {
       const now = Date.now();
       abortStreak.push(now);
@@ -854,6 +885,8 @@ $("#start").onclick = async () => {
     wakeWordAwake = false;
     clearTimeout(wakeWordAwakeTimer);
     micErrors = 0;
+    consecutiveNetworkErrors = 0;
+    showVoiceNetworkNotice(false);
     keepReply = false;
     abortStreak = [];
     if (bc) { try { bc.postMessage({ type: "mic-claim", id: tabId }); } catch {} }
