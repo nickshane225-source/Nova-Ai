@@ -117,7 +117,7 @@ SAFE_STATE_FIELDS = {
     "llm_timeout", "debug_llm", "llm_reasoning_effort", "fallback_providers",
     "telegram_enabled", "telegram_allowed_chat_ids", "telegram_allowed_user_ids", "telegram_allow_groups",
     "discord_enabled", "discord_channel_ids", "discord_allowed_user_ids",
-    "monthly_budget_usd"
+    "monthly_budget_usd", "vision_preview"
 }
 
 def is_secret_field(key: str) -> bool:
@@ -322,6 +322,7 @@ DEFAULT_CONFIG = {
     "wake_word_migrated_banner": False,
     "vision_block_sensitive_windows": True,
     "vision_blocked_window_patterns": [],
+    "vision_preview": None,
     "barge_in_enabled": False,
     "llm_timeout": 60,
     "debug_llm": False,
@@ -2339,6 +2340,35 @@ def create_pending_action(
             f"--- FIRST 500 CHARACTERS ---\n{first_500}\n\n"
             f"--- LAST 500 CHARACTERS ---\n{last_500}"
         )
+    image_preview = None
+    if clean_name in ("VISION", "SCREEN_ANALYZE"):
+        cfg_vision = cfg if isinstance(cfg, dict) else get_config()
+        preview_opt = cfg_vision.get("vision_preview")
+        should_preview = preview_opt if isinstance(preview_opt, bool) else (is_tainted or source != "pc")
+        if should_preview:
+            active_title = get_active_window_title()
+            blocked, matched_pat = is_sensitive_vision_window(active_title, cfg=cfg_vision)
+            if blocked:
+                preview_str = f"[VISION REFUSED: Active window matches sensitive pattern '{matched_pat}']\nPrompt: {raw_arg}"
+            else:
+                try:
+                    import base64
+                    save_dir = WORKSPACE / "screenshots"
+                    save_dir.mkdir(parents=True, exist_ok=True)
+                    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                    target = save_dir / f"preview_{stamp}.png"
+                    captured = _capture_desktop_png(target)
+                    if captured and captured.exists():
+                        raw_bytes = captured.read_bytes()
+                        b64 = base64.b64encode(raw_bytes).decode("ascii")
+                        image_preview = f"data:image/png;base64,{b64}"
+                        preview_str = f"[DESKTOP SCREENSHOT PREVIEW CAPTURED - {len(raw_bytes)} bytes]\nPrompt: {raw_arg}\nImage will be transmitted to AI cloud upon confirmation."
+                    else:
+                        preview_str = raw_arg
+                except Exception as e:
+                    preview_str = f"[Screenshot capture failed: {e}]\nPrompt: {raw_arg}"
+        else:
+            preview_str = raw_arg
     elif clean_name in ("INSTALL_SKILL", "ADD_SKILL"):
         try:
             parts = [p.strip() for p in raw_arg.split("|", 2)]
@@ -2433,6 +2463,10 @@ def create_pending_action(
         "guardian": g_verdict,
         "is_tainted": bool(is_tainted),
     }
+    if image_preview:
+        pending_entry["image_preview"] = image_preview
+        pending_info["image_preview"] = image_preview
+
     if pc_only:
         pending_info["pc_only"] = True
 
@@ -6995,6 +7029,8 @@ class Handler(BaseHandler):
                         "expires_at": p.get("expires_at", 0),
                         "conv_id": p_conv,
                     }
+                    if p.get("image_preview"):
+                        entry["image_preview"] = p.get("image_preview")
                     pending_list.append(entry)
                 return self._send(200, {"ok": True, "pending": pending_list})
         if path == "/api/notifications":
@@ -7450,7 +7486,7 @@ class Handler(BaseHandler):
                     "telegram_allow_groups",
                     "monthly_budget_usd", "discord_enabled",
                     "discord_channel_ids", "discord_allowed_user_ids",
-                    "dev_localhost_ports", "vision_block_sensitive_windows", "vision_blocked_window_patterns",
+                    "dev_localhost_ports", "vision_block_sensitive_windows", "vision_blocked_window_patterns", "vision_preview",
                 } | SECRET_FIELDS | {f"clear_{sec}" for sec in SECRET_FIELDS}
                 # Reject unknown keys
                 for k in body:
@@ -7622,6 +7658,8 @@ class Handler(BaseHandler):
                 for k in ("wake_word_enabled", "barge_in_enabled", "allow_outside_workspace", "confirm_destructive", "remote_enabled", "remote_allow_dangerous", "encrypt_keys", "debug_llm", "telegram_enabled", "discord_enabled", "telegram_allow_groups"):
                     if k in body:
                         cfg[k] = bool(body[k])
+                if "vision_preview" in body:
+                    cfg["vision_preview"] = None if body["vision_preview"] is None else bool(body["vision_preview"])
                 if "wake_word_enabled" in body:
                     cfg["wake_word_user_choice"] = True
                     cfg["wake_word_migrated_banner"] = False

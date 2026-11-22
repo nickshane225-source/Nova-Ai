@@ -40,7 +40,15 @@ Nova AI has undergone extensive security hardening, eliminating all 45 Critical,
   - **Strict Tainted Gating:** In a tainted conversation, `SEARCH`, `READ_FILE`, `VISION`, browser interaction, and all write operations require explicit user approval. The `<=80` character search exemption has been removed.
   - **Entropy & Secret Exfiltration Backstop:** Unconfirmed search queries are inspected for high-entropy tokens (base64/hex tokens >= 20 characters), tainted file content shingles, and a hard limit of 5 unconfirmed queries per conversation.
 
-### 2.4 External Skills Isolation
+### 2.4 Desktop Vision & Sensitive Window Privacy
+* **Risk Description:** Capturing desktop screenshots and transmitting them to cloud LLMs could inadvertently expose sensitive credentials, banking statements, or private messages.
+* **Threat Profile:** Indirect prompt injection or tainted workflows triggering automated screen capture of confidential applications.
+* **Mitigating Controls:**
+  - **Confirmation Gating & Vision Preview:** `VISION` and `SCREEN_ANALYZE` actions require explicit user approval on first invocation and in all tainted or non-PC turns. The `vision_preview` configuration option (default on in tainted or non-PC contexts) renders a visual thumbnail preview of the captured screenshot directly in the user confirmation modal before any image bytes leave the local PC.
+  - **Sensitive Window Title Refusal:** Before capturing or analyzing screenshots, `is_sensitive_vision_window` inspects the window title against blocked patterns (e.g. 1Password, Bitwarden, KeePass, banking portals). If matched, capture is unconditionally refused.
+  - **Scope Limitation of Window Title Refusal:** Notice that this protective check inspects *only* the active foreground window (`GetForegroundWindow` / active window title). If a sensitive banking window or credential manager is visible in the background without active foreground focus, it is not detected by the title check. Users must ensure background sensitive windows are minimized when initiating desktop vision in untrusted contexts.
+
+### 2.5 External Skills Isolation
 * **Risk Description:** Users may install community or repository skills via GitHub integration. External skills could contain malicious prompts or disguised commands.
 * **Threat Profile:** Third-party skills attempting to masquerade as trusted system procedures or overwrite bundled engineering skills.
 * **Mitigating Controls:**

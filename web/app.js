@@ -2530,6 +2530,11 @@ function closeModal() {
   const denyBtn = $("#confirmDenyBtn");
   if (allowBtn) allowBtn.disabled = false;
   if (denyBtn) denyBtn.disabled = false;
+  const imgEl = $("#confirmImagePreview");
+  if (imgEl) {
+    imgEl.style.display = "none";
+    imgEl.src = "";
+  }
 }
 
 function showConfirmModal(pending) {
@@ -2546,6 +2551,24 @@ function showConfirmModal(pending) {
   const previewEl = $("#confirmPreview");
   if (promptEl) promptEl.textContent = pending.prompt || "A high-impact action requires confirmation:";
   if (previewEl) previewEl.textContent = `${pending.action}: ${pending.preview || ""}`;
+
+  let imgEl = $("#confirmImagePreview");
+  if (pending && pending.image_preview) {
+    if (!imgEl) {
+      imgEl = document.createElement("img");
+      imgEl.id = "confirmImagePreview";
+      imgEl.style.cssText = "max-width:100%; max-height:220px; border-radius:6px; margin:10px 0; border:1px solid #37d6ff; display:block;";
+      if (previewEl && previewEl.parentNode) {
+        previewEl.parentNode.insertBefore(imgEl, previewEl.nextSibling);
+      }
+    }
+    imgEl.src = pending.image_preview;
+    imgEl.style.display = "block";
+  } else if (imgEl) {
+    imgEl.style.display = "none";
+    imgEl.src = "";
+  }
+
   modal.classList.remove("hidden");
 }
 
