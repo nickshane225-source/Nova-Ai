@@ -93,6 +93,23 @@ def mask_secrets(text: str, cfg: dict = None) -> str:
     return masked
 
 
+def log_security_event(
+    event_type: str,
+    details: str,
+    severity: str = "WARNING",
+    cfg: dict = None,
+) -> dict:
+    """Convenience wrapper for logging security-specific events (e.g. skill hash mismatch, tampering)."""
+    return log_audit_event(
+        channel="security",
+        tool=str(event_type or "SECURITY").strip().upper(),
+        preview=details,
+        guardian_verdict=str(severity or "WARNING").strip().upper(),
+        status="BLOCKED" if str(severity).upper() in ("HIGH", "CRITICAL") else "WARNED",
+        cfg=cfg,
+    )
+
+
 def log_audit_event(
     channel: str,
     tool: str,

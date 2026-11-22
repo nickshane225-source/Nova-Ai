@@ -19,6 +19,11 @@ import unicodedata
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+try:
+    import audit_logger
+except Exception:
+    audit_logger = None
+
 def get_bundled_skills_dir() -> Path:
     if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
         return Path(sys._MEIPASS) / "skills"
@@ -291,7 +296,7 @@ def prepare_skill_content_to_write(
         )
 
     # Check frontmatter name inside content
-    fm_match = re.match(r"^---\s*\n(.*?)\n---\s*\n", content, re.DOTALL)
+    fm_match = re.match(r"^---\s*\r?\n(.*?)\r?\n---\s*\r?\n", content, re.DOTALL)
     if fm_match:
         for line in fm_match.group(1).splitlines():
             if ":" in line:
@@ -304,6 +309,7 @@ def prepare_skill_content_to_write(
                         raise ValueError(f"Refused: User skill '{fm_name}' cannot use bundled skill name.")
         final_content = content
     else:
+        nl = "\r\n" if "\r\n" in content else "\n"
         fm_lines = [f"name: {clean_name}"]
         if description:
             fm_lines.append(f"description: {description}")
@@ -312,7 +318,7 @@ def prepare_skill_content_to_write(
                 fm_lines.append(f"triggers: {', '.join(triggers)}")
             else:
                 fm_lines.append(f"triggers: {triggers}")
-        final_content = f"---\n{chr(10).join(fm_lines)}\n---\n{content.strip()}\n"
+        final_content = f"---{nl}{nl.join(fm_lines)}{nl}---{nl}{content.strip()}{nl}"
 
     final_bytes = final_content.encode("utf-8")
     sha256 = hashlib.sha256(final_bytes).hexdigest()
@@ -412,12 +418,27 @@ def load_skills(mode: str) -> list:
 
                 key = f"{mode}:{clean_name}"
                 entry = manifest.get("skills", {}).get(key)
+                if not entry and key in manifest:
+                    entry = manifest[key]
+                if isinstance(entry, str):
+                    entry = {"sha256": entry}
+
                 if not entry:
                     # Not in manifest: ignore until approved
+                    if audit_logger and hasattr(audit_logger, "log_security_event"):
+                        try:
+                            audit_logger.log_security_event("SKILL_HASH_MISSING", f"Skill '{clean_name}' not approved in manifest. Skipped.", severity="WARNING")
+                        except Exception:
+                            pass
                     continue
 
                 if entry.get("sha256") != curr_sha256:
                     # Content changed: ignore until re-approved!
+                    if audit_logger and hasattr(audit_logger, "log_security_event"):
+                        try:
+                            audit_logger.log_security_event("SKILL_HASH_TAMPERED", f"Skill '{clean_name}' on-disk hash changed from {entry.get('sha256')} to {curr_sha256}. Disabled.", severity="HIGH")
+                        except Exception:
+                            pass
                     continue
 
                 is_trusted = bool(entry.get("trusted", False))

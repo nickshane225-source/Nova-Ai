@@ -134,6 +134,66 @@ class TestSkillsHashManifest(unittest.TestCase):
         loaded_after_tamper = skills_engine.load_skills(mode)
         self.assertNotIn("tamper_target", [s.name for s in loaded_after_tamper])
 
+    def test_windows_crlf_skill_approve_restart_tamper_and_security_logging(self):
+        """
+        Item 1 Skills on Windows:
+        - CRLF input preserved across preparation, write_bytes, and read_bytes without newline translation.
+        - Approve, restart -> skill loads cleanly.
+        - Mutate one byte -> skill disabled on restart/reload.
+        - log_security_event exists and records tampering event.
+        """
+        import audit_logger
+        self.assertTrue(hasattr(audit_logger, "log_security_event"))
+        self.assertTrue(hasattr(audit_logger, "log_audit_event"))
+
+        audit_file = self.tmp_path / "data" / "audit.jsonl"
+        audit_logger.set_audit_file(audit_file)
+
+        skill_name = "windows_crlf_tool"
+        raw_crlf_content = "def run():\r\n    msg = 'hello windows'\r\n    return msg\r\n"
+        mode = "developer"
+
+        # 1. Prepare content with CRLF input
+        final_content, final_bytes, expected_sha = skills_engine.prepare_skill_content_to_write(
+            mode=mode, name=skill_name, content=raw_crlf_content
+        )
+        # Verify CRLF is preserved in final bytes
+        self.assertIn(b"\r\n", final_bytes)
+        self.assertEqual(hashlib.sha256(final_bytes).hexdigest(), expected_sha)
+
+        # 2. Approve and install
+        dest = skills_engine.install_user_skill(
+            mode=mode,
+            name=skill_name,
+            content=raw_crlf_content,
+            trusted=True,
+            source="user_ui"
+        )
+        self.assertTrue(dest.exists())
+        self.assertEqual(dest.read_bytes(), final_bytes)
+
+        # 3. Restart (cache invalidate) -> loads cleanly
+        skills_engine.invalidate_cache()
+        loaded = skills_engine.load_skills(mode)
+        loaded_names = [s.name for s in loaded]
+        self.assertIn(skill_name, loaded_names)
+
+        # 4. Tamper by 1 byte
+        tampered_bytes = bytearray(dest.read_bytes())
+        tampered_bytes[-1] = ord("\n") if tampered_bytes[-1] != ord("\n") else ord("\r")
+        dest.write_bytes(bytes(tampered_bytes))
+
+        # 5. Reload -> skill disabled and security event logged
+        skills_engine.invalidate_cache()
+        loaded_after_tamper = skills_engine.load_skills(mode)
+        self.assertNotIn(skill_name, [s.name for s in loaded_after_tamper])
+
+        # Verify security audit event was logged
+        recent = audit_logger.get_recent_audit_events(limit=10)
+        tamper_events = [e for e in recent if e.get("tool") == "SKILL_HASH_TAMPERED"]
+        self.assertTrue(len(tamper_events) > 0, "Expected SKILL_HASH_TAMPERED event in audit log")
+        self.assertIn(skill_name, tamper_events[0]["preview"])
+
 
 if __name__ == "__main__":
     unittest.main()
