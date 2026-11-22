@@ -1347,7 +1347,29 @@ async function renderPanel(name) {
       html += `<button class="btn" id="mobOn">Turn on mobile remote</button>
         <p class="hint">The first time on Windows you may see a firewall prompt: allow Python on <b>Private networks</b>. Nothing is reachable from outside your Wi-Fi.</p>`;
     }
+    html += `<div style="margin:10px 0;padding:8px 10px;border:1px solid rgba(55,214,255,0.22);border-radius:6px;font-size:12px;">
+      <div><b>Chosen LAN Bind IP:</b> <code id="mobBindIpDisplay">${esc(st.bind_ip || "Auto (active Wi-Fi/Ethernet RFC1918)")}</code></div>
+      <div style="display:flex;gap:6px;margin-top:6px;align-items:center;">
+        <input id="mobBindIpInput" placeholder="Auto-detect (or enter RFC1918 IP e.g. 192.168.1.10)" value="${esc((state.config && state.config.remote_bind_ip) || "")}" style="flex:1;font-size:12px;">
+        <button class="btn" id="mobBindIpSave" type="button" style="padding:4px 10px;font-size:11px;">Set Bind IP</button>
+      </div>
+      <div id="mobBindIpMsg" class="hint" style="margin-top:4px;"></div>
+    </div>`;
     body.innerHTML = html;
+    if ($("#mobBindIpSave")) {
+      $("#mobBindIpSave").onclick = async () => {
+        const val = ($("#mobBindIpInput")?.value || "").trim();
+        const r = await api("/api/config", { remote_bind_ip: val });
+        const msgEl = $("#mobBindIpMsg");
+        if (!r || r.ok === false || r.error) {
+          if (msgEl) { msgEl.style.color = "#ff6b81"; msgEl.textContent = (r && r.error) || "Invalid bind IP"; }
+          return;
+        }
+        await loadState();
+        if (on) { await api("/api/remote/enable", { enabled: true }); }
+        renderPanel("mobile");
+      };
+    }
     if ($("#mobOn")) $("#mobOn").onclick = async () => { await api("/api/remote/enable", { enabled: true }); renderPanel("mobile"); };
     if ($("#mobOff")) $("#mobOff").onclick = async () => { await api("/api/remote/enable", { enabled: false }); renderPanel("mobile"); };
     if ($("#regen")) $("#regen").onclick = async () => { await api("/api/remote/regenerate", {}); renderPanel("mobile"); };

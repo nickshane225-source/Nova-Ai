@@ -110,7 +110,7 @@ SECRET_FIELDS = {
 SAFE_STATE_FIELDS = {
     "provider", "model", "base_url", "character", "user_name", "language",
     "voice_rate", "voice_pitch", "voice_volume", "wake_word_enabled",
-    "barge_in_enabled", "port", "remote_enabled", "remote_port",
+    "barge_in_enabled", "port", "remote_enabled", "remote_port", "remote_bind_ip", "remote_idle_timeout_minutes",
     "allow_outside_workspace", "confirm_destructive", "remote_allow_dangerous",
     "process_timeout", "max_tokens", "apps", "run_code_trusted_minutes",
     "encrypt_keys", "mode", "shortcuts", "theme", "smart_home_hosts",
@@ -6188,28 +6188,79 @@ def add_event(**kw):
         return ev
 
 
+_VIRTUAL_ADAPTER_KEYWORDS = (
+    "wsl", "vethernet", "hyper-v", "virtualbox", "vbox", "vmware",
+    "docker", "vpn", "tap", "tun", "wireguard", "tailscale", "zerotier",
+    "loopback", "bluetooth", "hamachi", "nordlynx", "openconnect", "cisco anyconnect",
+)
+_PHYSICAL_ADAPTER_KEYWORDS = ("wi-fi", "wifi", "wireless", "ethernet", "local area connection")
+
+
+def is_rfc1918_ip(ip_str: str) -> bool:
+    """Return True iff ip_str is a valid IPv4 address strictly inside RFC1918 private ranges."""
+    try:
+        addr = ipaddress.IPv4Address(str(ip_str or "").strip())
+    except Exception:
+        return False
+    return (
+        addr in ipaddress.IPv4Network("10.0.0.0/8")
+        or addr in ipaddress.IPv4Network("172.16.0.0/12")
+        or addr in ipaddress.IPv4Network("192.168.0.0/16")
+    )
+
+
+def parse_windows_physical_lan_ips(ipconfig_output: str) -> list[str]:
+    """Parse Windows ipconfig output, returning RFC1918 IPv4 addresses from active physical Wi-Fi/Ethernet adapters."""
+    preferred = []
+    other_physical = []
+    current_adapter = ""
+    for line in (ipconfig_output or "").splitlines():
+        if line and not line.startswith((" ", "	")) and line.rstrip().endswith(":"):
+            current_adapter = line.rstrip().rstrip(":").strip()
+            continue
+        low_ad = current_adapter.lower()
+        if any(vk in low_ad for vk in _VIRTUAL_ADAPTER_KEYWORDS):
+            continue
+        m = re.search(r"IPv4[^:]*:\s*(\d+\.\d+\.\d+\.\d+)", line, re.IGNORECASE)
+        if m:
+            ip = m.group(1).strip()
+            if is_rfc1918_ip(ip):
+                if any(pk in low_ad for pk in _PHYSICAL_ADAPTER_KEYWORDS):
+                    if ip not in preferred:
+                        preferred.append(ip)
+                elif ip not in other_physical:
+                    other_physical.append(ip)
+    return preferred + [ip for ip in other_physical if ip not in preferred]
+
+
 def lan_ips():
-    """Best guess at this PC's address on your Wi-Fi/LAN (most likely first)."""
+    """Return active physical Wi-Fi/Ethernet RFC1918 private-LAN IPv4 addresses (excluding virtual/VPN adapters)."""
+    if OS == "Windows":
+        try:
+            proc = subprocess.run(["ipconfig"], capture_output=True, text=True, timeout=5)
+            if proc.returncode == 0 and proc.stdout:
+                phys = parse_windows_physical_lan_ips(proc.stdout)
+                if phys:
+                    return phys
+        except Exception:
+            pass
     ips = []
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))  # no packet is actually sent
-        ips.append(s.getsockname()[0])
+        s.connect(("8.8.8.8", 80))
+        cand = s.getsockname()[0]
         s.close()
+        if is_rfc1918_ip(cand):
+            ips.append(cand)
     except Exception:
         pass
     try:
         for ip in socket.gethostbyname_ex(socket.gethostname())[2]:
-            if ip not in ips:
+            if is_rfc1918_ip(ip) and ip not in ips:
                 ips.append(ip)
     except Exception:
         pass
-    ips = [i for i in ips if not i.startswith(("127.", "169.254."))]
-
-    def private(i):
-        return i.startswith(("192.168.", "10.")) or re.match(r"^172\.(1[6-9]|2\d|3[01])\.", i)
-
-    return sorted(ips, key=lambda i: 0 if private(i) else 1)
+    return ips
 
 
 def remote_state(reveal=True):
@@ -6273,9 +6324,15 @@ def check_remote_idle() -> bool:
     return False
 
 
-def _remote_idle_monitor_loop():
-    while REMOTE.get("srv"):
-        time.sleep(10.0)
+_REMOTE_MONITOR_LOCK = threading.Lock()
+_REMOTE_MONITOR_THREAD = None
+_REMOTE_MONITOR_STOP = threading.Event()
+
+
+def _remote_idle_monitor_loop(stop_ev: threading.Event):
+    while not stop_ev.wait(10.0):
+        if not REMOTE.get("srv"):
+            break
         try:
             check_remote_idle()
         except Exception:
@@ -6283,11 +6340,17 @@ def _remote_idle_monitor_loop():
 
 
 def start_remote():
+    global _REMOTE_MONITOR_THREAD, _REMOTE_MONITOR_STOP
     cfg = get_config()
     port = int(cfg.get("remote_port", 8766))
     REMOTE["error"] = ""
-    bind_ip = cfg.get("remote_bind_ip")
-    if not bind_ip:
+    raw_bind = str(cfg.get("remote_bind_ip") or "").strip()
+    if raw_bind:
+        if not (is_rfc1918_ip(raw_bind) or raw_bind == "127.0.0.1"):
+            REMOTE["error"] = f"Refused non-private remote_bind_ip '{raw_bind}'. Only RFC1918 private LAN IPs or 127.0.0.1 are permitted."
+            return
+        bind_ip = raw_bind
+    else:
         ips = lan_ips()
         bind_ip = ips[0] if ips else "127.0.0.1"
     try:
@@ -6310,16 +6373,33 @@ def start_remote():
     now = time.time()
     REMOTE["started_at"] = now
     REMOTE["last_seen"] = now
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
-    threading.Thread(target=_remote_idle_monitor_loop, daemon=True).start()
+    threading.Thread(target=srv.serve_forever, daemon=True, name="nova-remote-http").start()
+    with _REMOTE_MONITOR_LOCK:
+        _REMOTE_MONITOR_STOP.set()
+        if _REMOTE_MONITOR_THREAD is not None and _REMOTE_MONITOR_THREAD.is_alive():
+            _REMOTE_MONITOR_THREAD.join(timeout=1.0)
+        _REMOTE_MONITOR_STOP = threading.Event()
+        _REMOTE_MONITOR_THREAD = threading.Thread(
+            target=_remote_idle_monitor_loop,
+            args=(_REMOTE_MONITOR_STOP,),
+            daemon=True,
+            name="nova-remote-idle-monitor",
+        )
+        _REMOTE_MONITOR_THREAD.start()
 
 
 def stop_remote():
+    global _REMOTE_MONITOR_THREAD
+    _REMOTE_MONITOR_STOP.set()
     srv = REMOTE.get("srv")
     if srv:
         REMOTE["srv"] = None
         srv.shutdown()
         srv.server_close()
+    with _REMOTE_MONITOR_LOCK:
+        if _REMOTE_MONITOR_THREAD is not None and _REMOTE_MONITOR_THREAD.is_alive() and _REMOTE_MONITOR_THREAD is not threading.current_thread():
+            _REMOTE_MONITOR_THREAD.join(timeout=1.0)
+        _REMOTE_MONITOR_THREAD = None
 
 
 def set_remote(enabled):
@@ -7178,7 +7258,7 @@ class Handler(BaseHandler):
                     "character", "user_name", "language",
                     "voice_rate", "voice_pitch", "voice_volume",
                     "wake_word_enabled", "barge_in_enabled",
-                    "port", "remote_enabled", "remote_port",
+                    "port", "remote_enabled", "remote_port", "remote_bind_ip", "remote_idle_timeout_minutes",
                     "remote_cert", "remote_allow_dangerous",
                     "allow_outside_workspace", "confirm_destructive",
                     "process_timeout", "max_tokens", "apps",
@@ -7216,6 +7296,10 @@ class Handler(BaseHandler):
                         int(body["remote_port"])
                     except (ValueError, TypeError):
                         return self._send(400, {"ok": False, "error": "remote_port must be an integer"})
+                if "remote_bind_ip" in body:
+                    rbip = str(body["remote_bind_ip"] or "").strip()
+                    if rbip and not (is_rfc1918_ip(rbip) or rbip == "127.0.0.1"):
+                        return self._send(400, {"ok": False, "error": f"Refused non-private remote_bind_ip '{rbip}'. Only RFC1918 private LAN IPs or 127.0.0.1 are allowed."})
                 if "llm_timeout" in body:
                     try:
                         int(body["llm_timeout"])
@@ -7327,7 +7411,7 @@ class Handler(BaseHandler):
                             "error": t_res.get("message", "API key connection test failed."),
                             "mismatch_warning": t_res.get("mismatch_warning"),
                         })
-                for k in ("provider", "model", "base_url", "user_name", "language", "character", "llm_reasoning_effort"):
+                for k in ("provider", "model", "base_url", "user_name", "language", "character", "llm_reasoning_effort", "remote_bind_ip"):
                     if k in body:
                         cfg[k] = str(body[k])
                 for k in ("wake_word_enabled", "barge_in_enabled", "allow_outside_workspace", "confirm_destructive", "remote_enabled", "remote_allow_dangerous", "encrypt_keys", "debug_llm", "telegram_enabled", "discord_enabled", "telegram_allow_groups"):
@@ -7394,6 +7478,10 @@ class Handler(BaseHandler):
                     except (ValueError, TypeError):
                         return self._send(400, {"ok": False, "error": "process_timeout must be an integer between 1 and 300"})
 
+                if "remote_bind_ip" in body:
+                    rbip = str(body["remote_bind_ip"] or "").strip()
+                    if rbip and not (is_rfc1918_ip(rbip) or rbip == "127.0.0.1"):
+                        return self._send(400, {"ok": False, "error": f"Refused non-private remote_bind_ip '{rbip}'. Only RFC1918 private LAN IPs or 127.0.0.1 are allowed."})
                 if "llm_timeout" in body:
                     try:
                         v = int(body["llm_timeout"])
