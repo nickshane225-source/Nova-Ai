@@ -131,7 +131,7 @@ def execute_plan_batch(
             }
         try:
             t_step_start = time.time()
-            plan["get_active_seconds"] = lambda: accumulated_active + max(0.0, time.time() - t_step_start)
+            plan["_step_started_at"] = t_step_start
             if runner is not None:
                 if takes_extra_args:
                     res = runner(step, idx, all_steps, completed, step_results)
@@ -142,6 +142,7 @@ def execute_plan_batch(
             step_duration = max(0.0, time.time() - t_step_start)
             accumulated_active += step_duration
             plan["active_seconds"] = accumulated_active
+            plan.pop("_step_started_at", None)
 
             step_timeout = float(cfg.get("plan_step_timeout", 60.0))
             if step_duration > step_timeout:

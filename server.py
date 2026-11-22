@@ -4672,8 +4672,9 @@ def create_plan_step_runner(plan_info, cfg, source="pc", mode="developer", is_ta
 
         if needs_confirm:
             rem_steps = all_steps[idx:] if idx < len(all_steps) else []
-            get_act = plan_info.get("get_active_seconds")
-            cur_active = get_act() if callable(get_act) else plan_info.get("active_seconds", 0.0)
+
+            step_started_at = plan_info.get("_step_started_at")
+            cur_active = float(plan_info.get("active_seconds", 0.0)) + (max(0.0, time.time() - float(step_started_at)) if step_started_at else 0.0)
             plan_state = {
                 "plan_id": plan_info.get("plan_id"),
                 "title": plan_info.get("title", "Execution Plan"),
@@ -6011,7 +6012,11 @@ def _chat_inner(user_text, source, jid, mode="developer", is_automation=False, c
                             RUN_CODE_TRUST_STATE.record_approval()
                     elif pending.get("is_tainted") or is_file_tainted_provenance(pending.get("arg", ""))[0]:
                         RUN_CODE_TRUST_STATE.invalidate()
+                    t_gated_start = time.time()
                     res = run_skill(cfg, pending["name"], pending["arg"], source=source, is_confirmed=True, mode=pending.get("mode", mode), is_tainted=pending.get("is_tainted", False), conv_id=conv_id)
+                    gated_elapsed = max(0.0, time.time() - t_gated_start)
+                    if pending.get("plan_state"):
+                        pending["plan_state"]["active_seconds"] = float(pending["plan_state"].get("active_seconds", 0.0)) + gated_elapsed
                     if pending.get("plan_state"):
                         p_state = pending["plan_state"]
                         p_conv = p_state.get("conv_id") or conv_id
@@ -7196,7 +7201,11 @@ class Handler(BaseHandler):
                 if pending.get("is_tainted") or pending.get("plan_state", {}).get("is_tainted"):
                     CONVERSATION_TAINT[p_conv] = True
                     RUN_CODE_TRUST_STATE.invalidate()
+                t_gated_start = time.time()
                 res = run_skill(cfg, pending["name"], pending["arg"], source=pending.get("source", "pc"), is_confirmed=True, mode=pending.get("mode", "developer"), is_tainted=pending.get("is_tainted", False), conv_id=p_conv)
+                gated_elapsed = max(0.0, time.time() - t_gated_start)
+                if pending.get("plan_state"):
+                    pending["plan_state"]["active_seconds"] = float(pending["plan_state"].get("active_seconds", 0.0)) + gated_elapsed
                 if pending.get("plan_state"):
                     plan_res = resume_plan_execution(pending["plan_state"], last_result=res, cfg=cfg)
                     if isinstance(plan_res, dict) and plan_res.get("paused"):
