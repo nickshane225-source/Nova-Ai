@@ -222,8 +222,8 @@ class TestServerRegression(unittest.TestCase):
                 urllib.request.urlopen(bad_req)
             self.assertEqual(ctx.exception.code, 401)
 
-            # 2. Lockout after 5 fails -> 429
-            for _ in range(4):
+            # 2. Lockout after 8 fails -> 9th attempt 429
+            for _ in range(7):
                 with self.assertRaises(urllib.error.HTTPError):
                     urllib.request.urlopen(bad_req)
             with self.assertRaises(urllib.error.HTTPError) as ctx:

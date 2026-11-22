@@ -76,17 +76,17 @@ def mask_secrets(text: str, cfg: dict = None) -> str:
     if isinstance(cfg, dict):
         for k, v in cfg.items():
             kl = str(k).lower()
-            if isinstance(v, str) and len(v) >= 6 and any(w in kl for w in ("key", "token", "secret", "password", "pairing")):
+            if isinstance(v, str) and len(v) >= 8 and any(w in kl for w in ("key", "token", "secret", "password", "pairing")):
                 secret_vals.append(v)
     if callable(_SECRET_VALUES_PROVIDER):
         try:
             for v in (_SECRET_VALUES_PROVIDER() or ()):
-                if isinstance(v, str) and len(v) >= 6:
+                if isinstance(v, str) and len(v) >= 8:
                     secret_vals.append(v)
         except Exception:
             pass
     for val in sorted(set(secret_vals), key=len, reverse=True):
-        if val in masked:
+        if len(val) >= 8 and val in masked:
             masked = masked.replace(val, "[MASKED_SECRET]")
     for pat in _SECRET_PATTERNS:
         masked = pat.sub("[MASKED_SECRET]", masked)

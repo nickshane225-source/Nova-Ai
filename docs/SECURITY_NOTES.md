@@ -70,7 +70,8 @@ Nova AI has undergone extensive security hardening, eliminating all 45 Critical,
 * **Threat Profile:** An adversary connected to the same local Wi-Fi or LAN could passively capture network traffic, potentially observing unencrypted command text or device authorization tokens.
 * **Mitigating Controls:**
   - Remote mobile service binds strictly to the private-LAN interface (or loopback) instead of `0.0.0.0`, preventing exposure to WAN/external networks.
-  - Mandatory per-device authorization token validation (`X-Nova-Token` or Bearer) with strict rate limiting and 15-minute brute-force lockout after repeated failures.
+  - Mandatory per-device authorization token validation (`X-Nova-Token` or Bearer) with strict rate limiting and 15-minute brute-force lockout after repeated failures (8 failed attempts, 9th locked out).
+  - **Accepted Residual Risk — LAN Lockout Denial of Service (DoS):** Because brute-force lockout tracks failed attempts by client IP and device identifier, an attacker or unauthorized device on the local Wi-Fi that sends 8 invalid authentication attempts will lock out that IP for 15 minutes (`HTTP 429`). On shared LANs or subnets sharing an IP address, this can temporarily prevent legitimate devices from authenticating until the 15-minute lockout expires or until the PC user toggles Mobile Remote off/on or rotates the token. This LAN lockout DoS is an accepted residual risk: protecting the desktop against unauthenticated brute-force attacks is prioritized over LAN retry tolerance.
   - In-UI security warning banner prominently displayed whenever mobile remote is enabled.
   - Configurable idle auto-disable timer (`remote_idle_timeout_minutes`, default 30 minutes) shutting down the port when inactive.
   - TLS/HTTPS support can be enabled by configuring `remote_cert` and `remote_key` in `data/config.json`.

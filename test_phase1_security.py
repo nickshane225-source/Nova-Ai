@@ -323,11 +323,11 @@ class TestPhase1Security(unittest.TestCase):
 
         with patch("server.get_config", return_value={"remote_enabled": True, "remote_token": "correct-secret-token-32-chars-long"}):
             req = MockRemoteRequest("192.168.1.100")
-            for i in range(5):
+            for i in range(8):
                 ok = req._auth()
                 self.assertFalse(ok)
                 self.assertEqual(req.status, 401)
-            # 6th attempt -> 429 lockout
+            # 9th attempt -> 429 lockout
             ok = req._auth()
             self.assertFalse(ok)
             self.assertEqual(req.status, 429)

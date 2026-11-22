@@ -3348,12 +3348,12 @@ def _collect_configured_secrets(cfg: dict = None) -> list[str]:
         conf = cfg if cfg is not None else (get_config() if callable(globals().get("get_config")) else {})
         if isinstance(conf, dict):
             for k, val in conf.items():
-                if (k in SECRET_FIELDS or is_secret_field(k)) and isinstance(val, str) and len(val) >= 4:
+                if (k in SECRET_FIELDS or is_secret_field(k)) and isinstance(val, str) and len(val) >= 8:
                     vals.append(val)
                     if val.startswith("dpapi:"):
                         try:
                             dec = decrypt_dpapi(val)
-                            if dec and len(dec) >= 4:
+                            if dec and len(dec) >= 8:
                                 vals.append(dec)
                         except Exception:
                             pass
@@ -3375,15 +3375,16 @@ def mask_secrets(text: str, cfg: dict = None) -> str:
         return text
 
     # Mask all configured secret values (keys, bot tokens, pairing/remote/session tokens)
+    # Values shorter than 8 characters are skipped to avoid corrupting common words/tokens
     for val in _collect_configured_secrets(cfg):
-        if val in text:
+        if len(val) >= 8 and val in text:
             text = text.replace(val, val[:4] + "****")
     try:
         conf = cfg if cfg is not None else (get_config() if callable(globals().get("get_config")) else {})
         if isinstance(conf, dict):
             for sec_key in SECRET_FIELDS:
                 val = conf.get(sec_key)
-                if val and isinstance(val, str) and len(val) >= 4:
+                if val and isinstance(val, str) and len(val) >= 8:
                     text = text.replace(val, val[:4] + "****")
     except Exception:
         pass
@@ -8013,14 +8014,20 @@ class RemoteHandler(BaseHandler):
             return False
         ip = self.client_address[0]
         now = time.time()
+        dev_id = (self.headers.get("X-Device-Id") or "").strip()
+        lockout_keys = [ip]
+        if dev_id:
+            lockout_keys.append(f"dev:{dev_id}")
+
         with FAILS_LOCK:
-            rec = FAILS.get(ip)
-            if rec and now - rec[1] > 900:
-                FAILS.pop(ip, None)
-                rec = None
-            if rec and rec[0] >= 5:
-                self._send(429, {"error": "Too many wrong attempts. Locked out for 15 minutes."})
-                return False
+            for lk in lockout_keys:
+                rec = FAILS.get(lk)
+                if rec and now - rec[1] > 900:
+                    FAILS.pop(lk, None)
+                    rec = None
+                if rec and rec[0] >= 8:
+                    self._send(429, {"error": "Too many wrong attempts. Locked out for 15 minutes."})
+                    return False
         auth_hdr = self.headers.get("Authorization", "")
         tok_str = ""
         if auth_hdr.lower().startswith("bearer "):
@@ -8042,12 +8049,14 @@ class RemoteHandler(BaseHandler):
 
         if matched:
             with FAILS_LOCK:
-                FAILS.pop(ip, None)
+                for lk in lockout_keys:
+                    FAILS.pop(lk, None)
             REMOTE["last_seen"] = now
             return True
         with FAILS_LOCK:
-            r = FAILS.setdefault(ip, [0, now])
-            r[0] += 1
+            for lk in lockout_keys:
+                r = FAILS.setdefault(lk, [0, now])
+                r[0] += 1
         self._send(401, {"error": "Not paired. Scan the QR code on your PC again."})
         return False
 
