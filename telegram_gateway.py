@@ -133,6 +133,15 @@ class TelegramGateway:
     def send_message(self, chat_id: Any, text: str) -> bool:
         if not self.token or not text:
             return False
+        try:
+            import server as _srv
+            text = _srv.mask_secrets(str(text))
+        except Exception:
+            try:
+                import audit_logger as _al
+                text = _al.mask_secrets(str(text))
+            except Exception:
+                pass
         url = self.get_api_url("sendMessage")
         payload = json.dumps({
             "chat_id": chat_id,
@@ -144,7 +153,13 @@ class TelegramGateway:
             with urllib.request.urlopen(req, timeout=10) as resp:
                 return resp.status == 200
         except Exception as e:
-            logger.error(f"[Telegram] Failed to send message to {chat_id}: {e}")
+            err_s = str(e)
+            try:
+                import server as _srv
+                err_s = _srv.mask_secrets(err_s)
+            except Exception:
+                pass
+            logger.error(f"[Telegram] Failed to send message to {chat_id}: {err_s}")
             return False
 
     def send_approval_announcement(self, chat_id: Any, pending: Dict[str, Any], prefix_text: str = "") -> None:

@@ -29,7 +29,9 @@ _LOCK = threading.Lock()
 _SECRET_PATTERNS = [
     re.compile(r"(?:sk-[a-zA-Z0-9_\-]{8,})", re.IGNORECASE),
     re.compile(r"(?:ghp_[a-zA-Z0-9]{10,})", re.IGNORECASE),
+    re.compile(r"(?:github_pat_[a-zA-Z0-9_]{10,})", re.IGNORECASE),
     re.compile(r"(?:AIza[0-9A-Za-z\-_]{10,})", re.IGNORECASE),
+    re.compile(r"AQ\.[A-Za-z0-9_.\-]{20,}"),
     re.compile(r"(?:\b\d{8,12}:[A-Za-z0-9_\-]{25,}\b)"),  # Telegram bot token
     re.compile(r"(?:\b[MN][A-Za-z\d]{23,28}\.[\w-]{6}\.[\w-]{27,40}\b)"),  # Discord bot token
     re.compile(r"(?:bearer\s+[a-zA-Z0-9_\-\.]{8,})", re.IGNORECASE),
@@ -56,11 +58,36 @@ def get_audit_file() -> Path:
         return _AUDIT_FILE
 
 
-def mask_secrets(text: str) -> str:
-    """Mask known secret patterns from command arguments and previews."""
+_SECRET_VALUES_PROVIDER = None
+
+
+def register_secret_values_provider(fn) -> None:
+    """Register a callable returning current configured secret string values."""
+    global _SECRET_VALUES_PROVIDER
+    _SECRET_VALUES_PROVIDER = fn
+
+
+def mask_secrets(text: str, cfg: dict = None) -> str:
+    """Mask known secret values and secret patterns from text."""
     if not text or not isinstance(text, str):
         return ""
     masked = text
+    secret_vals = []
+    if isinstance(cfg, dict):
+        for k, v in cfg.items():
+            kl = str(k).lower()
+            if isinstance(v, str) and len(v) >= 6 and any(w in kl for w in ("key", "token", "secret", "password", "pairing")):
+                secret_vals.append(v)
+    if callable(_SECRET_VALUES_PROVIDER):
+        try:
+            for v in (_SECRET_VALUES_PROVIDER() or ()):
+                if isinstance(v, str) and len(v) >= 6:
+                    secret_vals.append(v)
+        except Exception:
+            pass
+    for val in sorted(set(secret_vals), key=len, reverse=True):
+        if val in masked:
+            masked = masked.replace(val, "[MASKED_SECRET]")
     for pat in _SECRET_PATTERNS:
         masked = pat.sub("[MASKED_SECRET]", masked)
     return masked
@@ -79,7 +106,7 @@ def log_audit_event(
     Thread-safe and fail-safe.
     """
     now_utc = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    clean_preview = mask_secrets(preview)
+    clean_preview = mask_secrets(preview, cfg=cfg)
     was_truncated = False
     if len(clean_preview) > 500:
         clean_preview = clean_preview[:500]

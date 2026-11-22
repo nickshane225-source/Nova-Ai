@@ -89,13 +89,28 @@ class DiscordGateway:
         if not content:
             return False
         # Discord character limit is 2000
+        try:
+            import server as _srv
+            content = _srv.mask_secrets(str(content))
+        except Exception:
+            try:
+                import audit_logger as _al
+                content = _al.mask_secrets(str(content))
+            except Exception:
+                pass
         max_len = 1950
         chunks = [content[i : i + max_len] for i in range(0, len(content), max_len)]
         for chunk in chunks:
             try:
                 self._api_request(f"/channels/{channel_id}/messages", data={"content": chunk}, method="POST")
             except Exception as e:
-                logger.error(f"[Discord Gateway] Failed to send message to {channel_id}: {e}")
+                err_s = str(e)
+                try:
+                    import server as _srv
+                    err_s = _srv.mask_secrets(err_s)
+                except Exception:
+                    pass
+                logger.error(f"[Discord Gateway] Failed to send message to {channel_id}: {err_s}")
                 return False
         return True
 

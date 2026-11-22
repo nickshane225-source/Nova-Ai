@@ -713,11 +713,11 @@ def http_post(url, headers, body, timeout=90):
                 usage_info = parsed["usage"]
         except Exception:
             pass
-        err = LLMError(f"API error {e.code}: {detail[:400]}")
+        err = LLMError(f"API error {e.code}: {mask_secrets(detail[:400])}")
         err.usage = usage_info
         raise err
     except Exception as e:
-        raise LLMError(f"Could not reach the AI provider: {e}")
+        raise LLMError(mask_secrets(f"Could not reach the AI provider: {e}"))
 
 
 def _call_single_llm(cfg, system, messages):
@@ -3214,11 +3214,43 @@ def is_windows_reserved_name(raw: str) -> bool:
             return True
     return False
 
+def _collect_configured_secrets(cfg: dict = None) -> list[str]:
+    """Collects all configured secret values (keys, bot tokens, pairing/remote/session tokens)."""
+    vals: list[str] = []
+    try:
+        conf = cfg if cfg is not None else (get_config() if callable(globals().get("get_config")) else {})
+        if isinstance(conf, dict):
+            for k, val in conf.items():
+                if (k in SECRET_FIELDS or is_secret_field(k)) and isinstance(val, str) and len(val) >= 4:
+                    vals.append(val)
+                    if val.startswith("dpapi:"):
+                        try:
+                            dec = decrypt_dpapi(val)
+                            if dec and len(dec) >= 4:
+                                vals.append(dec)
+                        except Exception:
+                            pass
+    except Exception:
+        pass
+    for gname in ("SESSION_TOKEN", "API_SESSION_TOKEN"):
+        gv = globals().get(gname)
+        if isinstance(gv, str) and len(gv) >= 8:
+            vals.append(gv)
+    return sorted(set(vals), key=len, reverse=True)
+
+
+if audit_logger and hasattr(audit_logger, "register_secret_values_provider"):
+    audit_logger.register_secret_values_provider(_collect_configured_secrets)
+
+
 def mask_secrets(text: str, cfg: dict = None) -> str:
     if not isinstance(text, str) or not text:
         return text
 
-    # Mask known config secret values
+    # Mask all configured secret values (keys, bot tokens, pairing/remote/session tokens)
+    for val in _collect_configured_secrets(cfg):
+        if val in text:
+            text = text.replace(val, val[:4] + "****")
     try:
         conf = cfg if cfg is not None else (get_config() if callable(globals().get("get_config")) else {})
         if isinstance(conf, dict):
@@ -3254,6 +3286,41 @@ def mask_secrets(text: str, cfg: dict = None) -> str:
     text = re.sub(
         r'\bsk-[a-zA-Z0-9_\-]{8,}\b',
         lambda m: m.group(0)[:7] + "****",
+        text
+    )
+
+    # Google AI Studio AQ. keys
+    text = re.sub(
+        r'AQ\.[A-Za-z0-9_.\-]{20,}',
+        'AQ.****',
+        text
+    )
+
+    # Google legacy AIza keys
+    text = re.sub(
+        r'AIza[0-9A-Za-z\-_]{15,}',
+        'AIza****',
+        text
+    )
+
+    # GitHub tokens
+    text = re.sub(
+        r'\b(?:ghp_[A-Za-z0-9]{10,}|github_pat_[A-Za-z0-9_]{10,})\b',
+        lambda m: m.group(0)[:4] + "****",
+        text
+    )
+
+    # Telegram bot token
+    text = re.sub(
+        r'\b\d{8,12}:[A-Za-z0-9_\-]{25,}\b',
+        '****:****',
+        text
+    )
+
+    # Discord bot token
+    text = re.sub(
+        r'\b[MN][A-Za-z\d]{23,28}\.[\w-]{6}\.[\w-]{27,40}\b',
+        '****.****.****',
         text
     )
 
@@ -6614,9 +6681,9 @@ class Handler(BaseHandler):
             return self._send(
                 200,
                 {
-                    "config": safe,
+                    "config": mask_telemetry(safe, cfg),
                     "characters": get_characters(),
-                    "memory": get_memory(),
+                    "memory": mask_telemetry(get_memory(), cfg),
                     "presets": PRESETS,
                     "os": OS,
                     "workspace": str(WORKSPACE),
@@ -7579,9 +7646,9 @@ class Handler(BaseHandler):
                 except Exception as e:
                     return self._send(200, {"ok": False, "error": str(e)})
         except LLMError as e:
-            return self._send(200, {"error": str(e)})
+            return self._send(200, {"error": mask_secrets(str(e))})
         except Exception as e:
-            return self._send(500, {"error": f"{type(e).__name__}: {e}"})
+            return self._send(500, {"error": mask_secrets(f"{type(e).__name__}: {e}")})
         self._send(404, {"error": "not found"})
 
 
@@ -7720,9 +7787,9 @@ class RemoteHandler(BaseHandler):
             try:
                 return self._send(200, chat(text, source="phone", mode=mode))
             except LLMError as e:
-                return self._send(200, {"error": str(e)})
+                return self._send(200, {"error": mask_secrets(str(e))})
             except Exception as e:
-                return self._send(500, {"error": f"{type(e).__name__}: {e}"})
+                return self._send(500, {"error": mask_secrets(f"{type(e).__name__}: {e}")})
         self._send(404, {"error": "not found"})
 
 
