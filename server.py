@@ -2332,6 +2332,8 @@ def create_pending_action(
 
     # 3. Preview formatting & large tainted WRITE_FILE summary
     image_preview = None
+    captured_image_bytes = None
+    pc_only = False
     if clean_name == "WRITE_FILE" and is_tainted and len(raw_arg) > 20000:
         first_500 = raw_arg[:500]
         last_500 = raw_arg[-500:]
@@ -2345,28 +2347,32 @@ def create_pending_action(
         cfg_vision = cfg if isinstance(cfg, dict) else get_config()
         preview_opt = cfg_vision.get("vision_preview")
         should_preview = preview_opt if isinstance(preview_opt, bool) else (is_tainted or source != "pc")
+        if is_tainted or source != "pc":
+            pc_only = True
         if should_preview:
             active_title = get_active_window_title()
             blocked, matched_pat = is_sensitive_vision_window(active_title, cfg=cfg_vision)
             if blocked:
-                preview_str = f"[VISION REFUSED: Active window matches sensitive pattern '{matched_pat}']\nPrompt: {raw_arg}"
-            else:
-                try:
-                    import base64
-                    save_dir = WORKSPACE / "screenshots"
-                    save_dir.mkdir(parents=True, exist_ok=True)
-                    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                    target = save_dir / f"preview_{stamp}.png"
-                    captured = _capture_desktop_png(target)
-                    if captured and captured.exists():
-                        raw_bytes = captured.read_bytes()
-                        b64 = base64.b64encode(raw_bytes).decode("ascii")
-                        image_preview = f"data:image/png;base64,{b64}"
-                        preview_str = f"[DESKTOP SCREENSHOT PREVIEW CAPTURED - {len(raw_bytes)} bytes]\nPrompt: {raw_arg}\nImage will be transmitted to AI cloud upon confirmation."
-                    else:
-                        preview_str = raw_arg
-                except Exception as e:
-                    preview_str = f"[Screenshot capture failed: {e}]\nPrompt: {raw_arg}"
+                return None, None, f"Vision capture refused: active window matches sensitive pattern '{matched_pat}' (password manager / banking protection)."
+
+            try:
+                import base64
+                save_dir = WORKSPACE / "screenshots"
+                save_dir.mkdir(parents=True, exist_ok=True)
+                stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                target = save_dir / f"preview_{stamp}.png"
+                captured = _capture_desktop_png(target)
+                if not captured or not captured.exists():
+                    return None, None, "Refused: Vision preview was required but could not be produced."
+                raw_bytes = target.read_bytes()
+                if not raw_bytes:
+                    return None, None, "Refused: Vision preview was required but could not be produced."
+                b64 = base64.b64encode(raw_bytes).decode("ascii")
+                image_preview = f"data:image/png;base64,{b64}"
+                captured_image_bytes = raw_bytes
+                preview_str = f"[DESKTOP SCREENSHOT PREVIEW CAPTURED - {len(raw_bytes)} bytes]\nPrompt: {raw_arg}\nImage will be transmitted to AI cloud upon confirmation."
+            except Exception as e:
+                return None, None, f"Refused: Vision preview was required but could not be produced ({e})."
         else:
             preview_str = raw_arg
     elif clean_name in ("INSTALL_SKILL", "ADD_SKILL"):
@@ -2393,8 +2399,9 @@ def create_pending_action(
         prompt = f"[{g_verdict}] {reason}" if g_verdict not in ("NONE", None, "") else (reason or f"Confirm: {clean_name}?")
     clean_prompt, _ = sanitize_preview(prompt)
 
-    # 5. pc_only for oversized gateway payloads
-    pc_only = False
+    # 5. pc_only for oversized gateway payloads or vision from non-pc/tainted contexts
+    if not pc_only:
+        pc_only = False
     if source == "discord" and (len(clean_preview) > 1850 or len(clean_prompt) > 1850 or len(raw_arg) > 1850):
         pc_only = True
     elif source == "telegram" and (len(clean_preview) > 3900 or len(clean_prompt) > 3900 or len(raw_arg) > 3900):
@@ -2425,6 +2432,10 @@ def create_pending_action(
     }
     if pc_only:
         pending_entry["pc_only"] = True
+    if captured_image_bytes is not None:
+        pending_entry["captured_image_bytes"] = captured_image_bytes
+    if image_preview is not None:
+        pending_entry["image_preview"] = image_preview
     if plan_state is not None:
         pending_entry["plan_state"] = plan_state
 
@@ -3916,17 +3927,17 @@ def is_sensitive_vision_window(title: str, cfg: dict = None) -> tuple[bool, str]
     return False, ""
 
 
-def skill_screen_analyze(question=""):
+def skill_screen_analyze(question="", captured_bytes=None):
     cfg_check = get_config()
-    active_title = get_active_window_title()
-    blocked, matched_pat = is_sensitive_vision_window(active_title, cfg=cfg_check)
-    if blocked:
-        add_event(type="vision_end", status="blocked")
-        return f"Vision capture refused: active window matches sensitive pattern '{matched_pat}' (password manager / banking protection)."
-    add_event(type="vision_start", message="Transmitting desktop screenshot to AI cloud provider...")
-    try:
-        import base64
-        cfg = get_config()
+    if captured_bytes:
+        raw_bytes = captured_bytes
+    else:
+        active_title = get_active_window_title()
+        blocked, matched_pat = is_sensitive_vision_window(active_title, cfg=cfg_check)
+        if blocked:
+            add_event(type="vision_end", status="blocked")
+            return f"Vision capture refused: active window matches sensitive pattern '{matched_pat}' (password manager / banking protection)."
+        add_event(type="vision_start", message="Transmitting desktop screenshot to AI cloud provider...")
         save_dir = WORKSPACE / "screenshots"
         save_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -3935,8 +3946,11 @@ def skill_screen_analyze(question=""):
         if not captured or not captured.exists():
             add_event(type="vision_end", status="failed")
             return "Could not capture screenshot for vision analysis."
-
         raw_bytes = target.read_bytes()
+
+    try:
+        import base64
+        cfg = get_config()
         b64_img = base64.b64encode(raw_bytes).decode("ascii")
         prompt = question.strip() if question.strip() else "What is currently visible on my screen? Provide a concise summary or identify any errors/relevant items."
         res = call_llm_vision(cfg, prompt, b64_img)
@@ -5268,7 +5282,7 @@ def resume_plan_execution(plan_state: dict, last_result=None, cfg=None, turn_too
         return _execute_worker()
 
 
-def run_skill(cfg, name, arg, source="pc", is_confirmed=False, mode="developer", is_tainted=False, conv_id=None, turn_tool_executions=None):
+def run_skill(cfg, name, arg, source="pc", is_confirmed=False, mode="developer", is_tainted=False, conv_id=None, turn_tool_executions=None, captured_bytes=None):
     try:
         name = name.strip().upper()
         raw_arg = (arg or "").strip()
@@ -5480,7 +5494,7 @@ def run_skill(cfg, name, arg, source="pc", is_confirmed=False, mode="developer",
         if name in ("ACTIVE_WINDOW", "GET_WINDOW"):
             return get_active_window_info()
         if name in ("VISION", "SCREEN_ANALYZE"):
-            return skill_screen_analyze(raw_arg)
+            return skill_screen_analyze(raw_arg, captured_bytes=captured_bytes)
         if name == "NOTE":
             if not memory_engine:
                 return "Memory engine not available."
@@ -6093,6 +6107,12 @@ def _chat_inner(user_text, source, jid, mode="developer", is_automation=False, c
                             break
 
             if same_source and under_60s and last_is_prompt:
+                if source != "pc" and pending.get("pc_only"):
+                    reply = f"Approval for {pending.get('name', 'action')} must be performed directly on the PC so the preview can be reviewed."
+                    with LOCK:
+                        hist.append(user_msg)
+                        hist.append({"role": "assistant", "content": reply})
+                    return {"reply": reply, "actions": []}
 
                 if is_approve_word:
                     PENDING_ACTIONS.pop(pending["id"], None)
@@ -6109,7 +6129,7 @@ def _chat_inner(user_text, source, jid, mode="developer", is_automation=False, c
                     elif pending.get("is_tainted") or is_file_tainted_provenance(pending.get("arg", ""))[0]:
                         RUN_CODE_TRUST_STATE.invalidate()
                     t_gated_start = time.time()
-                    res = run_skill(cfg, pending["name"], pending["arg"], source=source, is_confirmed=True, mode=pending.get("mode", mode), is_tainted=pending.get("is_tainted", False), conv_id=conv_id)
+                    res = run_skill(cfg, pending["name"], pending["arg"], source=source, is_confirmed=True, mode=pending.get("mode", mode), is_tainted=pending.get("is_tainted", False), conv_id=conv_id, captured_bytes=pending.get("captured_image_bytes"))
                     gated_elapsed = max(0.0, time.time() - t_gated_start)
                     if pending.get("plan_state"):
                         pending["plan_state"]["active_seconds"] = float(pending["plan_state"].get("active_seconds", 0.0)) + gated_elapsed
@@ -7300,7 +7320,7 @@ class Handler(BaseHandler):
                     CONVERSATION_TAINT[p_conv] = True
                     RUN_CODE_TRUST_STATE.invalidate()
                 t_gated_start = time.time()
-                res = run_skill(cfg, pending["name"], pending["arg"], source=pending.get("source", "pc"), is_confirmed=True, mode=pending.get("mode", "developer"), is_tainted=pending.get("is_tainted", False), conv_id=p_conv)
+                res = run_skill(cfg, pending["name"], pending["arg"], source=pending.get("source", "pc"), is_confirmed=True, mode=pending.get("mode", "developer"), is_tainted=pending.get("is_tainted", False), conv_id=p_conv, captured_bytes=pending.get("captured_image_bytes"))
                 gated_elapsed = max(0.0, time.time() - t_gated_start)
                 if pending.get("plan_state"):
                     pending["plan_state"]["active_seconds"] = float(pending["plan_state"].get("active_seconds", 0.0)) + gated_elapsed

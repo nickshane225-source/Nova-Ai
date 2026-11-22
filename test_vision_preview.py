@@ -110,14 +110,124 @@ class TestVisionPreview(unittest.TestCase):
                 reason="Check passwords"
             )
 
-            # Execution via skill_screen_analyze
+            # Execution via skill_screen_analyze directly also refuses
             res = server.skill_screen_analyze("show passwords")
 
-        self.assertIn("VISION REFUSED", p_entry["preview"])
-        self.assertIn("1password", p_entry["preview"].lower())
-        self.assertNotIn("image_preview", p_entry)
+        self.assertIsNone(p_entry)
+        self.assertIsNotNone(err)
+        self.assertIn("refused", err.lower())
+        self.assertIn("1password", err.lower())
         self.assertIn("Vision capture refused", res)
         self.assertIn("1password", res.lower())
+
+    def test_bytes_sent_equals_bytes_previewed_and_no_second_capture(self):
+        """
+        Item 2: Vision preview
+        - Capture ONCE at confirmation time.
+        - Store exact bytes in the pending entry.
+        - Send exactly those bytes after approval (no second capture).
+        """
+        import base64
+        cfg = {"vision_preview": True}
+        capture_calls = []
+
+        def _tracking_capture(target_path):
+            target = Path(target_path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(self.fake_png)
+            capture_calls.append(str(target))
+            return target
+
+        with patch.object(server, "get_active_window_title", return_value="Desktop Explorer"), \
+             patch.object(server, "_capture_desktop_png", side_effect=_tracking_capture):
+            p_entry, p_info, err = server.create_pending_action(
+                cfg=cfg,
+                name="VISION",
+                arg="what is on screen",
+                source="pc",
+                is_tainted=True,
+                reason="Review screen"
+            )
+
+        self.assertIsNone(err)
+        self.assertIsNotNone(p_entry)
+        self.assertEqual(len(capture_calls), 1, "Must capture exactly once at confirmation time")
+        self.assertIn("captured_image_bytes", p_entry)
+        self.assertEqual(p_entry["captured_image_bytes"], self.fake_png)
+
+        # Base64 in preview must match the exact captured bytes
+        expected_b64 = base64.b64encode(self.fake_png).decode("ascii")
+        self.assertEqual(p_entry["image_preview"], f"data:image/png;base64,{expected_b64}")
+
+        # Now simulate approval execution
+        captured_vision_payloads = []
+
+        def _mock_call_llm_vision(c, prompt, b64_img):
+            captured_vision_payloads.append((prompt, b64_img))
+            return "Vision analysis result"
+
+        with patch.object(server, "call_llm_vision", side_effect=_mock_call_llm_vision), \
+             patch.object(server, "_capture_desktop_png", side_effect=_tracking_capture):
+            res = server.run_skill(
+                cfg=cfg,
+                name=p_entry["name"],
+                arg=p_entry["arg"],
+                source="pc",
+                is_confirmed=True,
+                captured_bytes=p_entry.get("captured_image_bytes"),
+            )
+
+        # Assert no second screenshot capture occurred!
+        self.assertEqual(len(capture_calls), 1, "Must NOT take a second screenshot during approved execution")
+        # Assert exact bytes were sent
+        self.assertEqual(len(captured_vision_payloads), 1)
+        self.assertEqual(captured_vision_payloads[0][1], expected_b64)
+        self.assertIn("Vision analysis result", res)
+
+    def test_missing_preview_causes_action_refusal(self):
+        """If a preview was required and cannot be produced, refuse the action."""
+        cfg = {"vision_preview": True}
+        # Simulate capture returning None / failing
+        with patch.object(server, "get_active_window_title", return_value="Desktop Explorer"), \
+             patch.object(server, "_capture_desktop_png", return_value=None):
+            p_entry, p_info, err = server.create_pending_action(
+                cfg=cfg,
+                name="VISION",
+                arg="check screen",
+                source="pc",
+                is_tainted=False,
+                reason="Required preview failure"
+            )
+
+        self.assertIsNone(p_entry)
+        self.assertIsNone(p_info)
+        self.assertIsNotNone(err)
+        self.assertIn("Refused: Vision preview was required but could not be produced", err)
+
+    def test_non_pc_or_tainted_vision_is_pc_only(self):
+        """Vision from non-PC or tainted contexts is approvable on the PC only (pc_only)."""
+        cfg = {"vision_preview": True}
+        with patch.object(server, "get_active_window_title", return_value="Desktop Explorer"), \
+             patch.object(server, "_capture_desktop_png", side_effect=self._mock_capture):
+            p_entry, p_info, err = server.create_pending_action(
+                cfg=cfg,
+                name="VISION",
+                arg="inspect screen",
+                source="telegram",
+                is_tainted=False,
+                reason="Telegram vision call"
+            )
+
+        self.assertIsNone(err)
+        self.assertIsNotNone(p_entry)
+        self.assertTrue(p_entry.get("pc_only"), "Non-PC vision call must be flagged pc_only")
+        self.assertTrue(p_info.get("pc_only"), "Pending info must be flagged pc_only")
+
+    def test_zero_pillow_or_third_party_imports(self):
+        """Verify NO Pillow or third-party imaging dependencies exist in the codebase."""
+        import sys
+        for mod in ("PIL", "PIL.Image", "PIL.ImageGrab", "pillow"):
+            self.assertNotIn(mod, sys.modules)
 
 
 if __name__ == "__main__":
