@@ -67,7 +67,7 @@ class TestAuditLogger(unittest.TestCase):
         )
         self.assertNotIn("ghp_1234567890abcdef", entry["preview"])
         self.assertNotIn("sk-ant-api03-abcdef123456", entry["preview"])
-        self.assertIn("[MASKED_SECRET]", entry["preview"])
+        self.assertIn("[REDACTED:", entry["preview"])
 
     def test_read_recent_audit_events(self):
         for i in range(10):

@@ -108,7 +108,7 @@ class TestPlanEventsAndPendingAPI(unittest.TestCase):
 
         # Secret must be masked
         self.assertNotIn("sk-proj-supersecretOpenAIKey123456789", ev["preview"])
-        self.assertIn("[MAS", ev["preview"])
+        self.assertTrue("[MAS" in ev["preview"] or "[RED" in ev["preview"])
 
         # BiDi character must be sanitized / stripped
         self.assertNotIn("\u202e", ev["preview"])
@@ -205,7 +205,7 @@ class TestPlanEventsAndPendingAPI(unittest.TestCase):
 
             # Must contain masked preview
             self.assertNotIn("sk-ant-api03-VerySecretAnthropicKey99999", run_code_entry["preview"])
-            self.assertTrue("MASK" in run_code_entry["preview"] or "sk-***" in run_code_entry["preview"])
+            self.assertTrue("MASK" in run_code_entry["preview"] or "REDACTED" in run_code_entry["preview"] or "sk-***" in run_code_entry["preview"])
             self.assertNotIn("\u202b", run_code_entry["preview"])
 
             # 2. Query with ?conv_id=pc:developer filter

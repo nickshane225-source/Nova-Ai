@@ -548,7 +548,7 @@ class TestBatch3AndFollowUps(unittest.TestCase):
         self.assertNotIn("AIzaSyDaGmWKa4JsXZ-1234567890abcdefghij", entry["preview"])
         self.assertNotIn("1234567890:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw", entry["preview"])
         self.assertNotIn("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.secret", entry["preview"])
-        self.assertIn("[MASKED_SECRET]", entry["preview"])
+        self.assertIn("[REDACTED:", entry["preview"])
 
         # Verify limit clamping in get_recent_audit_events and /api/audit
         with patch.object(audit_logger, "get_recent_audit_events", wraps=audit_logger.get_recent_audit_events) as spy_events:

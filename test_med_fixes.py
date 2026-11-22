@@ -167,7 +167,7 @@ class TestMedFixes(unittest.TestCase):
             # Call WITHOUT passing cfg parameter
             masked = server.mask_secrets(raw_text)
             self.assertNotIn(test_key, masked)
-            self.assertIn("sk-l****", masked)
+            self.assertIn("[REDACTED:key]", masked)
 
     def test_11_zip_trailing_dot_space_and_ntfs_streams_refused(self):
         """Trailing dot/space names, ':' streams, and '::$DATA' must be rejected."""

@@ -76,7 +76,7 @@ class TestBatch5cMaskSecretsEvents(unittest.TestCase):
 
         # 3. Masked indicator present
         self.assertTrue(
-            "[MASKED_SECRET]" in res_text or "sk-proj****" in res_text
+            "[MASKED_SECRET]" in res_text or "[REDACTED:" in res_text or "sk-proj****" in res_text
         )
 
 
