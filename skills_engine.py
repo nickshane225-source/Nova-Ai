@@ -108,6 +108,18 @@ def resolve_user_skill_path(mode: str, name: str) -> Path:
 
     return dest_file
 
+def atomic_write_json(path: Path, data: dict):
+    """Atomically writes JSON data to a file using a temp file and replace."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f"{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, path)
+
+
 def get_manifest_path() -> Path:
     """Returns path to data/skills_manifest.json."""
     return get_user_skills_dir().parent / "skills_manifest.json"
@@ -129,7 +141,6 @@ def load_skills_manifest() -> dict:
 
 def record_skill_in_manifest(mode: str, name: str, sha256: str, trusted: bool = False, source: str = "external"):
     p = get_manifest_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
     with _MANIFEST_LOCK:
         manifest = load_skills_manifest()
         key = f"{mode}:{name}"
@@ -141,7 +152,7 @@ def record_skill_in_manifest(mode: str, name: str, sha256: str, trusted: bool = 
             "source": source,
             "updated_at": time.time(),
         }
-        p.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        atomic_write_json(p, manifest)
 
 ROOT = Path(sys._MEIPASS) if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS") else (Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent)
 SKILLS_DIR = get_bundled_skills_dir()
@@ -261,16 +272,14 @@ def invalidate_cache():
         _SKILLS_CACHE["developer"] = {"mtime": 0.0, "files": set(), "skills": [], "file_sigs": set()}
         _SKILLS_CACHE["cyber"] = {"mtime": 0.0, "files": set(), "skills": [], "file_sigs": set()}
 
-def install_user_skill(
+def prepare_skill_content_to_write(
     mode: str,
     name: str,
     content: str,
     description: str = "",
-    triggers: list = None,
-    trusted: bool = True,
-    source: str = "user_ui"
-) -> Path:
-    """Installs or updates a user skill in the writable user_skills directory."""
+    triggers: list = None
+) -> tuple[str, bytes, str]:
+    """Prepares final skill content (including frontmatter if missing), and computes exact UTF-8 bytes and SHA-256."""
     mode = "cyber" if mode == "cyber" else "developer"
     clean_name = validate_skill_name(name)
 
@@ -293,10 +302,8 @@ def install_user_skill(
                         raise ValueError(f"Skill frontmatter name '{fm_name}' must equal filename stem '{clean_name}'.")
                     if normalize_skill_name_for_comparison(fm_name) in all_bundled:
                         raise ValueError(f"Refused: User skill '{fm_name}' cannot use bundled skill name.")
-
-    dest_file = resolve_user_skill_path(mode, clean_name)
-
-    if not re.match(r"^---\s*\n.*?\n---\s*\n", content, re.DOTALL):
+        final_content = content
+    else:
         fm_lines = [f"name: {clean_name}"]
         if description:
             fm_lines.append(f"description: {description}")
@@ -305,13 +312,38 @@ def install_user_skill(
                 fm_lines.append(f"triggers: {', '.join(triggers)}")
             else:
                 fm_lines.append(f"triggers: {triggers}")
-        content = f"---\n{chr(10).join(fm_lines)}\n---\n{content.strip()}\n"
+        final_content = f"---\n{chr(10).join(fm_lines)}\n---\n{content.strip()}\n"
 
-    dest_file.write_text(content, encoding="utf-8")
+    final_bytes = final_content.encode("utf-8")
+    sha256 = hashlib.sha256(final_bytes).hexdigest()
+    return final_content, final_bytes, sha256
 
-    # Store SHA-256 in manifest
-    raw_bytes = dest_file.read_bytes()
-    sha256 = hashlib.sha256(raw_bytes).hexdigest()
+
+def install_user_skill(
+    mode: str,
+    name: str,
+    content: str,
+    description: str = "",
+    triggers: list = None,
+    trusted: bool = True,
+    source: str = "user_ui"
+) -> Path:
+    """Installs or updates a user skill in the writable user_skills directory."""
+    mode = "cyber" if mode == "cyber" else "developer"
+    clean_name = validate_skill_name(name)
+    dest_file = resolve_user_skill_path(mode, clean_name)
+
+    final_content, final_bytes, sha256 = prepare_skill_content_to_write(
+        mode=mode,
+        name=clean_name,
+        content=content,
+        description=description,
+        triggers=triggers,
+    )
+
+    dest_file.write_bytes(final_bytes)
+
+    # Store exact SHA-256 in manifest
     record_skill_in_manifest(mode, clean_name, sha256=sha256, trusted=trusted, source=source)
 
     invalidate_cache()

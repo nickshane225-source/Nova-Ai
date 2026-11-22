@@ -2340,8 +2340,19 @@ def create_pending_action(
             f"--- LAST 500 CHARACTERS ---\n{last_500}"
         )
     elif clean_name in ("INSTALL_SKILL", "ADD_SKILL"):
-        sha_hash = hashlib.sha256(raw_arg.encode("utf-8", errors="replace")).hexdigest()
-        preview_str = f"[SKILL INSTALLATION - SHA-256: {sha_hash}]\n\n{raw_arg}"
+        try:
+            parts = [p.strip() for p in raw_arg.split("|", 2)]
+            if len(parts) >= 3:
+                s_mode, s_name, s_content = parts[0], parts[1], parts[2]
+            elif len(parts) == 2:
+                s_mode, s_name, s_content = "developer", parts[0], parts[1]
+            else:
+                s_mode, s_name, s_content = "developer", "skill", raw_arg
+            final_content, _, sha_hash = skills_engine.prepare_skill_content_to_write(s_mode, s_name, s_content)
+            preview_str = f"[SKILL INSTALLATION - SHA-256: {sha_hash}]\nMode: {s_mode}\nSkill Name: {s_name}\n\n{final_content}"
+        except Exception:
+            sha_hash = hashlib.sha256(raw_arg.encode("utf-8", errors="replace")).hexdigest()
+            preview_str = f"[SKILL INSTALLATION - SHA-256: {sha_hash}]\n\n{raw_arg}"
     else:
         preview_str = raw_arg
 
