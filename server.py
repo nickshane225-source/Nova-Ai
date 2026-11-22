@@ -109,7 +109,7 @@ SECRET_FIELDS = {
 
 SAFE_STATE_FIELDS = {
     "provider", "model", "base_url", "character", "user_name", "language",
-    "voice_rate", "voice_pitch", "voice_volume", "wake_word_enabled",
+    "voice_rate", "voice_pitch", "voice_volume", "wake_word_enabled", "wake_word_user_choice", "wake_word_migrated_banner",
     "barge_in_enabled", "port", "remote_enabled", "remote_port", "remote_bind_ip", "remote_idle_timeout_minutes",
     "allow_outside_workspace", "confirm_destructive", "remote_allow_dangerous",
     "process_timeout", "max_tokens", "apps", "run_code_trusted_minutes",
@@ -318,6 +318,8 @@ DEFAULT_CONFIG = {
     "voice_pitch": 1.0,
     "voice_volume": 1.0,
     "wake_word_enabled": False,
+    "wake_word_user_choice": None,
+    "wake_word_migrated_banner": False,
     "vision_block_sensitive_windows": True,
     "vision_blocked_window_patterns": [],
     "barge_in_enabled": False,
@@ -598,6 +600,21 @@ def get_config():
         cfg.update(raw_saved)
         if "apps" not in cfg:
             cfg["apps"] = DEFAULT_APPS.get(OS, {})
+
+        # One-time migration: on upgrade, if saved config has wake_word_enabled true and no wake_word_user_choice, set to false
+        if raw_saved.get("wake_word_enabled") is True and "wake_word_user_choice" not in raw_saved:
+            migrated_ww = dict(raw_saved)
+            migrated_ww["wake_word_enabled"] = False
+            migrated_ww["wake_word_user_choice"] = False
+            cfg["wake_word_enabled"] = False
+            cfg["wake_word_user_choice"] = False
+            cfg["wake_word_migrated_banner"] = True
+            raw_saved = migrated_ww
+            try:
+                atomic_write_json(CONFIG_FILE, migrated_ww)
+                atomic_write_json(bak_path, migrated_ww)
+            except Exception:
+                pass
 
         # Decrypt any DPAPI encrypted fields for in-memory use
         for k, v in list(cfg.items()):
@@ -7410,7 +7427,7 @@ class Handler(BaseHandler):
                     "provider", "model", "base_url", "api_key", "clear_key", "verify_key", "force_save_key",
                     "character", "user_name", "language",
                     "voice_rate", "voice_pitch", "voice_volume",
-                    "wake_word_enabled", "barge_in_enabled",
+                    "wake_word_enabled", "wake_word_user_choice", "wake_word_migrated_banner", "barge_in_enabled",
                     "port", "remote_enabled", "remote_port", "remote_bind_ip", "remote_idle_timeout_minutes",
                     "remote_cert", "remote_allow_dangerous",
                     "allow_outside_workspace", "confirm_destructive",
@@ -7594,6 +7611,9 @@ class Handler(BaseHandler):
                 for k in ("wake_word_enabled", "barge_in_enabled", "allow_outside_workspace", "confirm_destructive", "remote_enabled", "remote_allow_dangerous", "encrypt_keys", "debug_llm", "telegram_enabled", "discord_enabled", "telegram_allow_groups"):
                     if k in body:
                         cfg[k] = bool(body[k])
+                if "wake_word_enabled" in body:
+                    cfg["wake_word_user_choice"] = True
+                    cfg["wake_word_migrated_banner"] = False
                 if "monthly_budget_usd" in body:
                     cfg["monthly_budget_usd"] = round(float(body["monthly_budget_usd"]), 4)
                 if "telegram_allowed_chat_ids" in body:
