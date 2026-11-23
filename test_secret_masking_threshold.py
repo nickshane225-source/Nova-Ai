@@ -105,6 +105,52 @@ class TestSecretMaskingAndLockout(unittest.TestCase):
             self.assertEqual(req.status, 429)
             self.assertIn("15 minutes", req.data.get("error", ""))
 
+    def test_remote_lockout_correct_token_refused_during_lockout_and_unlocks_after_duration(self):
+        """
+        Item 5 Requirement:
+        - 8 failures lock the IP/device.
+        - 9th attempt with CORRECT token is refused during lockout (HTTP 429).
+        - After real duration (900 seconds), lockout expires and correct token succeeds.
+        """
+        valid_token = "valid_real_remote_token_32_chars"
+
+        class MockRemoteRequest(server.RemoteHandler):
+            def __init__(self, ip="192.168.1.100", headers=None):
+                self.client_address = (ip, 12345)
+                self.headers = headers or {"X-Nova-Token": "wrong-token-value"}
+                self.path = "/api/remote/info"
+                self.status = None
+                self.data = None
+
+            def _send(self, status, data, ctype="application/json"):
+                self.status = status
+                self.data = data
+
+        base_time = 1000000.0
+        with patch("server.get_config", return_value={"remote_enabled": True, "remote_token": valid_token}), \
+             patch("time.time", return_value=base_time):
+
+            bad_req = MockRemoteRequest(headers={"X-Nova-Token": "wrong-secret"})
+            for i in range(8):
+                ok = bad_req._auth()
+                self.assertFalse(ok)
+                self.assertEqual(bad_req.status, 401)
+
+            # 9th attempt with the CORRECT token during lockout: MUST be refused (429)
+            correct_req = MockRemoteRequest(headers={"X-Nova-Token": valid_token})
+            ok_correct = correct_req._auth()
+            self.assertFalse(ok_correct)
+            self.assertEqual(correct_req.status, 429)
+            self.assertIn("15 minutes", correct_req.data.get("error", ""))
+
+        # Fast forward time past the 900s (15 min) lockout window
+        with patch("server.get_config", return_value={"remote_enabled": True, "remote_token": valid_token}), \
+             patch("time.time", return_value=base_time + 901.0):
+
+            unlocked_req = MockRemoteRequest(headers={"X-Nova-Token": valid_token})
+            ok_unlocked = unlocked_req._auth()
+            self.assertTrue(ok_unlocked, "After 900s, lockout must expire and correct token must be accepted")
+
     def test_valid_device_on_different_ip_not_locked_out_by_other_ip_failures(self):
         """
         Item 6: Lockout Scoping
