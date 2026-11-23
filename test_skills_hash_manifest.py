@@ -188,11 +188,48 @@ class TestSkillsHashManifest(unittest.TestCase):
         loaded_after_tamper = skills_engine.load_skills(mode)
         self.assertNotIn(skill_name, [s.name for s in loaded_after_tamper])
 
-        # Verify security audit event was logged
-        recent = audit_logger.get_recent_audit_events(limit=10)
-        tamper_events = [e for e in recent if e.get("tool") == "SKILL_HASH_TAMPERED"]
-        self.assertTrue(len(tamper_events) > 0, "Expected SKILL_HASH_TAMPERED event in audit log")
-        self.assertIn(skill_name, tamper_events[0]["preview"])
+        # Verify security audit event was logged in audit.jsonl by reading the file directly
+        self.assertTrue(audit_file.exists())
+        audit_lines = [json.loads(line) for line in audit_file.read_text(encoding="utf-8").strip().splitlines() if line.strip()]
+        tamper_entries = [e for e in audit_lines if e.get("tool") == "SKILL_HASH_TAMPERED"]
+        self.assertTrue(len(tamper_entries) > 0, "audit.jsonl must contain a SKILL_HASH_TAMPERED entry")
+        self.assertIn(skill_name, tamper_entries[0]["preview"])
+        self.assertEqual(tamper_entries[0]["guardian"], "HIGH")
+        self.assertEqual(tamper_entries[0]["status"], "BLOCKED")
+
+    def test_unapproved_skill_logs_skill_hash_missing_in_audit_jsonl(self):
+        """Unapproved skill missing from manifest must log SKILL_HASH_MISSING directly to audit.jsonl."""
+        import audit_logger
+        audit_file = self.tmp_path / "data" / "audit.jsonl"
+        audit_logger.set_audit_file(audit_file)
+
+        # Place a skill file directly in user_skills without manifest entry
+        unapproved_file = self.user_skills_dir / "developer" / "unapproved_tool.md"
+        unapproved_file.write_text("---\nname: unapproved_tool\n---\nprint('unapproved')", encoding="utf-8")
+
+        skills_engine.invalidate_cache()
+        loaded = skills_engine.load_skills("developer")
+        self.assertNotIn("unapproved_tool", [s.name for s in loaded])
+
+        # Read audit.jsonl directly and assert SKILL_HASH_MISSING
+        self.assertTrue(audit_file.exists())
+        audit_lines = [json.loads(line) for line in audit_file.read_text(encoding="utf-8").strip().splitlines() if line.strip()]
+        missing_entries = [e for e in audit_lines if e.get("tool") == "SKILL_HASH_MISSING"]
+        self.assertTrue(len(missing_entries) > 0, "audit.jsonl must contain a SKILL_HASH_MISSING entry")
+        self.assertIn("unapproved_tool", missing_entries[0]["preview"])
+        self.assertEqual(missing_entries[0]["guardian"], "WARNING")
+        self.assertEqual(missing_entries[0]["status"], "WARNED")
+
+    def test_log_security_event_exceptions_not_swallowed(self):
+        """Verify exceptions in log_security_event are not swallowed during skill loading."""
+        import audit_logger
+        unapproved_file = self.user_skills_dir / "developer" / "boom_tool.md"
+        unapproved_file.write_text("---\nname: boom_tool\n---\nprint('boom')", encoding="utf-8")
+
+        skills_engine.invalidate_cache()
+        with unittest.mock.patch.object(audit_logger, "log_security_event", side_effect=RuntimeError("Security logging failed")):
+            with self.assertRaises(RuntimeError):
+                skills_engine.load_skills("developer")
 
 
 if __name__ == "__main__":

@@ -402,53 +402,48 @@ def load_skills(mode: str) -> list:
 
         # 2. User skills (validated against manifest)
         for f in user_files:
+            skill_stem = f.stem
+            if normalize_skill_name_for_comparison(skill_stem) in bundled_names:
+                # User skill must never replace a bundled skill!
+                continue
+
             try:
-                skill_stem = f.stem
-                if normalize_skill_name_for_comparison(skill_stem) in bundled_names:
-                    # User skill must never replace a bundled skill!
-                    continue
+                clean_name = validate_skill_name(skill_stem)
+            except ValueError:
+                continue
 
-                try:
-                    clean_name = validate_skill_name(skill_stem)
-                except ValueError:
-                    continue
+            raw_bytes = f.read_bytes()
+            curr_sha256 = hashlib.sha256(raw_bytes).hexdigest()
 
-                raw_bytes = f.read_bytes()
-                curr_sha256 = hashlib.sha256(raw_bytes).hexdigest()
+            key = f"{mode}:{clean_name}"
+            entry = manifest.get("skills", {}).get(key)
+            if not entry and key in manifest:
+                entry = manifest[key]
+            if isinstance(entry, str):
+                entry = {"sha256": entry}
 
-                key = f"{mode}:{clean_name}"
-                entry = manifest.get("skills", {}).get(key)
-                if not entry and key in manifest:
-                    entry = manifest[key]
-                if isinstance(entry, str):
-                    entry = {"sha256": entry}
+            if not entry:
+                # Not in manifest: ignore until approved
+                if audit_logger and hasattr(audit_logger, "log_security_event"):
+                    audit_logger.log_security_event("SKILL_HASH_MISSING", f"Skill '{clean_name}' not approved in manifest. Skipped.", severity="WARNING")
+                continue
 
-                if not entry:
-                    # Not in manifest: ignore until approved
-                    if audit_logger and hasattr(audit_logger, "log_security_event"):
-                        try:
-                            audit_logger.log_security_event("SKILL_HASH_MISSING", f"Skill '{clean_name}' not approved in manifest. Skipped.", severity="WARNING")
-                        except Exception:
-                            pass
-                    continue
+            if entry.get("sha256") != curr_sha256:
+                # Content changed: ignore until re-approved!
+                if audit_logger and hasattr(audit_logger, "log_security_event"):
+                    audit_logger.log_security_event("SKILL_HASH_TAMPERED", f"Skill '{clean_name}' on-disk hash changed from {entry.get('sha256')} to {curr_sha256}. Disabled.", severity="HIGH")
+                continue
 
-                if entry.get("sha256") != curr_sha256:
-                    # Content changed: ignore until re-approved!
-                    if audit_logger and hasattr(audit_logger, "log_security_event"):
-                        try:
-                            audit_logger.log_security_event("SKILL_HASH_TAMPERED", f"Skill '{clean_name}' on-disk hash changed from {entry.get('sha256')} to {curr_sha256}. Disabled.", severity="HIGH")
-                        except Exception:
-                            pass
-                    continue
-
-                is_trusted = bool(entry.get("trusted", False))
+            is_trusted = bool(entry.get("trusted", False))
+            try:
                 skill = parse_skill_file(f, is_trusted=is_trusted)
-                if normalize_skill_name_for_comparison(skill.name) in bundled_names:
-                    continue
-
-                skills_by_name[skill.name] = skill
             except Exception:
-                pass
+                continue
+
+            if normalize_skill_name_for_comparison(skill.name) in bundled_names:
+                continue
+
+            skills_by_name[skill.name] = skill
 
         loaded = list(skills_by_name.values())
         _SKILLS_CACHE[mode] = {
