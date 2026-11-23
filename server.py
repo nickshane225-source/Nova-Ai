@@ -2392,20 +2392,41 @@ def create_pending_action(
 
             try:
                 import base64
-                save_dir = WORKSPACE / "screenshots"
-                save_dir.mkdir(parents=True, exist_ok=True)
+                import tempfile
+                # Private temp location outside workspace and data
+                tmp_dir = Path(tempfile.mkdtemp(prefix="nova_vision_priv_"))
+                try:
+                    os.chmod(tmp_dir, 0o700)
+                except Exception:
+                    pass
                 stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                target = save_dir / f"preview_{stamp}.png"
-                captured = _capture_desktop_png(target)
-                if not captured or not captured.exists():
-                    return None, None, "Refused: Vision preview was required but could not be produced."
-                raw_bytes = target.read_bytes()
-                if not raw_bytes:
-                    return None, None, "Refused: Vision preview was required but could not be produced."
-                b64 = base64.b64encode(raw_bytes).decode("ascii")
-                image_preview = f"data:image/png;base64,{b64}"
-                captured_image_bytes = raw_bytes
-                preview_str = f"[DESKTOP SCREENSHOT PREVIEW CAPTURED - {len(raw_bytes)} bytes]\nPrompt: {raw_arg}\nImage will be transmitted to AI cloud upon confirmation."
+                target = tmp_dir / f"preview_{stamp}.png"
+                try:
+                    captured = _capture_desktop_png(target)
+                    if not captured or not target.exists():
+                        return None, None, "Refused: Vision preview was required but could not be produced."
+                    try:
+                        os.chmod(target, 0o600)
+                    except Exception:
+                        pass
+                    raw_bytes = target.read_bytes()
+                    if not raw_bytes:
+                        return None, None, "Refused: Vision preview was required but could not be produced."
+                    b64 = base64.b64encode(raw_bytes).decode("ascii")
+                    image_preview = f"data:image/png;base64,{b64}"
+                    captured_image_bytes = raw_bytes
+                    preview_str = f"[DESKTOP SCREENSHOT PREVIEW CAPTURED - {len(raw_bytes)} bytes]\nPrompt: {raw_arg}\nImage will be transmitted to AI cloud upon confirmation."
+                finally:
+                    if target.exists():
+                        try:
+                            target.unlink()
+                        except Exception:
+                            pass
+                    if tmp_dir.exists():
+                        try:
+                            tmp_dir.rmdir()
+                        except Exception:
+                            pass
             except Exception as e:
                 return None, None, f"Refused: Vision preview was required but could not be produced ({e})."
         else:
@@ -6151,6 +6172,8 @@ def _chat_inner(user_text, source, jid, mode="developer", is_automation=False, c
 
                 if is_approve_word:
                     PENDING_ACTIONS.pop(pending["id"], None)
+                    cap_b = pending.pop("captured_image_bytes", None)
+                    pending.pop("image_preview", None)
                     if pending.get("name") in ("VISION", "SCREEN_ANALYZE"):
                         eff_c = pending.get("conv_id") or conv_id or f"{pending.get('source', 'pc')}:developer"
                         with CONVERSATION_VISION_LOCK:
@@ -6164,7 +6187,7 @@ def _chat_inner(user_text, source, jid, mode="developer", is_automation=False, c
                     elif pending.get("is_tainted") or is_file_tainted_provenance(pending.get("arg", ""))[0]:
                         RUN_CODE_TRUST_STATE.invalidate()
                     t_gated_start = time.time()
-                    res = run_skill(cfg, pending["name"], pending["arg"], source=source, is_confirmed=True, mode=pending.get("mode", mode), is_tainted=pending.get("is_tainted", False), conv_id=conv_id, captured_bytes=pending.get("captured_image_bytes"))
+                    res = run_skill(cfg, pending["name"], pending["arg"], source=source, is_confirmed=True, mode=pending.get("mode", mode), is_tainted=pending.get("is_tainted", False), conv_id=conv_id, captured_bytes=cap_b)
                     gated_elapsed = max(0.0, time.time() - t_gated_start)
                     if pending.get("plan_state"):
                         pending["plan_state"]["active_seconds"] = float(pending["plan_state"].get("active_seconds", 0.0)) + gated_elapsed
@@ -6203,6 +6226,8 @@ def _chat_inner(user_text, source, jid, mode="developer", is_automation=False, c
                     return {"reply": reply, "actions": [{"skill": pending["name"], "arg": pending["arg"], "result": res}]}
                 elif is_deny_word:
                     PENDING_ACTIONS.pop(pending["id"], None)
+                    pending.pop("captured_image_bytes", None)
+                    pending.pop("image_preview", None)
                     if audit_logger:
                         audit_logger.log_audit_event(
                             channel=source,
@@ -7308,6 +7333,8 @@ class Handler(BaseHandler):
                 if not pending:
                     return self._send(404, {"ok": False, "error": "Pending action not found or expired"})
                 if pending.get("expires_at", 0) < time.time():
+                    pending.pop("captured_image_bytes", None)
+                    pending.pop("image_preview", None)
                     if pending.get("plan_state"):
                         cleanup_active_plan(
                             plan_id=pending.get("plan_state", {}).get("plan_id"),
@@ -7317,6 +7344,8 @@ class Handler(BaseHandler):
                     return self._send(400, {"ok": False, "error": "Pending action expired"})
                 cfg = get_config()
                 if not approve:
+                    pending.pop("captured_image_bytes", None)
+                    pending.pop("image_preview", None)
                     if audit_logger:
                         audit_logger.log_audit_event(
                             channel=pending.get("source", "pc"),
@@ -7355,7 +7384,9 @@ class Handler(BaseHandler):
                     CONVERSATION_TAINT[p_conv] = True
                     RUN_CODE_TRUST_STATE.invalidate()
                 t_gated_start = time.time()
-                res = run_skill(cfg, pending["name"], pending["arg"], source=pending.get("source", "pc"), is_confirmed=True, mode=pending.get("mode", "developer"), is_tainted=pending.get("is_tainted", False), conv_id=p_conv, captured_bytes=pending.get("captured_image_bytes"))
+                cap_bytes = pending.pop("captured_image_bytes", None)
+                pending.pop("image_preview", None)
+                res = run_skill(cfg, pending["name"], pending["arg"], source=pending.get("source", "pc"), is_confirmed=True, mode=pending.get("mode", "developer"), is_tainted=pending.get("is_tainted", False), conv_id=p_conv, captured_bytes=cap_bytes)
                 gated_elapsed = max(0.0, time.time() - t_gated_start)
                 if pending.get("plan_state"):
                     pending["plan_state"]["active_seconds"] = float(pending["plan_state"].get("active_seconds", 0.0)) + gated_elapsed

@@ -229,6 +229,129 @@ class TestVisionPreview(unittest.TestCase):
         for mod in ("PIL", "PIL.Image", "PIL.ImageGrab", "pillow"):
             self.assertNotIn(mod, sys.modules)
 
+    def test_vision_preview_no_leftover_png_files_on_approve_deny_and_expiry(self):
+        """
+        Item 6 Requirement:
+        - Captured to private temp location outside workspace and data.
+        - Deleted immediately after reading into pending entry.
+        - Held only in pending entry memory, cleared on approval, denial and expiry.
+        - Verify no preview_*.png remains on disk after approve, deny, or expiry.
+        """
+        import io
+        captured_file_paths = []
+
+        def _recording_capture(target_path):
+            p = Path(target_path)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(self.fake_png)
+            captured_file_paths.append(p)
+            return p
+
+        cfg = {"vision_preview": True}
+
+        # --- Subtest 1: Approve flow ---
+        with patch.object(server, "get_active_window_title", return_value="Code Editor"), \
+             patch.object(server, "_capture_desktop_png", side_effect=_recording_capture), \
+             patch.object(server, "call_llm_vision", return_value="Analysis OK"):
+
+            p_entry, p_info, err = server.create_pending_action(
+                cfg=cfg, name="VISION", arg="check screen", source="pc", is_tainted=False
+            )
+            self.assertIsNone(err)
+            self.assertIsNotNone(p_entry)
+            action_id = p_entry["id"]
+
+            # Verify file was outside workspace and data, and deleted immediately after reading
+            target_created = captured_file_paths[-1]
+            self.assertFalse(str(target_created).startswith(str(server.WORKSPACE)))
+            self.assertFalse(str(target_created).startswith(str(server.DATA)))
+            self.assertFalse(target_created.exists(), "Temporary capture file must be deleted immediately after reading")
+
+            # Verify memory holding
+            self.assertIn("captured_image_bytes", p_entry)
+            self.assertIn("image_preview", p_entry)
+
+            # Send POST /api/confirm with approve=True
+            def mock_send(code, data):
+                return None
+
+            with patch.object(server.Handler, "__init__", lambda self: None), \
+                 patch.object(server.Handler, "_send", side_effect=mock_send), \
+                 patch.object(server, "check_session_auth", return_value=True):
+                h = server.Handler()
+                h.path = "/api/confirm"
+                body = json.dumps({"action_id": action_id, "approve": True}).encode("utf-8")
+                h.headers = {"Content-Length": str(len(body)), "Host": "127.0.0.1:8765"}
+                h.client_address = ("127.0.0.1", 54321)
+                h.rfile = io.BytesIO(body)
+                h.wfile = io.BytesIO()
+                server.Handler.do_POST(h)
+
+            # Assert bytes were cleared on approval
+            self.assertNotIn("captured_image_bytes", p_entry)
+            self.assertNotIn("image_preview", p_entry)
+            self.assertFalse(target_created.exists())
+
+        # --- Subtest 2: Deny flow ---
+        with patch.object(server, "get_active_window_title", return_value="Code Editor"), \
+             patch.object(server, "_capture_desktop_png", side_effect=_recording_capture):
+
+            p_entry2, p_info2, err2 = server.create_pending_action(
+                cfg=cfg, name="VISION", arg="check screen deny", source="pc", is_tainted=False
+            )
+            self.assertIsNone(err2)
+            action_id2 = p_entry2["id"]
+            target2 = captured_file_paths[-1]
+            self.assertFalse(target2.exists())
+
+            # Send POST /api/confirm with approve=False
+            with patch.object(server.Handler, "__init__", lambda self: None), \
+                 patch.object(server.Handler, "_send", side_effect=mock_send), \
+                 patch.object(server, "check_session_auth", return_value=True):
+                h = server.Handler()
+                h.path = "/api/confirm"
+                body = json.dumps({"action_id": action_id2, "approve": False}).encode("utf-8")
+                h.headers = {"Content-Length": str(len(body)), "Host": "127.0.0.1:8765"}
+                h.client_address = ("127.0.0.1", 54321)
+                h.rfile = io.BytesIO(body)
+                h.wfile = io.BytesIO()
+                server.Handler.do_POST(h)
+
+            # Assert bytes were cleared on denial
+            self.assertNotIn("captured_image_bytes", p_entry2)
+            self.assertNotIn("image_preview", p_entry2)
+            self.assertFalse(target2.exists())
+
+        # --- Subtest 3: Expiry flow ---
+        with patch.object(server, "get_active_window_title", return_value="Code Editor"), \
+             patch.object(server, "_capture_desktop_png", side_effect=_recording_capture):
+
+            p_entry3, p_info3, err3 = server.create_pending_action(
+                cfg=cfg, name="VISION", arg="check screen expire", source="pc", is_tainted=False, expires_in=-10
+            )
+            self.assertIsNone(err3)
+            action_id3 = p_entry3["id"]
+            target3 = captured_file_paths[-1]
+            self.assertFalse(target3.exists())
+
+            # Attempt to confirm expired action
+            with patch.object(server.Handler, "__init__", lambda self: None), \
+                 patch.object(server.Handler, "_send", side_effect=mock_send), \
+                 patch.object(server, "check_session_auth", return_value=True):
+                h = server.Handler()
+                h.path = "/api/confirm"
+                body = json.dumps({"action_id": action_id3, "approve": True}).encode("utf-8")
+                h.headers = {"Content-Length": str(len(body)), "Host": "127.0.0.1:8765"}
+                h.client_address = ("127.0.0.1", 54321)
+                h.rfile = io.BytesIO(body)
+                h.wfile = io.BytesIO()
+                server.Handler.do_POST(h)
+
+            # Assert bytes were cleared on expiry
+            self.assertNotIn("captured_image_bytes", p_entry3)
+            self.assertNotIn("image_preview", p_entry3)
+            self.assertFalse(target3.exists())
+
 
 if __name__ == "__main__":
     unittest.main()
