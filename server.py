@@ -7494,11 +7494,14 @@ class Handler(BaseHandler):
                         cur["wake_word_migrated_banner"] = False
                     return cur
                 try:
-                    update_json(CONFIG_FILE, _dismiss_ww_banner, default={})
+                    full_updated = update_json(CONFIG_FILE, _dismiss_ww_banner, default={})
                     bak_path = CONFIG_FILE.with_name(CONFIG_FILE.name + ".bak")
-                    update_json(bak_path, _dismiss_ww_banner, default={})
+                    if full_updated and isinstance(full_updated, dict):
+                        atomic_write_json(bak_path, full_updated)
                 except Exception:
                     pass
+                cfg = get_config()
+                cfg["wake_word_migrated_banner"] = False
                 return self._send(200, {"ok": True, "wake_word_migrated_banner": False})
             if path == "/api/config/test":
                 t_base = str(body.get("base_url") or "").strip()

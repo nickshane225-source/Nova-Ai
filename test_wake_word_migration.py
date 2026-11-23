@@ -154,6 +154,72 @@ class TestWakeWordMigration(unittest.TestCase):
         self.assertEqual(code2, 200)
         self.assertTrue(data2.get("ok"))
 
+    def test_enable_wake_word_restart_stays_enabled_and_full_backup(self):
+        """
+        Item 1 Requirement:
+        - Enable wake word via Settings (/api/config).
+        - Restart (call get_config()). Wake word stays enabled (wake_word_user_choice=true prevents re-migration).
+        - Legacy config with wake_word_enabled true and no choice flag is migrated off once.
+        - Secrets stay encrypted on disk.
+        - Backup file config.json.bak contains full content, never partial content.
+        """
+        encrypted_secret = "dpapi:AQAAANCMnd8BFdERjHoAwE/Cl+sBAAAA_SECRET_ON_DISK"
+        initial_config = {
+            "api_key": encrypted_secret,
+            "wake_word_enabled": True,  # legacy config without choice flag
+            "encrypt_keys": True,
+            "user_name": "Alice",
+            "model": "claude-3-5-sonnet",
+        }
+        with open(server.CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(initial_config, f, indent=2)
+
+        # 1. First boot / migration: legacy config migrated off once
+        cfg1 = server.get_config()
+        self.assertFalse(cfg1["wake_word_enabled"])
+        self.assertFalse(cfg1["wake_word_user_choice"])
+        self.assertTrue(cfg1["wake_word_migrated_banner"])
+
+        # Check disk after migration: secret remained encrypted, full backup exists
+        with open(server.CONFIG_FILE, "r", encoding="utf-8") as f:
+            disk1 = json.load(f)
+        self.assertEqual(disk1["api_key"], encrypted_secret)
+        self.assertEqual(disk1["user_name"], "Alice")
+        bak_file = server.CONFIG_FILE.with_name(server.CONFIG_FILE.name + ".bak")
+        self.assertTrue(bak_file.exists())
+        with open(bak_file, "r", encoding="utf-8") as f:
+            bak1 = json.load(f)
+        self.assertEqual(bak1["api_key"], encrypted_secret)
+        self.assertEqual(bak1["user_name"], "Alice")
+
+        # 2. User explicitly enables wake-word in Settings UI
+        code, data = self._post("/api/config", {"wake_word_enabled": True})
+        self.assertEqual(code, 200)
+        self.assertTrue(data.get("ok"))
+
+        # Verify on disk that wake_word_user_choice is True and banner cleared
+        with open(server.CONFIG_FILE, "r", encoding="utf-8") as f:
+            disk2 = json.load(f)
+        self.assertTrue(disk2["wake_word_enabled"])
+        self.assertTrue(disk2["wake_word_user_choice"])
+        self.assertFalse(disk2.get("wake_word_migrated_banner", False))
+        self.assertEqual(disk2["api_key"], encrypted_secret)
+
+        # 3. Simulate server restart: re-read config from disk
+        server._CONFIG_CACHE = None
+        cfg_restarted = server.get_config()
+        self.assertTrue(cfg_restarted["wake_word_enabled"])
+        self.assertTrue(cfg_restarted["wake_word_user_choice"])
+        self.assertFalse(cfg_restarted.get("wake_word_migrated_banner", False))
+
+        # Check backup file has full content
+        with open(bak_file, "r", encoding="utf-8") as f:
+            bak2 = json.load(f)
+        self.assertTrue(bak2["wake_word_enabled"])
+        self.assertTrue(bak2["wake_word_user_choice"])
+        self.assertEqual(bak2["api_key"], encrypted_secret)
+        self.assertEqual(bak2["user_name"], "Alice")
+
 
 if __name__ == "__main__":
     unittest.main()
