@@ -41,6 +41,42 @@ class TestSecretMaskingAndLockout(unittest.TestCase):
         self.assertNotIn("sk-ant-api03-abcdefghijklmnopqrstuvwxyz1234567890", masked)
         self.assertIn("[REDACTED:key]", masked)
 
+    def test_mask_secrets_8_12_40_char_secrets_no_partial_leakage(self):
+        """
+        Item 3 Requirement:
+        - Test with 8-, 12- and 40-character secrets.
+        - No value may ever be partially shown (no prefix or suffix characters).
+        - Test across both server.mask_secrets and audit_logger.mask_secrets.
+        """
+        sec_8 = "Ab1!cDe2"                             # 8 chars
+        sec_12 = "K9#mP2$xY7&q"                         # 12 chars
+        sec_40 = "1234567890abcdef1234567890abcdef12345678"  # 40 chars
+
+        cfg = {
+            "api_key": sec_8,
+            "telegram_bot_token": sec_12,
+            "discord_bot_token": sec_40,
+        }
+
+        raw_text = f"API={sec_8} and Bot={sec_12} and Discord={sec_40}"
+
+        for name, mask_fn in [("server", server.mask_secrets), ("audit_logger", audit_logger.mask_secrets)]:
+            masked = mask_fn(raw_text, cfg=cfg)
+
+            # None of the secrets may appear in the output
+            self.assertNotIn(sec_8, masked, f"Failed for {name} with 8-char secret")
+            self.assertNotIn(sec_12, masked, f"Failed for {name} with 12-char secret")
+            self.assertNotIn(sec_40, masked, f"Failed for {name} with 40-char secret")
+
+            # Check that no prefix fragments (first 2, 4 chars) appear anywhere in connection to the redaction
+            self.assertNotIn("Ab1!", masked)
+            self.assertNotIn("K9#m", masked)
+            self.assertNotIn("12345678", masked)
+
+            # Fixed redaction token must be present
+            self.assertIn("[REDACTED:key]", masked)
+            self.assertEqual(masked.count("[REDACTED:key]"), 3)
+
     def test_remote_lockout_8_failures_9th_locked_out(self):
         class MockRemoteRequest(server.RemoteHandler):
             def __init__(self, ip="192.168.1.100", headers=None):

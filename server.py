@@ -859,7 +859,8 @@ def detect_api_key_provider_mismatch(provider: str, api_key: str, base_url: str 
             return f"This key starts with 'sk-ant-' (Anthropic Claude), but provider is set to '{effective}'."
     elif key.startswith("AIza") or key.startswith("AQ."):
         if effective != "gemini":
-            return f"This key starts with '{key[:4]}' (Google Gemini), but provider is set to '{effective}'."
+            pref = "AIza" if key.startswith("AIza") else "AQ."
+            return f"This key starts with '{pref}' (Google Gemini), but provider is set to '{effective}'."
     elif key.startswith("sk-") and not key.startswith("sk-or-"):
         if effective in ("anthropic", "gemini"):
             return f"This key starts with 'sk-' (OpenAI), but provider is set to '{effective}'."
