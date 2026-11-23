@@ -23,6 +23,7 @@ import re
 import socket
 import ssl
 import sys
+import threading
 import time
 import urllib.parse
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
@@ -290,14 +291,26 @@ def validate_url_target(
         except Exception as e:
             return False, f"DNS resolution failed for '{host}': {e}", None
     else:
-        orig_to = socket.getdefaulttimeout()
-        try:
-            socket.setdefaulttimeout(dns_timeout)
-            addr_info = socket.getaddrinfo(host, port, family=socket.AF_UNSPEC, type=socket.SOCK_STREAM)
-        except Exception as e:
-            return False, f"DNS resolution failed for '{host}': {e}", None
-        finally:
-            socket.setdefaulttimeout(orig_to)
+        res_container = []
+        exc_container = []
+
+        def _resolve_worker():
+            try:
+                res = socket.getaddrinfo(host, port, family=socket.AF_UNSPEC, type=socket.SOCK_STREAM)
+                res_container.append(res)
+            except Exception as ex:
+                exc_container.append(ex)
+
+        t = threading.Thread(target=_resolve_worker, daemon=True)
+        t.start()
+        t.join(dns_timeout)
+        if t.is_alive():
+            return False, f"DNS resolution timed out after {dns_timeout}s for '{host}'.", None
+        if exc_container:
+            return False, f"DNS resolution failed for '{host}': {exc_container[0]}", None
+        if not res_container or not res_container[0]:
+            return False, f"No IP addresses resolved for '{host}'.", None
+        addr_info = res_container[0]
 
     if not addr_info:
         return False, f"No IP addresses resolved for '{host}'.", None

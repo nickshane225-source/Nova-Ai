@@ -2,6 +2,7 @@ import http.server
 import ipaddress
 import socket
 import threading
+import time
 import unittest
 from unittest.mock import patch, MagicMock
 import ssl
@@ -322,6 +323,20 @@ class TestSSRFProtection(unittest.TestCase):
         # Localhost (e.g. Ollama http://localhost:11434) is accepted
         valid_local, _ = server.validate_base_url_scheme("http://localhost:11434/v1")
         self.assertTrue(valid_local)
+
+    def test_mocked_slow_resolver_cut_off_at_timeout(self):
+        """Item 7: Mocked slow DNS resolver is cut off at dns_timeout."""
+        def _slow_getaddrinfo(*args, **kwargs):
+            time.sleep(2.0)
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 80))]
+
+        with patch("socket.getaddrinfo", side_effect=_slow_getaddrinfo):
+            t0 = time.time()
+            ok, reason, _ = ssrf_guard.validate_url_target("http://example.com/test", dns_timeout=0.2)
+            elapsed = time.time() - t0
+            self.assertFalse(ok)
+            self.assertIn("timed out", reason.lower())
+            self.assertLess(elapsed, 0.8, "Slow resolver worker thread must be cut off at dns_timeout")
 
 
 if __name__ == "__main__":
