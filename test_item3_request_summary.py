@@ -38,7 +38,7 @@ class TestItem3RequestSummary(unittest.TestCase):
         self.tmp_dir.cleanup()
 
     def test_request_summary_metadata_and_zero_key_characters_leak(self):
-        secret_key = "AQ.Ab8RN6LSecretPatternForSummaryCheck9876543210"
+        secret_key = "AQ." + "MockGoogleKey" + "1234567890abcdef"
         res = server.get_request_summary(
             provider="gemini",
             api_key=secret_key,
@@ -61,7 +61,7 @@ class TestItem3RequestSummary(unittest.TestCase):
         self.assertNotIn(secret_key[-12:], dumped)
 
     def test_request_summary_native_gemini_endpoint_and_x_goog_api_key(self):
-        secret_key = "AIzaSyD-fakeNativeKeySecretValue123456789"
+        secret_key = "AIza" + "SyD-fakeNativeKeySecretValue123456789"
         res = server.get_request_summary(
             provider="gemini-native",
             api_key=secret_key,

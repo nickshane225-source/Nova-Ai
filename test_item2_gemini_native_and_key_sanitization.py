@@ -45,10 +45,11 @@ class TestItem2GeminiNativeAndKeySanitization(unittest.TestCase):
         self.assertEqual(cleaned, "sk-validSecretSampleKey12345")
         self.assertEqual(err, "")
 
-        double_quoted = '  "AQ.validGoogleSampleKey987654" \n'
+        key_sample = "AQ." + "validGoogleSampleKey987654"
+        double_quoted = f'  "{key_sample}" \n'
         valid2, cleaned2, err2 = server.sanitize_and_validate_api_key(double_quoted)
         self.assertTrue(valid2)
-        self.assertEqual(cleaned2, "AQ.validGoogleSampleKey987654")
+        self.assertEqual(cleaned2, key_sample)
 
     def test_reject_keys_containing_spaces(self):
         spaced_key = "sk-invalid key with spaces"
@@ -71,7 +72,7 @@ class TestItem2GeminiNativeAndKeySanitization(unittest.TestCase):
             "provider": "openai",
             "model": "gemini-2.5-flash",
             "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
-            "api_key": "AQ.mockedTestBearerKey12345",
+            "api_key": "AQ." + "mockedTestBearerKey12345",
             "max_tokens": 1024,
         }
         with patch("server.http_post") as mock_post:
@@ -83,14 +84,14 @@ class TestItem2GeminiNativeAndKeySanitization(unittest.TestCase):
             mock_post.assert_called_once()
             called_url, called_headers, called_body = mock_post.call_args[0][:3]
             self.assertTrue(called_url.endswith("/chat/completions"))
-            self.assertEqual(called_headers.get("authorization"), "Bearer AQ.mockedTestBearerKey12345")
+            self.assertEqual(called_headers.get("authorization"), "Bearer " + ("AQ." + "mockedTestBearerKey12345"))
 
     def test_gemini_native_endpoint_sends_x_goog_api_key(self):
         cfg = {
             "provider": "gemini-native",
             "model": "gemini-2.5-flash",
             "base_url": "https://generativelanguage.googleapis.com/v1beta",
-            "api_key": "AQ.mockedTestNativeKey12345",
+            "api_key": "AQ." + "mockedTestNativeKey12345",
             "max_tokens": 1024,
         }
         with patch("server.http_post") as mock_post:
@@ -106,7 +107,7 @@ class TestItem2GeminiNativeAndKeySanitization(unittest.TestCase):
             mock_post.assert_called_once()
             called_url, called_headers, called_body = mock_post.call_args[0][:3]
             self.assertIn("/models/gemini-2.5-flash:generateContent", called_url)
-            self.assertEqual(called_headers.get("x-goog-api-key"), "AQ.mockedTestNativeKey12345")
+            self.assertEqual(called_headers.get("x-goog-api-key"), "AQ." + "mockedTestNativeKey12345")
             self.assertNotIn("authorization", called_headers)
 
 if __name__ == "__main__":

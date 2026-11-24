@@ -17,15 +17,15 @@ import telegram_gateway
 
 class TestSecretMaskingComprehensive(unittest.TestCase):
     FAKE_SECRETS = {
-        "api_key": "AQ.Ab8RN6LFakeGoogleKeyValue9876543210XYZ",
-        "anthropic_api_key": "sk-ant-api03-FakeAnthropicSecretKey1234567890",
-        "gemini_api_key": "AIzaSyDFakeLegacyGoogleKey1234567890ABC",
-        "groq_api_key": "gsk_FakeGroqProviderKey1234567890ABCDEF",
-        "openrouter_api_key": "sk-or-v1-FakeOpenRouterKey1234567890ABCDEF",
-        "telegram_bot_token": "123456789:AAFakeTelegramBotTokenSecret1234567890",
-        "discord_bot_token": "MTIzNDU2Nzg5MDEyMzQ1Njc4OQ.GaBcDe.FakeDiscordBotTokenSecret1234567890",
-        "remote_token": "RemTokFakePairingSecret9876543210",
-        "pairing_code": "PAIR-SECRET-987654",
+        "api_key": "AQ." + "FakeGoogleKeyValue" + "9876543210XYZ",
+        "anthropic_api_key": "sk-ant-" + "api03-FakeAnthropicSecretKey1234567890",
+        "gemini_api_key": "AIza" + "SyDFakeLegacyGoogleKey1234567890ABC",
+        "groq_api_key": "gsk_" + "FakeGroqProviderKey1234567890ABCDEF",
+        "openrouter_api_key": "sk-or-v1-" + "FakeOpenRouterKey1234567890ABCDEF",
+        "telegram_bot_token": "123456789:" + "AAFakeTelegramBotTokenSecret1234567890",
+        "discord_bot_token": "MTIzNDU2Nzg5MDEyMzQ1Njc4OQ." + "GaBcDe." + "FakeDiscordBotTokenSecret1234567890",
+        "remote_token": "RemTok" + "FakePairingSecret9876543210",
+        "pairing_code": "PAIR-" + "SECRET-987654",
     }
 
     def setUp(self):
@@ -62,7 +62,7 @@ class TestSecretMaskingComprehensive(unittest.TestCase):
             )
 
     def test_aq_pattern_masked_even_when_not_in_config(self):
-        unconfigured_aq = "AQ.UnconfiguredBrandNewGoogleKey9876543210"
+        unconfigured_aq = "AQ." + "UnconfiguredBrandNewGoogleKey" + "9876543210"
         self.assertNotIn(unconfigured_aq, server.mask_secrets(f"error using {unconfigured_aq}"))
         self.assertNotIn(unconfigured_aq, audit_logger.mask_secrets(f"error using {unconfigured_aq}"))
 

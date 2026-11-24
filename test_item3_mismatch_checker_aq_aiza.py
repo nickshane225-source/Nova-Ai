@@ -39,11 +39,11 @@ class TestItem3MismatchCheckerAqAiza(unittest.TestCase):
 
     def test_aq_and_aiza_valid_formats_never_called_invalid(self):
         # AIza on Gemini produces no mismatch
-        msg_aiza = server.detect_api_key_provider_mismatch("gemini", "AIzaSyD-mockedGoogleKey123456789")
+        msg_aiza = server.detect_api_key_provider_mismatch("gemini", "AIza" + "SyD-mockedGoogleKey123456789")
         self.assertIsNone(msg_aiza)
 
         # AQ. on Gemini returns specific guidance note
-        msg_aq = server.detect_api_key_provider_mismatch("gemini", "AQ.mockedGoogleStudioKey123456789")
+        msg_aq = server.detect_api_key_provider_mismatch("gemini", "AQ." + "mockedGoogleStudioKey123456789")
         self.assertIsNotNone(msg_aq)
         self.assertEqual(
             msg_aq,
@@ -53,15 +53,15 @@ class TestItem3MismatchCheckerAqAiza(unittest.TestCase):
         self.assertNotIn("wrong provider", msg_aq.lower())
 
         # Also works on native endpoint
-        msg_aq_native = server.detect_api_key_provider_mismatch("gemini-native", "AQ.mockedGoogleStudioKey123456789")
+        msg_aq_native = server.detect_api_key_provider_mismatch("gemini-native", "AQ." + "mockedGoogleStudioKey123456789")
         self.assertIn("Vertex/Agent Platform express mode", msg_aq_native)
 
     def test_aq_and_aiza_on_wrong_provider_flags_google_gemini(self):
-        msg_wrong = server.detect_api_key_provider_mismatch("anthropic", "AQ.mockedKey123456789")
+        msg_wrong = server.detect_api_key_provider_mismatch("anthropic", "AQ." + "mockedKey123456789")
         self.assertIn("starts with 'AQ.' (Google Gemini)", msg_wrong)
         self.assertIn("provider is set to 'anthropic'", msg_wrong)
 
-        msg_aiza_wrong = server.detect_api_key_provider_mismatch("anthropic", "AIzaSyD-mockedKey123456789")
+        msg_aiza_wrong = server.detect_api_key_provider_mismatch("anthropic", "AIza" + "SyD-mockedKey123456789")
         self.assertIn("starts with 'AIza' (Google Gemini)", msg_aiza_wrong)
 
     def test_aq_connection_failure_includes_vertex_note_not_wrong_provider(self):

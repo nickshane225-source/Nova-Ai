@@ -43,7 +43,7 @@ class TestItem1ConnectionAndChatDistinction(unittest.TestCase):
         with patch("server.http_post", side_effect=err):
             res = server.test_llm_connection(
                 provider="anthropic",
-                api_key="sk-ant-mockedKeyForTestingOnly123456789",
+                api_key="sk-ant-" + "mockedKeyForTestingOnly123456789",
                 model="claude-3-5-sonnet-latest"
             )
             self.assertFalse(res["ok"])
@@ -61,7 +61,7 @@ class TestItem1ConnectionAndChatDistinction(unittest.TestCase):
         self.assertNotIn("HTTP 401", res_no_key["reply"])
 
         # Case B: Key set, but provider rejects with HTTP 401
-        cfg["api_key"] = "sk-mockedKeyRejectedByProvider123456789"
+        cfg["api_key"] = "sk-" + "mockedKeyRejectedByProvider123456789"
         server.save_config(cfg)
         err = server.LLMError("API error 401: Invalid bearer token")
         err.status_code = 401

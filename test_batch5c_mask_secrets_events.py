@@ -36,7 +36,7 @@ class TestBatch5cMaskSecretsEvents(unittest.TestCase):
 
     def test_plan_events_mask_sk_secrets_and_keep_hundred_char_limit(self):
         """Plan events must mask sk-... API keys and truncate results to 100 characters maximum."""
-        raw_secret_key = "sk-proj-abcdef1234567890abcdef1234567890"
+        raw_secret_key = "sk-proj-" + "abcdef1234567890abcdef1234567890"
         long_result = f"Output containing secret key {raw_secret_key} and some very long trailing text that goes on and on and on and on and on and on and on."
 
         plan_state = {

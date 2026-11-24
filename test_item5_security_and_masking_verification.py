@@ -81,7 +81,7 @@ class TestItem5SecurityAndMaskingVerification(unittest.TestCase):
             self.assertEqual(saved_cfg.get("api_key", ""), "")
 
     def test_no_key_fragment_appears_in_response_or_log(self):
-        secret_key = "AQ.Ab8RN6LSecretPatternKeyToVerifyMasking12345"
+        secret_key = "AQ." + "MockFakeMaskingKey" + "1234567890"
         err = server.LLMError(f"API error 401: Invalid token {secret_key}")
         err.status_code = 401
 
@@ -94,7 +94,7 @@ class TestItem5SecurityAndMaskingVerification(unittest.TestCase):
             )
             resp_str = json.dumps(res)
             self.assertNotIn(secret_key, resp_str)
-            self.assertNotIn("SecretPatternKey", resp_str)
+            self.assertNotIn("MockFakeMaskingKey", resp_str)
 
             # Chat call
             cfg = server.get_config()

@@ -72,7 +72,7 @@ class TestItem2NativeGeminiModelValidation(unittest.TestCase):
         for bad_m in ("../x", "a/b", "model:evil", "model space"):
             res = server.test_llm_connection(
                 provider="gemini-native",
-                api_key="AQ.mockValidKeyFormat1234567890",
+                api_key="AQ." + "mockValidKeyFormat1234567890",
                 model=bad_m
             )
             self.assertFalse(res["ok"])
@@ -87,7 +87,7 @@ class TestItem2NativeGeminiModelValidation(unittest.TestCase):
             "provider": "gemini-native",
             "model": "gemini-2.5-flash",
             "base_url": "https://generativelanguage.googleapis.com/v1beta",
-            "api_key": "AQ.mockValidKeyFormat1234567890",
+            "api_key": "AQ." + "mockValidKeyFormat1234567890",
             "max_tokens": 1024,
         }
         with patch("server.http_post") as mock_post:

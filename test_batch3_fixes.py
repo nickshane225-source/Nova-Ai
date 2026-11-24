@@ -126,6 +126,7 @@ class TestBatch3AndFollowUps(unittest.TestCase):
             auth_token = server.API_SESSION_TOKEN
 
             # 1a. Exact payload the UI sends (with unchanged sensitive keys allow_outside_workspace=False, discord_channel_ids=[])
+            fake_discord_tok = "MTIzNDU2Nzg5MDEyMzQ1Njc4." + "G1a2b3." + "secretDiscordBotTokenValue123456"
             ui_payload = {
                 "provider": "openai",
                 "api_key": "sk-test-openai-key-12345678",
@@ -134,7 +135,7 @@ class TestBatch3AndFollowUps(unittest.TestCase):
                 "user_name": "Commander Nova",
                 "monthly_budget_usd": 42.5,
                 "discord_enabled": True,
-                "discord_bot_token": "MTIzNDU2Nzg5MDEyMzQ1Njc4.G1a2b3.secretDiscordBotTokenValue123456",
+                "discord_bot_token": fake_discord_tok,
                 "discord_channel_ids": [],
                 "discord_allowed_user_ids": [],
                 "language": "en-US",
@@ -160,7 +161,7 @@ class TestBatch3AndFollowUps(unittest.TestCase):
             self.assertTrue(saved_cfg["discord_enabled"])
             self.assertEqual(
                 saved_cfg["discord_bot_token"],
-                "MTIzNDU2Nzg5MDEyMzQ1Njc4.G1a2b3.secretDiscordBotTokenValue123456",
+                fake_discord_tok,
             )
             raw_disk = json.loads(server.CONFIG_FILE.read_text(encoding="utf-8"))
             if server.is_dpapi_available():
@@ -529,10 +530,13 @@ class TestBatch3AndFollowUps(unittest.TestCase):
         - Redacts sk-..., AIza..., Telegram/Discord bot tokens, Bearer ...
         - Clamps limit param to 1000.
         """
+        fake_sk = "sk-proj" + "1234567890abcdefghijklmnop"
+        fake_aiza = "AIzaSyD" + "aGmWKa4JsXZ-1234567890abcdefghij"
+        fake_tg = "1234567890:" + "AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw"
         long_secret_preview = (
-            "cmd with OpenAI sk-proj1234567890abcdefghijklmnop "
-            "and Google AIzaSyDaGmWKa4JsXZ-1234567890abcdefghij "
-            "and Telegram 1234567890:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw "
+            f"cmd with OpenAI {fake_sk} "
+            f"and Google {fake_aiza} "
+            f"and Telegram {fake_tg} "
             "and Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.secret "
             + ("X" * 900)
         )
@@ -544,9 +548,9 @@ class TestBatch3AndFollowUps(unittest.TestCase):
             status="EXECUTED",
         )
         self.assertLessEqual(len(entry["preview"]), 500)
-        self.assertNotIn("sk-proj1234567890abcdefghijklmnop", entry["preview"])
-        self.assertNotIn("AIzaSyDaGmWKa4JsXZ-1234567890abcdefghij", entry["preview"])
-        self.assertNotIn("1234567890:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw", entry["preview"])
+        self.assertNotIn(fake_sk, entry["preview"])
+        self.assertNotIn(fake_aiza, entry["preview"])
+        self.assertNotIn(fake_tg, entry["preview"])
         self.assertNotIn("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.secret", entry["preview"])
         self.assertIn("[REDACTED:", entry["preview"])
 

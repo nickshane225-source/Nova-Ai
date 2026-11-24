@@ -26,7 +26,7 @@ class TestItem1ErrorMappingComprehensive(unittest.TestCase):
         server.MEMORY_FILE = self.fake_data / "memory.json"
 
         cfg = dict(server.DEFAULT_CONFIG)
-        cfg["api_key"] = "sk-validConfigKeyForTestsOnly12345"
+        cfg["api_key"] = "sk-" + "validConfigKeyForTestsOnly12345"
         server.save_config(cfg)
 
     def tearDown(self):

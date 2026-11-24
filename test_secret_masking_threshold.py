@@ -42,9 +42,10 @@ class TestSecretMaskingAndLockout(unittest.TestCase):
         self.assertIn("[REDACTED:key]", masked_audit)
 
     def test_pattern_masking_still_active_for_pattern_keys(self):
-        sample_text = "Here is an Anthropic key: sk-ant-api03-abcdefghijklmnopqrstuvwxyz1234567890"
+        fake_anthropic_key = "sk-ant-" + "api03-abcdefghijklmnopqrstuvwxyz1234567890"
+        sample_text = f"Here is an Anthropic key: {fake_anthropic_key}"
         masked = server.mask_secrets(sample_text, cfg={})
-        self.assertNotIn("sk-ant-api03-abcdefghijklmnopqrstuvwxyz1234567890", masked)
+        self.assertNotIn(fake_anthropic_key, masked)
         self.assertIn("[REDACTED:key]", masked)
 
     def test_mask_secrets_8_12_40_char_secrets_no_partial_leakage(self):

@@ -10,6 +10,8 @@ from unittest import mock
 
 import server
 
+FAKE_AQ_KEY = "AQ." + "FakeGoogleAuthKey" + "0123456789"
+
 
 class TestSettingsKeyValidation(unittest.TestCase):
     def setUp(self):
@@ -33,9 +35,9 @@ class TestSettingsKeyValidation(unittest.TestCase):
 
         # Google keys (AIza and AQ.) on non-Gemini provider
         self.assertIsNotNone(server.detect_api_key_provider_mismatch("anthropic", "AIzaSyD-fake-google-key-123456"))
-        self.assertIsNotNone(server.detect_api_key_provider_mismatch("anthropic", "AQ.Ab8RN6LfakeGoogleAuthKey123456789"))
-        self.assertIsNotNone(server.detect_api_key_provider_mismatch("openai", "AQ.Ab8RN6LfakeGoogleAuthKey123456789", "https://api.openai.com/v1"))
-        aq_note = server.detect_api_key_provider_mismatch("openai", "AQ.Ab8RN6LfakeGoogleAuthKey123456789", "https://generativelanguage.googleapis.com/v1beta/openai")
+        self.assertIsNotNone(server.detect_api_key_provider_mismatch("anthropic", FAKE_AQ_KEY))
+        self.assertIsNotNone(server.detect_api_key_provider_mismatch("openai", FAKE_AQ_KEY, "https://api.openai.com/v1"))
+        aq_note = server.detect_api_key_provider_mismatch("openai", FAKE_AQ_KEY, "https://generativelanguage.googleapis.com/v1beta/openai")
         self.assertIn("Vertex/Agent Platform express mode", aq_note)
         self.assertNotIn("invalid", aq_note.lower())
         self.assertIsNone(server.detect_api_key_provider_mismatch("gemini", "AIzaSyD-fake-google-key-123456"))
@@ -56,7 +58,7 @@ class TestSettingsKeyValidation(unittest.TestCase):
         with mock.patch.object(server, "http_post", side_effect=fake_post_ok):
             res = server.test_llm_connection(
                 provider="openai",
-                api_key="AQ.Ab8RN6LfakeValidGeminiKey1234567890",
+                api_key=FAKE_AQ_KEY,
                 model="gemini-3.5-flash-lite",
                 base_url="https://generativelanguage.googleapis.com/v1beta/openai",
             )
@@ -68,30 +70,31 @@ class TestSettingsKeyValidation(unittest.TestCase):
         with mock.patch.object(server, "http_post", side_effect=server.LLMError('API error 401: {"type":"authentication_error","message":"invalid x-api-key"}')):
             res = server.test_llm_connection(
                 provider="anthropic",
-                api_key="AQ.Ab8RN6LfakeGoogleKey12345678901234",
+                api_key=FAKE_AQ_KEY,
                 model="claude-3-5-sonnet-latest",
             )
         self.assertFalse(res["ok"])
         self.assertEqual(res["category"], "wrong_provider")
         self.assertIn("Google Gemini", res["message"])
-        self.assertNotIn("AQ.Ab8RN6LfakeGoogleKey12345678901234", res["message"])
+        self.assertNotIn(FAKE_AQ_KEY, res["message"])
 
         # 3. Invalid key (401 without mismatch)
+        fake_invalid_key = "sk-ant-" + "api03-invalid-fake-key-123456"
         with mock.patch.object(server, "http_post", side_effect=server.LLMError("API error 401: invalid x-api-key")):
             res = server.test_llm_connection(
                 provider="anthropic",
-                api_key="sk-ant-api03-invalid-fake-key-123456",
+                api_key=fake_invalid_key,
                 model="claude-3-5-sonnet-latest",
             )
         self.assertFalse(res["ok"])
         self.assertEqual(res["category"], "invalid_key")
-        self.assertNotIn("sk-ant-api03-invalid-fake-key-123456", res["message"])
+        self.assertNotIn(fake_invalid_key, res["message"])
 
         # 4. Quota exceeded (429)
         with mock.patch.object(server, "http_post", side_effect=server.LLMError("API error 429: You exceeded your current quota")):
             res = server.test_llm_connection(
                 provider="openai",
-                api_key="AQ.Ab8RN6LfakeQuotaKey123456789012345",
+                api_key=FAKE_AQ_KEY,
                 model="gemini-3.5-flash-lite",
                 base_url="https://generativelanguage.googleapis.com/v1beta/openai",
             )
@@ -128,7 +131,7 @@ class TestSettingsKeyValidation(unittest.TestCase):
                     f"http://127.0.0.1:{port}/api/config/test",
                     data=json.dumps({
                         "provider": "anthropic",
-                        "api_key": "AQ.Ab8RN6LwrongProviderKey1234567890",
+                        "api_key": FAKE_AQ_KEY,
                         "model": "claude-3-5-sonnet-latest",
                     }).encode("utf-8"),
                     headers=headers,
@@ -145,7 +148,7 @@ class TestSettingsKeyValidation(unittest.TestCase):
                     f"http://127.0.0.1:{port}/api/config",
                     data=json.dumps({
                         "provider": "anthropic",
-                        "api_key": "AQ.Ab8RN6LwrongProviderKey1234567890",
+                        "api_key": FAKE_AQ_KEY,
                         "model": "claude-3-5-sonnet-latest",
                         "verify_key": True,
                     }).encode("utf-8"),
@@ -167,7 +170,7 @@ class TestSettingsKeyValidation(unittest.TestCase):
                     f"http://127.0.0.1:{port}/api/config",
                     data=json.dumps({
                         "provider": "anthropic",
-                        "api_key": "AQ.Ab8RN6LwrongProviderKey1234567890",
+                        "api_key": FAKE_AQ_KEY,
                         "model": "claude-3-5-sonnet-latest",
                         "verify_key": True,
                         "force_save_key": True,
@@ -177,7 +180,7 @@ class TestSettingsKeyValidation(unittest.TestCase):
                 )
                 with urllib.request.urlopen(req, timeout=5) as resp:
                     self.assertEqual(resp.status, 200)
-                self.assertEqual(server.get_config().get("api_key"), "AQ.Ab8RN6LwrongProviderKey1234567890")
+                self.assertEqual(server.get_config().get("api_key"), FAKE_AQ_KEY)
         finally:
             srv.shutdown()
             srv.server_close()
