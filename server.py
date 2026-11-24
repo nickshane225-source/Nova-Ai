@@ -987,6 +987,84 @@ def validate_base_url_scheme(url_str: str) -> tuple[bool, str]:
     return True, ""
 
 
+def get_request_summary(provider: str = "", api_key: str = "", model: str = "", base_url: str = "") -> dict:
+    """
+    Constructs a request summary structure without revealing any secret key characters.
+    Reports: provider, endpoint_host, auth_method, key_length, key_format_label, model, base_url.
+    """
+    cfg = get_config()
+    raw_key = str(api_key or "").strip()
+    if not raw_key:
+        raw_key = str(cfg.get("api_key", "") or "").strip()
+    if raw_key.startswith("dpapi:"):
+        raw_key = decrypt_dpapi(raw_key)
+
+    valid_k, clean_k, _ = sanitize_and_validate_api_key(raw_key)
+    key_len = len(clean_k)
+
+    if clean_k.startswith("AQ."):
+        fmt_label = "AQ."
+    elif clean_k.startswith("AIza"):
+        fmt_label = "AIza"
+    elif clean_k.startswith("sk-ant-"):
+        fmt_label = "sk-ant-"
+    elif clean_k.startswith("sk-"):
+        fmt_label = "sk-"
+    elif key_len > 0:
+        fmt_label = "other"
+    else:
+        fmt_label = "none"
+
+    prov_raw = str(provider or cfg.get("provider", "anthropic")).strip().lower()
+    base = str(base_url if base_url is not None and base_url != "" else cfg.get("base_url", "")).strip()
+    mdl = str(model or cfg.get("model", "")).strip()
+
+    if prov_raw == "anthropic":
+        endpoint_host = "api.anthropic.com"
+        auth_method = "Bearer or x-api-key"
+        if not mdl:
+            mdl = PRESETS["anthropic"]["model"]
+    elif prov_raw in ("gemini-native", "gemini_native"):
+        base_eff = base if (base and "generativelanguage" in base) else PRESETS["gemini-native"]["base_url"]
+        p = urllib.parse.urlparse(base_eff)
+        endpoint_host = p.netloc or "generativelanguage.googleapis.com"
+        auth_method = "x-goog-api-key"
+        if not mdl:
+            mdl = PRESETS["gemini-native"]["model"]
+    elif prov_raw == "gemini":
+        base_eff = base if (base and "generativelanguage" in base) else PRESETS["gemini"]["base_url"]
+        p = urllib.parse.urlparse(base_eff)
+        endpoint_host = p.netloc or "generativelanguage.googleapis.com"
+        auth_method = "Bearer"
+        if not mdl:
+            mdl = PRESETS["gemini"]["model"]
+    elif prov_raw == "ollama":
+        base_eff = base if (base and ("localhost" in base or "127.0.0.1" in base)) else PRESETS["ollama"]["base_url"]
+        p = urllib.parse.urlparse(base_eff)
+        endpoint_host = p.netloc or "localhost:11434"
+        auth_method = "Bearer"
+        if not mdl:
+            mdl = PRESETS["ollama"]["model"]
+    else:
+        base_eff = base or PRESETS["openai"]["base_url"]
+        p = urllib.parse.urlparse(base_eff)
+        endpoint_host = p.netloc or "api.openai.com"
+        auth_method = "Bearer"
+        if not mdl:
+            mdl = PRESETS["openai"]["model"]
+
+    return {
+        "ok": True,
+        "provider": prov_raw,
+        "endpoint_host": endpoint_host,
+        "auth_method": auth_method,
+        "key_length": key_len,
+        "key_format_label": fmt_label,
+        "model": mdl,
+        "base_url": base,
+    }
+
+
 def map_llm_error_status(status_code: int | None, err_str: str, provider: str = "", model: str = "", key: str = "", mismatch: str | None = None) -> dict:
     """
     Maps an LLMError status code and error string to distinct structured error categories:
@@ -7165,6 +7243,16 @@ class Handler(BaseHandler):
                     reauth_url = f"http://127.0.0.1:{port}/?boot={fresh_boot}"
                     print(f"\n[Nova Security] Unauthorized /api request. Re-authenticate via: {reauth_url}\n")
                 return self._send(401, {"ok": False, "error": "Unauthorized: valid nova_session cookie required."})
+        if path == "/api/config/request_summary":
+            cfg = get_config()
+            summary = get_request_summary(
+                provider=cfg.get("provider", ""),
+                api_key=cfg.get("api_key", ""),
+                model=cfg.get("model", ""),
+                base_url=cfg.get("base_url", ""),
+            )
+            return self._send(200, summary)
+
         if path == "/api/remote/devices":
             with PAIRED_DEVICES_LOCK:
                 devs = [
@@ -7755,6 +7843,14 @@ class Handler(BaseHandler):
                     base_url=t_base,
                 )
                 return self._send(200, res)
+            if path == "/api/config/request_summary":
+                summary = get_request_summary(
+                    provider=str(body.get("provider") or ""),
+                    api_key=str(body.get("api_key") or ""),
+                    model=str(body.get("model") or ""),
+                    base_url=str(body.get("base_url") or ""),
+                )
+                return self._send(200, summary)
             if path == "/api/config":
                 VALID_CONFIG_KEYS = {
                     "provider", "model", "base_url", "api_key", "clear_key", "verify_key", "force_save_key",

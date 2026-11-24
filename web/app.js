@@ -1891,10 +1891,12 @@ async function renderPanel(name) {
       <label>AI provider</label><select id="prov"><option value="anthropic">Anthropic (Claude)</option><option value="gemini">Google Gemini (OpenAI-compatible)</option><option value="gemini-native">Google Gemini (Native endpoint)</option><option value="openai">OpenAI-compatible (OpenAI, OpenRouter, Groq…)</option><option value="ollama">Ollama / LM Studio (local, free)</option></select>
       <label>API key ${c.has_key ? "(saved — leave blank to keep)" : ""}</label><input id="key" type="password" placeholder="${c.has_key ? "••••••••" : "paste your key"}">
       <div id="keyMismatchWarn" class="hidden" style="color:#ffaa00; background:rgba(255,170,0,0.12); border:1px solid #ffaa00; padding:7px 10px; border-radius:4px; margin:6px 0; font-size:12px;"></div>
-      <div style="display:flex; align-items:center; gap:8px; margin:6px 0 10px 0;">
+      <div style="display:flex; align-items:center; gap:8px; margin:6px 0 10px 0; flex-wrap:wrap;">
         <button class="btn" id="btnTestConn" type="button" style="padding:4px 12px; font-size:12px;">Test connection</button>
+        <button class="btn" id="btnReqSummary" type="button" style="padding:4px 12px; font-size:12px; background:rgba(0,180,255,0.15); border-color:#00b4ff;">Show request summary</button>
         <span id="connTestResult" style="font-size:12px;"></span>
       </div>
+      <div id="reqSummaryBox" class="hidden" style="color:#cfe9f5; background:rgba(0,180,255,0.08); border:1px solid rgba(0,180,255,0.3); padding:8px 12px; border-radius:4px; margin:6px 0 10px 0; font-size:12px; font-family:monospace; line-height:1.6;"></div>
       <label id="forceSaveWrap" class="hidden" style="display:none; align-items:center; gap:8px; text-transform:none; font-size:12px; color:#ffaa00; cursor:pointer; margin:6px 0;">
         <input type="checkbox" id="chkForceSaveKey" style="width:auto">
         <span>Save anyway (override failed connection test)</span>
@@ -2069,6 +2071,39 @@ async function renderPanel(name) {
         if (btn) btn.disabled = false;
       }
     };
+
+    if ($("#btnReqSummary")) {
+      $("#btnReqSummary").onclick = async () => {
+        const box = $("#reqSummaryBox");
+        if (!box) return;
+        if (!box.classList.contains("hidden") && box.innerHTML) {
+          box.classList.add("hidden");
+          return;
+        }
+        try {
+          const r = await api("/api/config/request_summary", {
+            provider: $("#prov").value,
+            api_key: $("#key").value,
+            model: $("#model").value,
+            base_url: $("#base").value,
+          });
+          if (r && r.ok) {
+            box.innerHTML = `<b>Request Summary:</b><br>` +
+              `• Provider: ${esc(r.provider)}<br>` +
+              `• Destination Host: ${esc(r.endpoint_host)}<br>` +
+              `• Auth Method: ${esc(r.auth_method)}<br>` +
+              `• Key Length: ${r.key_length} characters<br>` +
+              `• Key Format: ${esc(r.key_format_label)}<br>` +
+              `• Model: ${esc(r.model)}<br>` +
+              `• Base URL: ${esc(r.base_url || "(default)")}`;
+            box.classList.remove("hidden");
+          }
+        } catch (e) {
+          box.textContent = "Failed to load request summary.";
+          box.classList.remove("hidden");
+        }
+      };
+    }
 
     $("#vrate").oninput = () => { $("#lblRate").textContent = $("#vrate").value + "x"; };
     $("#vpitch").oninput = () => { $("#lblPitch").textContent = $("#vpitch").value; };
