@@ -492,8 +492,9 @@ def safe_http_fetch(
                         conn.sock.settimeout(max(0.001, min(cur_rem, per_chunk_timeout)))
                     except Exception:
                         pass
+                read_fn = getattr(resp, "read1", resp.read)
                 try:
-                    chunk = resp.read(min(1024, max_size + 1 - bytes_read))
+                    chunk = read_fn(min(1024, max_size + 1 - bytes_read))
                 except (socket.timeout, TimeoutError, Exception) as read_err:
                     conn.close()
                     if time.time() >= (deadline - 0.5) or isinstance(read_err, (socket.timeout, TimeoutError)):
