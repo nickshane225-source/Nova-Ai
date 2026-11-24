@@ -917,7 +917,7 @@ def detect_api_key_provider_mismatch(provider: str, api_key: str, base_url: str 
     base_low = str(base_url or "").strip().lower()
     if prov_raw == "anthropic":
         effective = "anthropic"
-    elif prov_raw == "gemini" or (prov_raw == "openai" and "generativelanguage.googleapis.com" in base_low):
+    elif prov_raw in ("gemini", "gemini-native", "gemini_native") or (prov_raw == "openai" and "generativelanguage.googleapis.com" in base_low):
         effective = "gemini"
     elif prov_raw == "ollama" or (prov_raw == "openai" and ("localhost" in base_low or "127.0.0.1" in base_low)):
         effective = "ollama"
@@ -931,6 +931,8 @@ def detect_api_key_provider_mismatch(provider: str, api_key: str, base_url: str 
         if effective != "gemini":
             pref = "AIza" if key.startswith("AIza") else "AQ."
             return f"This key starts with '{pref}' (Google Gemini), but provider is set to '{effective}'."
+        if key.startswith("AQ."):
+            return "If this key was created for Vertex/Agent Platform express mode, it will not work with the Gemini API endpoint."
     elif key.startswith("sk-") and not key.startswith("sk-or-"):
         if effective in ("anthropic", "gemini"):
             return f"This key starts with 'sk-' (OpenAI), but provider is set to '{effective}'."
@@ -1082,7 +1084,7 @@ def test_llm_connection(provider: str, api_key: str, model: str, base_url: str =
         low = err_s.lower()
         status_prefix = f"HTTP {status_code}: " if status_code else ""
         if status_code in (401, 403) or "api error 401" in low or "api error 403" in low or "authentication_error" in low or "invalid x-api-key" in low or "invalid_api_key" in low or "api_key_invalid" in low or "unauthorized" in low:
-            if mismatch:
+            if mismatch and "starts with" in mismatch:
                 return {
                     "ok": False,
                     "status_code": status_code or 401,
@@ -1090,11 +1092,17 @@ def test_llm_connection(provider: str, api_key: str, model: str, base_url: str =
                     "message": f"{status_prefix}Wrong provider: {mismatch}. Key NOT saved.",
                     "mismatch_warning": mismatch,
                 }
+            msg = f"{status_prefix}Invalid API key: authentication failed (401/403)."
+            if raw_key.startswith("AQ."):
+                msg += " If this key was created for Vertex/Agent Platform express mode, it will not work with the Gemini API endpoint."
+            else:
+                msg += " Check that you copied the full key for the selected provider."
+            msg += " Key NOT saved."
             return {
                 "ok": False,
                 "status_code": status_code or 401,
                 "category": "invalid_key",
-                "message": f"{status_prefix}Invalid API key: authentication failed (401/403). Check that you copied the full key for the selected provider. Key NOT saved.",
+                "message": msg,
                 "mismatch_warning": mismatch,
             }
         if status_code == 429 or "api error 429" in low or "quota" in low or "rate_limit" in low or "insufficient_quota" in low:

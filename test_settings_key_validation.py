@@ -35,7 +35,9 @@ class TestSettingsKeyValidation(unittest.TestCase):
         self.assertIsNotNone(server.detect_api_key_provider_mismatch("anthropic", "AIzaSyD-fake-google-key-123456"))
         self.assertIsNotNone(server.detect_api_key_provider_mismatch("anthropic", "AQ.Ab8RN6LfakeGoogleAuthKey123456789"))
         self.assertIsNotNone(server.detect_api_key_provider_mismatch("openai", "AQ.Ab8RN6LfakeGoogleAuthKey123456789", "https://api.openai.com/v1"))
-        self.assertIsNone(server.detect_api_key_provider_mismatch("openai", "AQ.Ab8RN6LfakeGoogleAuthKey123456789", "https://generativelanguage.googleapis.com/v1beta/openai"))
+        aq_note = server.detect_api_key_provider_mismatch("openai", "AQ.Ab8RN6LfakeGoogleAuthKey123456789", "https://generativelanguage.googleapis.com/v1beta/openai")
+        self.assertIn("Vertex/Agent Platform express mode", aq_note)
+        self.assertNotIn("invalid", aq_note.lower())
         self.assertIsNone(server.detect_api_key_provider_mismatch("gemini", "AIzaSyD-fake-google-key-123456"))
 
         # OpenAI key on Anthropic or Gemini

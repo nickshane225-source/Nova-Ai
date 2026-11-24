@@ -1967,13 +1967,17 @@ async function renderPanel(name) {
       if (!k) return "";
       const b = String(baseVal || "").toLowerCase();
       let eff = provVal;
-      if (eff === "openai" && b.includes("generativelanguage.googleapis.com")) eff = "gemini";
+      if (eff === "gemini-native" || eff === "gemini" || (eff === "openai" && b.includes("generativelanguage.googleapis.com"))) eff = "gemini";
       else if (eff === "openai" && (b.includes("localhost") || b.includes("127.0.0.1"))) eff = "ollama";
       if (k.startsWith("sk-ant-") && eff !== "anthropic") {
         return `Warning: Key starts with "sk-ant-" (Anthropic Claude), but AI provider is set to "${eff}".`;
       }
       if ((k.startsWith("AIza") || k.startsWith("AQ.")) && eff !== "gemini") {
-        return `Warning: Key starts with "${k.slice(0, 4)}" (Google Gemini), but AI provider is set to "${eff}".`;
+        const pref = k.startsWith("AIza") ? "AIza" : "AQ.";
+        return `Warning: Key starts with "${pref}" (Google Gemini), but AI provider is set to "${eff}".`;
+      }
+      if (k.startsWith("AQ.") && eff === "gemini") {
+        return "If this key was created for Vertex/Agent Platform express mode, it will not work with the Gemini API endpoint.";
       }
       if (k.startsWith("sk-") && !k.startsWith("sk-ant-") && !k.startsWith("sk-or-") && (eff === "anthropic" || eff === "gemini")) {
         return `Warning: Key starts with "sk-" (OpenAI), but AI provider is set to "${eff}".`;
