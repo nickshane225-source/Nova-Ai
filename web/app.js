@@ -2044,14 +2044,17 @@ async function renderPanel(name) {
           const fw = $("#forceSaveWrap");
           if (fw) { fw.classList.add("hidden"); fw.style.display = "none"; }
         } else {
-          if (resEl) { resEl.style.color = "#ff4757"; resEl.textContent = "✗ " + ((r && r.message) || "Connection test failed"); }
+          const statusText = r && r.status_code ? ` (HTTP ${r.status_code})` : "";
+          const msg = (r && r.message) ? r.message : "Connection test failed";
+          const fullMsg = msg.includes("NOT saved") ? msg : `${msg}${statusText} — key NOT saved.`;
+          if (resEl) { resEl.style.color = "#ff4757"; resEl.textContent = "✗ " + fullMsg; }
           if ($("#key").value.trim()) {
             const fw = $("#forceSaveWrap");
             if (fw) { fw.classList.remove("hidden"); fw.style.display = "flex"; }
           }
         }
       } catch (e) {
-        if (resEl) { resEl.style.color = "#ff4757"; resEl.textContent = "✗ Network error: " + (e.message || "request failed"); }
+        if (resEl) { resEl.style.color = "#ff4757"; resEl.textContent = "✗ Network error: " + (e.message || "request failed") + " — key NOT saved."; }
       } finally {
         if (btn) btn.disabled = false;
       }
@@ -2109,7 +2112,10 @@ async function renderPanel(name) {
           const fw = $("#forceSaveWrap");
           if (fw) { fw.classList.remove("hidden"); fw.style.display = "flex"; }
         }
-        const msg = (res && res.error) ? res.error : "Failed to save settings.";
+        let msg = (res && res.error) ? res.error : "Failed to save settings.";
+        if (res && res.test_failed && !msg.includes("NOT saved")) {
+          msg += " — key NOT saved.";
+        }
         if (errEl) {
           errEl.textContent = msg;
           errEl.classList.remove("hidden");

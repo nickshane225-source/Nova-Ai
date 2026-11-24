@@ -741,6 +741,7 @@ def http_post(url, headers, body, timeout=90):
         except Exception:
             pass
         err = LLMError(f"API error {e.code}: {mask_secrets(detail[:400])}")
+        err.status_code = e.code
         err.usage = usage_info
         raise err
     except Exception as e:
@@ -976,53 +977,74 @@ def test_llm_connection(provider: str, api_key: str, model: str, base_url: str =
             "mismatch_warning": mismatch,
         }
     except LLMError as e:
+        status_code = getattr(e, "status_code", None)
+        if status_code is None:
+            m_code = re.search(r"API error (\d{3})", str(e))
+            if m_code:
+                status_code = int(m_code.group(1))
         err_s = mask_secrets(str(e), cfg_cur)
         if raw_key and raw_key in err_s:
             err_s = err_s.replace(raw_key, "[REDACTED]")
         low = err_s.lower()
-        if "api error 401" in low or "api error 403" in low or "authentication_error" in low or "invalid x-api-key" in low or "invalid_api_key" in low or "api_key_invalid" in low or "unauthorized" in low:
+        status_prefix = f"HTTP {status_code}: " if status_code else ""
+        if status_code in (401, 403) or "api error 401" in low or "api error 403" in low or "authentication_error" in low or "invalid x-api-key" in low or "invalid_api_key" in low or "api_key_invalid" in low or "unauthorized" in low:
             if mismatch:
                 return {
                     "ok": False,
+                    "status_code": status_code or 401,
                     "category": "wrong_provider",
-                    "message": f"Wrong provider: {mismatch}",
+                    "message": f"{status_prefix}Wrong provider: {mismatch}. Key NOT saved.",
                     "mismatch_warning": mismatch,
                 }
             return {
                 "ok": False,
+                "status_code": status_code or 401,
                 "category": "invalid_key",
-                "message": "Invalid API key: authentication failed (401/403). Check that you copied the full key for the selected provider.",
+                "message": f"{status_prefix}Invalid API key: authentication failed (401/403). Check that you copied the full key for the selected provider. Key NOT saved.",
                 "mismatch_warning": mismatch,
             }
-        if "api error 429" in low or "quota" in low or "rate_limit" in low or "insufficient_quota" in low:
+        if status_code == 429 or "api error 429" in low or "quota" in low or "rate_limit" in low or "insufficient_quota" in low:
             return {
                 "ok": False,
+                "status_code": status_code or 429,
                 "category": "quota",
-                "message": "Quota or rate limit exceeded (429). Check your provider plan and billing details.",
+                "message": f"{status_prefix}Quota or rate limit exceeded (429). Check your provider plan and billing details. Key NOT saved.",
                 "mismatch_warning": mismatch,
             }
-        if "api error 404" in low or "not found" in low or "does not exist" in low:
+        if status_code == 404 or "api error 404" in low or "not found" in low or "does not exist" in low:
             return {
                 "ok": False,
+                "status_code": status_code or 404,
                 "category": "invalid_model",
-                "message": f"Model '{mdl}' was not found (404) on this provider.",
+                "message": f"{status_prefix}Model '{mdl}' was not found (404) on this provider. Key NOT saved.",
                 "mismatch_warning": mismatch,
             }
         if "could not reach" in low or "timed out" in low or "timeout" in low or "urlopen error" in low or "connection refused" in low or "name or service not known" in low or "getaddrinfo" in low:
             return {
                 "ok": False,
+                "status_code": status_code,
                 "category": "network",
-                "message": "Network error: could not reach the AI provider. Check your internet connection, VPN/proxy, or Base URL.",
+                "message": f"{status_prefix}Network error: could not reach the AI provider. Check your internet connection, VPN/proxy, or Base URL. Key NOT saved.",
                 "mismatch_warning": mismatch,
             }
         return {
             "ok": False,
+            "status_code": status_code,
             "category": "error",
-            "message": f"Connection test failed: {err_s[:220]}",
+            "message": f"{status_prefix}Connection test failed: {err_s[:160]}. Key NOT saved.",
             "mismatch_warning": mismatch,
         }
     except Exception as e:
         err_s = mask_secrets(str(e), cfg_cur)
+        if raw_key and raw_key in err_s:
+            err_s = err_s.replace(raw_key, "[REDACTED]")
+        return {
+            "ok": False,
+            "status_code": None,
+            "category": "error",
+            "message": f"Connection test failed: {err_s[:160]}. Key NOT saved.",
+            "mismatch_warning": mismatch,
+        }
         if raw_key and raw_key in err_s:
             err_s = err_s.replace(raw_key, "[REDACTED]")
         return {
@@ -6295,6 +6317,24 @@ def _chat_inner(user_text, source, jid, mode="developer", is_automation=False, c
     try:
         act_phase(jid, "thinking", "Waiting for the AI model")
         raw = call_llm(cfg, sys_prompt, messages_to_send)
+    except LLMError as e:
+        err_str = str(e)
+        status_code = getattr(e, "status_code", None)
+        if not status_code:
+            m_sc = re.search(r"API error (\d{3})", err_str)
+            if m_sc:
+                status_code = int(m_sc.group(1))
+        with LOCK:
+            if hist and hist[-1] == user_msg:
+                hist.pop()
+        if "No API key set" in err_str:
+            reply = "No API key set. Open Settings and paste your key."
+            return {"reply": reply, "actions": [], "error": reply}
+        if status_code == 401 or "401" in err_str or "unauthorized" in err_str.lower() or "authentication_error" in err_str.lower():
+            reply = "API key rejected by provider (HTTP 401). Check your API key in Settings."
+            return {"reply": reply, "actions": [], "error": reply}
+        reply = f"AI error: {mask_secrets(err_str)}"
+        return {"reply": reply, "actions": [], "error": reply}
     except Exception:
         with LOCK:
             # Roll back last user message on failure so history is not poisoned
@@ -7747,11 +7787,15 @@ class Handler(BaseHandler):
                         base_url=str(body.get("base_url", cfg.get("base_url", ""))),
                     )
                     if not t_res.get("ok"):
+                        err_msg = t_res.get("message", "API key connection test failed.")
+                        if "NOT saved" not in err_msg:
+                            err_msg += " Key NOT saved."
                         return self._send(400, {
                             "ok": False,
                             "test_failed": True,
+                            "status_code": t_res.get("status_code"),
                             "category": t_res.get("category", "error"),
-                            "error": t_res.get("message", "API key connection test failed."),
+                            "error": err_msg,
                             "mismatch_warning": t_res.get("mismatch_warning"),
                         })
                 for k in ("provider", "model", "base_url", "user_name", "language", "character", "llm_reasoning_effort", "remote_bind_ip"):
