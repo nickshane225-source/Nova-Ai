@@ -763,6 +763,20 @@ def sanitize_and_validate_api_key(raw_key: str) -> tuple[bool, str, str]:
     return True, s, ""
 
 
+def validate_gemini_model_name(model_name: str) -> tuple[bool, str, str]:
+    """
+    Validates and URL-encodes a Gemini model name.
+    Must match ^[A-Za-z0-9._-]{1,80}$; rejects anything else.
+    Returns (is_valid, encoded_model_name, error_message).
+    """
+    m = str(model_name or "").strip()
+    if not m:
+        return False, "", "Invalid Gemini model name: model name cannot be empty."
+    if not re.match(r"^[A-Za-z0-9._-]{1,80}$", m):
+        return False, "", f"Invalid Gemini model name '{m}'. Model name must match [A-Za-z0-9._-]{{1,80}}."
+    return True, urllib.parse.quote(m, safe=""), ""
+
+
 def _call_single_llm(cfg, system, messages):
     provider = cfg["provider"]
     key = cfg.get("api_key", "")
@@ -799,8 +813,11 @@ def _call_single_llm(cfg, system, messages):
             if not valid:
                 raise LLMError(f"Refused by SSRF Protection: {err_msg}")
         base = base.rstrip("/")
-        mdl = cfg.get("model", "") or PRESETS["gemini-native"]["model"]
-        endpoint = f"{base}/models/{mdl}:generateContent"
+        raw_mdl = cfg.get("model", "") or PRESETS["gemini-native"]["model"]
+        valid_m, enc_m, err_m = validate_gemini_model_name(raw_mdl)
+        if not valid_m:
+            raise LLMError(f"API error 400: {err_m}")
+        endpoint = f"{base}/models/{enc_m}:generateContent"
         headers = {
             "content-type": "application/json",
             "x-goog-api-key": key,
@@ -1108,7 +1125,17 @@ def test_llm_connection(provider: str, api_key: str, model: str, base_url: str =
                 timeout=timeout,
             )
         elif prov_eff in ("gemini-native", "gemini_native"):
-            endpoint = f"{base.rstrip('/')}/models/{mdl or PRESETS['gemini-native']['model']}:generateContent"
+            raw_mdl = mdl or PRESETS["gemini-native"]["model"]
+            valid_m, enc_m, err_m = validate_gemini_model_name(raw_mdl)
+            if not valid_m:
+                return {
+                    "ok": False,
+                    "status_code": 400,
+                    "category": "invalid_model",
+                    "message": f"HTTP 400: {err_m} Key NOT saved.",
+                    "mismatch_warning": mismatch,
+                }
+            endpoint = f"{base.rstrip('/')}/models/{enc_m}:generateContent"
             headers = {
                 "content-type": "application/json",
                 "x-goog-api-key": raw_key,
@@ -7758,6 +7785,13 @@ class Handler(BaseHandler):
                     if not valid_k:
                         return self._send(400, {"ok": False, "error": err_k})
                     body["api_key"] = clean_k
+
+                # Validate Gemini native model name
+                prov_cand = str(body.get("provider") or get_config().get("provider", "")).strip().lower()
+                if prov_cand in ("gemini-native", "gemini_native") and ("model" in body):
+                    valid_m, _, err_m = validate_gemini_model_name(body["model"])
+                    if not valid_m:
+                        return self._send(400, {"ok": False, "error": err_m})
 
                 # Validate URL schemes (non-local base_url must use https)
                 if "base_url" in body:
