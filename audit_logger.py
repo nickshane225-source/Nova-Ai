@@ -72,6 +72,19 @@ def mask_secrets(text: str, cfg: dict = None) -> str:
     if not text or not isinstance(text, str):
         return ""
     masked = text
+
+    # Authorization: Bearer <token>
+    masked = re.sub(
+        r'(?i)(Authorization:\s*(?:Bearer\s+)?)([^\s,;\'"]+)',
+        r'\1[REDACTED:token]',
+        masked
+    )
+    masked = re.sub(
+        r'(?i)(\bBearer\s+)([A-Za-z0-9_\-\.]{8,})',
+        r'\1[REDACTED:token]',
+        masked
+    )
+
     secret_vals = []
     if isinstance(cfg, dict):
         for k, v in cfg.items():
