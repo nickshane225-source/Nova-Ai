@@ -338,6 +338,87 @@ class TestSSRFProtection(unittest.TestCase):
             self.assertIn("timed out", reason.lower())
             self.assertLess(elapsed, 0.8, "Slow resolver worker thread must be cut off at dns_timeout")
 
+    def test_safe_http_fetch_slow_drip_server_cut_off_at_15s(self):
+        """A real local server sending 1 byte every 2s is aborted at about 15s deadline."""
+        server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server_sock.bind(("127.0.0.1", 0))
+        drip_port = server_sock.getsockname()[1]
+        server_sock.listen(1)
+
+        stop_server = threading.Event()
+
+        def _drip_worker():
+            try:
+                conn, _ = server_sock.accept()
+                req = conn.recv(1024)
+                conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\n\r\n")
+                while not stop_server.is_set():
+                    time.sleep(2.0)
+                    if stop_server.is_set():
+                        break
+                    conn.sendall(b"1\r\na\r\n")
+                conn.close()
+            except Exception:
+                pass
+            finally:
+                try:
+                    server_sock.close()
+                except Exception:
+                    pass
+
+        t = threading.Thread(target=_drip_worker, daemon=True)
+        t.start()
+
+        t0 = time.time()
+        ok, reason, _ = ssrf_guard.safe_http_fetch(
+            f"http://127.0.0.1:{drip_port}/drip",
+            timeout=15.0,
+            allow_localhost_dev=True,
+            dev_localhost_ports={drip_port},
+        )
+        elapsed = time.time() - t0
+        stop_server.set()
+        print(f"\n[SSRF Slow Drip Test] Aborted at elapsed time: {elapsed:.2f}s")
+        self.assertFalse(ok)
+        self.assertIn("deadline exceeded", reason.lower())
+        self.assertAlmostEqual(elapsed, 15.0, delta=2.5)
+
+    def test_call_llm_with_fallback_refuses_http_evil_example_when_primary_fails(self):
+        """When primary fails, fallback provider with http://evil.example is refused via call_llm_with_fallback."""
+        cfg = {
+            "provider": "openai",
+            "model": "gpt-4o-mini",
+            "base_url": "https://api.openai.com/v1",
+            "api_key": "sk-test",
+            "fallback_providers": [
+                {"provider": "custom", "base_url": "http://evil.example/fallback", "model": "m1"}
+            ],
+        }
+        with patch("server._call_single_llm", side_effect=server.LLMError("Primary failed")):
+            with self.assertRaises(server.LLMError) as ctx:
+                server.call_llm_with_fallback(cfg, "system", [{"role": "user", "content": "hi"}])
+            self.assertIn("Refused by SSRF Protection", str(ctx.exception))
+            self.assertIn("http://evil.example", str(ctx.exception))
+
+    def test_dns_worker_thread_pool_capped_at_8_and_refuses_when_exhausted(self):
+        """Cap concurrent DNS worker threads at 8 and refuse when exhausted."""
+        permits = []
+        for _ in range(8):
+            acquired = ssrf_guard._DNS_SEMAPHORE.acquire(blocking=False)
+            self.assertTrue(acquired)
+            permits.append(acquired)
+
+        try:
+            ok, reason, target = ssrf_guard.validate_url_target("http://example.com/test")
+            self.assertFalse(ok)
+            self.assertIn("DNS worker thread pool exhausted", reason)
+            self.assertIsNone(target)
+        finally:
+            for _ in permits:
+                ssrf_guard._DNS_SEMAPHORE.release()
+
+        self.assertEqual(ssrf_guard._DNS_SEMAPHORE._value, 8)
+
 
 if __name__ == "__main__":
     unittest.main()

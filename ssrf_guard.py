@@ -209,6 +209,8 @@ def check_ip_security(
     return None
 
 
+_DNS_SEMAPHORE = threading.Semaphore(8)
+
 def validate_url_target(
     url: str,
     allow_localhost_dev: bool = False,
@@ -291,6 +293,9 @@ def validate_url_target(
         except Exception as e:
             return False, f"DNS resolution failed for '{host}': {e}", None
     else:
+        acquired = _DNS_SEMAPHORE.acquire(blocking=False)
+        if not acquired:
+            return False, "SSRF Guard: DNS worker thread pool exhausted (max 8 concurrent).", None
         res_container = []
         exc_container = []
 
@@ -301,9 +306,13 @@ def validate_url_target(
             except Exception as ex:
                 exc_container.append(ex)
 
-        t = threading.Thread(target=_resolve_worker, daemon=True)
-        t.start()
-        t.join(dns_timeout)
+        try:
+            t = threading.Thread(target=_resolve_worker, daemon=True)
+            t.start()
+            t.join(dns_timeout)
+        finally:
+            _DNS_SEMAPHORE.release()
+
         if t.is_alive():
             return False, f"DNS resolution timed out after {dns_timeout}s for '{host}'.", None
         if exc_container:
@@ -371,6 +380,7 @@ def safe_http_fetch(
     cfg: Optional[Dict[str, Any]] = None,
     custom_resolver: Optional[Callable[[str, int], list]] = None,
     dns_timeout: float = 5.0,
+    per_chunk_timeout: float = 5.0,
 ) -> Tuple[bool, str, Dict[str, Any]]:
     """
     Executes a hardened HTTP/HTTPS GET request with strict SSRF defense:
@@ -479,15 +489,21 @@ def safe_http_fetch(
                     return False, f"Total fetch deadline exceeded ({timeout}s)", {}
                 if hasattr(conn, "sock") and conn.sock:
                     try:
-                        conn.sock.settimeout(cur_rem)
+                        conn.sock.settimeout(max(0.001, min(cur_rem, per_chunk_timeout)))
                     except Exception:
                         pass
-                chunk = resp.read(min(1024, max_size + 1 - bytes_read))
+                try:
+                    chunk = resp.read(min(1024, max_size + 1 - bytes_read))
+                except (socket.timeout, TimeoutError, Exception) as read_err:
+                    conn.close()
+                    if time.time() >= (deadline - 0.5) or isinstance(read_err, (socket.timeout, TimeoutError)):
+                        return False, f"Total fetch deadline exceeded ({timeout}s)", {}
+                    raise
                 if not chunk:
                     break
                 raw_chunks.append(chunk)
                 bytes_read += len(chunk)
-                if time.time() > deadline:
+                if time.time() >= deadline:
                     conn.close()
                     return False, f"Total fetch deadline exceeded ({timeout}s)", {}
 
@@ -511,8 +527,12 @@ def safe_http_fetch(
             }
 
         except Exception as e:
-            if time.time() >= (deadline - 0.2) or isinstance(e, (socket.timeout, TimeoutError, http.client.IncompleteRead)):
-                return False, f"Total fetch deadline exceeded ({timeout}s): {e}", {}
+            try:
+                conn.close()
+            except Exception:
+                pass
+            if time.time() >= (deadline - 0.5) or "deadline exceeded" in str(e).lower() or isinstance(e, (socket.timeout, TimeoutError, http.client.IncompleteRead)):
+                return False, f"Total fetch deadline exceeded ({timeout}s)", {}
             return False, f"Failed to fetch {current_url}: {e}", {}
 
     return False, f"Too many redirects (exceeded maximum of {max_redirects} hops)", {}
