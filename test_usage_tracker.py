@@ -93,5 +93,29 @@ class TestUsageTracker(unittest.TestCase):
         self.assertEqual(cost, 0.0)
 
 
+    def test_HIGH_08_fallback_provider_logged_in_usage_ledger(self):
+        """HIGH-08: When failover occurs, usage tracker records the actual fallback provider and model."""
+        from unittest.mock import patch
+        import server
+        cfg = {
+            "provider": "anthropic",
+            "model": "claude-3-5-sonnet-latest",
+            "base_url": "",
+            "api_key": "sk-ant-test",
+            "gemini_api_key": "AIzaTestKey",
+            "fallback_providers": ["gemini"],
+        }
+
+        with patch("server._call_single_llm") as mock_call, \
+             patch("usage_tracker.record_usage") as mock_record:
+            mock_call.side_effect = [server.LLMError("Primary failed"), "Hello from Gemini"]
+            res = server.call_llm_with_fallback(cfg, "system", [{"role": "user", "content": "hi"}])
+            self.assertEqual(res, "Hello from Gemini")
+            self.assertTrue(mock_record.called)
+            args, kwargs = mock_record.call_args
+            prov = kwargs.get("provider") or (args[0] if len(args) > 0 else "")
+            self.assertEqual(prov, "gemini")
+
+
 if __name__ == "__main__":
     unittest.main()
