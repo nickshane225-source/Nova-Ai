@@ -355,7 +355,8 @@ DEFAULT_CONFIG = {
 PRESETS = {
     "anthropic": {"model": "claude-3-5-sonnet-latest", "base_url": ""},
     "openai": {"model": "gpt-4o-mini", "base_url": "https://api.openai.com/v1"},
-    "gemini": {"model": "gemini-3.5-flash-lite", "base_url": "https://generativelanguage.googleapis.com/v1beta/openai"},
+    "gemini": {"model": "gemini-2.5-flash", "base_url": "https://generativelanguage.googleapis.com/v1beta/openai"},
+    "gemini-native": {"model": "gemini-2.5-flash", "base_url": "https://generativelanguage.googleapis.com/v1beta"},
     "ollama": {"model": "llama3.2", "base_url": "http://localhost:11434/v1"},
 }
 
@@ -748,11 +749,27 @@ def http_post(url, headers, body, timeout=90):
         raise LLMError(mask_secrets(f"Could not reach the AI provider: {e}"))
 
 
+def sanitize_and_validate_api_key(raw_key: str) -> tuple[bool, str, str]:
+    """
+    Trims whitespace, single/double quotes, and newlines from an API key.
+    Rejects keys containing internal spaces.
+    Returns (is_valid, cleaned_key, error_message).
+    """
+    if not raw_key:
+        return True, "", ""
+    s = str(raw_key).strip().strip("'\"").strip()
+    if " " in s or "\t" in s or "\r" in s or "\n" in s:
+        return False, "", "API key cannot contain spaces."
+    return True, s, ""
+
+
 def _call_single_llm(cfg, system, messages):
     provider = cfg["provider"]
     key = cfg.get("api_key", "")
     if isinstance(key, str) and key.startswith("dpapi:"):
         key = decrypt_dpapi(key)
+    if key:
+        _, key, _ = sanitize_and_validate_api_key(key)
     timeout_cfg = int(cfg.get("llm_timeout", cfg.get("process_timeout", 60)) or 60)
     if provider == "anthropic":
         if not key:
@@ -773,6 +790,58 @@ def _call_single_llm(cfg, system, messages):
             timeout=timeout_cfg,
         )
         return "".join(b.get("text", "") for b in data.get("content", []))
+    if provider in ("gemini-native", "gemini_native"):
+        if not key:
+            raise LLMError("No API key set. Open Settings and paste your key.")
+        base = cfg.get("base_url", "").strip() or PRESETS["gemini-native"]["base_url"]
+        if base:
+            valid, err_msg = validate_base_url_scheme(base)
+            if not valid:
+                raise LLMError(f"Refused by SSRF Protection: {err_msg}")
+        base = base.rstrip("/")
+        mdl = cfg.get("model", "") or PRESETS["gemini-native"]["model"]
+        endpoint = f"{base}/models/{mdl}:generateContent"
+        headers = {
+            "content-type": "application/json",
+            "x-goog-api-key": key,
+        }
+        contents = []
+        for m in messages:
+            role = m.get("role", "user")
+            if role in ("assistant", "model"):
+                role = "model"
+            elif role == "system":
+                continue
+            else:
+                role = "user"
+            contents.append({
+                "role": role,
+                "parts": [{"text": str(m.get("content", ""))}]
+            })
+        if not contents:
+            contents = [{"role": "user", "parts": [{"text": "Hello"}]}]
+        body = {
+            "contents": contents,
+            "generationConfig": {
+                "maxOutputTokens": cfg.get("max_tokens", 2048),
+            }
+        }
+        if system:
+            body["systemInstruction"] = {
+                "parts": [{"text": system}]
+            }
+        data = http_post(endpoint, headers, body, timeout=timeout_cfg)
+        try:
+            candidates = data.get("candidates", [])
+            if candidates:
+                parts = candidates[0].get("content", {}).get("parts", [])
+                return "".join(p.get("text", "") for p in parts)
+            return "Sorry, I got an empty answer. Please try again."
+        except Exception:
+            err = LLMError(f"Unexpected reply from Gemini native endpoint: {str(data)[:300]}")
+            if isinstance(data, dict) and "usage" in data:
+                err.usage = data["usage"]
+            raise err
     # OpenAI-compatible (OpenAI, OpenRouter, Groq, Ollama, LM Studio ...)
     base = cfg.get("base_url", "").strip()
     if base:
@@ -914,6 +983,10 @@ def test_llm_connection(provider: str, api_key: str, model: str, base_url: str =
         prov_eff = "openai"
         if not base or "generativelanguage.googleapis.com" not in base.lower():
             base = PRESETS["gemini"]["base_url"]
+    elif prov_raw in ("gemini-native", "gemini_native"):
+        prov_eff = "gemini-native"
+        if not base:
+            base = PRESETS["gemini-native"]["base_url"]
     elif prov_raw == "ollama":
         prov_eff = "openai"
         if not base:
@@ -921,8 +994,18 @@ def test_llm_connection(provider: str, api_key: str, model: str, base_url: str =
     else:
         prov_eff = prov_raw
 
+    valid_k, raw_key, err_k = sanitize_and_validate_api_key(raw_key)
     mdl = str(model or cfg_cur.get("model", "")).strip()
     mismatch = detect_api_key_provider_mismatch(prov_raw, raw_key, base)
+
+    if not valid_k:
+        return {
+            "ok": False,
+            "status_code": None,
+            "category": "invalid_key",
+            "message": f"{err_k} Key NOT saved.",
+            "mismatch_warning": mismatch,
+        }
 
     is_local_ollama = prov_eff == "openai" and ("localhost" in base.lower() or "127.0.0.1" in base.lower())
     if not raw_key and not is_local_ollama:
@@ -949,6 +1032,17 @@ def test_llm_connection(provider: str, api_key: str, model: str, base_url: str =
                 },
                 timeout=timeout,
             )
+        elif prov_eff in ("gemini-native", "gemini_native"):
+            endpoint = f"{base.rstrip('/')}/models/{mdl or PRESETS['gemini-native']['model']}:generateContent"
+            headers = {
+                "content-type": "application/json",
+                "x-goog-api-key": raw_key,
+            }
+            body = {
+                "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+                "generationConfig": {"maxOutputTokens": 1},
+            }
+            http_post(endpoint, headers, body, timeout=timeout)
         else:
             if not base:
                 return {
@@ -7578,8 +7672,14 @@ class Handler(BaseHandler):
             if path == "/api/config/test":
                 t_base = str(body.get("base_url") or "").strip()
                 t_prov = str(body.get("provider") or "").strip()
-                t_key = str(body.get("api_key") or "").strip()
+                t_key = str(body.get("api_key") or "")
                 t_model = str(body.get("model") or "").strip()
+
+                if t_key:
+                    valid_k, clean_k, err_k = sanitize_and_validate_api_key(t_key)
+                    if not valid_k:
+                        return self._send(400, {"ok": False, "error": err_k, "category": "invalid_key"})
+                    t_key = clean_k
 
                 if t_base:
                     valid, err_msg = validate_base_url_scheme(t_base)
@@ -7634,6 +7734,13 @@ class Handler(BaseHandler):
                 for k in body:
                     if k not in VALID_CONFIG_KEYS:
                         return self._send(400, {"ok": False, "error": f"Unknown configuration key: {k}"})
+
+                # Sanitize and validate API key (trim whitespace/quotes/newlines, reject spaces)
+                if "api_key" in body and body["api_key"] is not None:
+                    valid_k, clean_k, err_k = sanitize_and_validate_api_key(body["api_key"])
+                    if not valid_k:
+                        return self._send(400, {"ok": False, "error": err_k})
+                    body["api_key"] = clean_k
 
                 # Validate URL schemes (non-local base_url must use https)
                 if "base_url" in body:

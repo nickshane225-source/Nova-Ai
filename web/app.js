@@ -1888,7 +1888,7 @@ async function renderPanel(name) {
   if (name === "settings") {
     const c = state.config;
     body.innerHTML = `<h2>Settings</h2>
-      <label>AI provider</label><select id="prov"><option value="anthropic">Anthropic (Claude)</option><option value="gemini">Google Gemini</option><option value="openai">OpenAI-compatible (OpenAI, OpenRouter, Groq…)</option><option value="ollama">Ollama / LM Studio (local, free)</option></select>
+      <label>AI provider</label><select id="prov"><option value="anthropic">Anthropic (Claude)</option><option value="gemini">Google Gemini (OpenAI-compatible)</option><option value="gemini-native">Google Gemini (Native endpoint)</option><option value="openai">OpenAI-compatible (OpenAI, OpenRouter, Groq…)</option><option value="ollama">Ollama / LM Studio (local, free)</option></select>
       <label>API key ${c.has_key ? "(saved — leave blank to keep)" : ""}</label><input id="key" type="password" placeholder="${c.has_key ? "••••••••" : "paste your key"}">
       <div id="keyMismatchWarn" class="hidden" style="color:#ffaa00; background:rgba(255,170,0,0.12); border:1px solid #ffaa00; padding:7px 10px; border-radius:4px; margin:6px 0; font-size:12px;"></div>
       <div style="display:flex; align-items:center; gap:8px; margin:6px 0 10px 0;">
@@ -1961,7 +1961,7 @@ async function renderPanel(name) {
       <button class="btn" id="reset">Clear chat history</button>
       <button class="btn" id="exitApp" style="color:#ff6b81">Exit Nova AI</button>
       <p class="hint">Your key is saved only in data/config.json on this PC and sent only to your chosen provider.</p>`;
-    $("#prov").value = c.provider === "openai" ? (/generativelanguage/.test(c.base_url) ? "gemini" : /11434|1234/.test(c.base_url) ? "ollama" : "openai") : c.provider;
+    $("#prov").value = c.provider === "gemini-native" ? "gemini-native" : (c.provider === "openai" ? (/generativelanguage/.test(c.base_url) ? (c.base_url.includes("/openai") ? "gemini" : "gemini-native") : /11434|1234/.test(c.base_url) ? "ollama" : "openai") : c.provider);
     function detectKeyProviderMismatch(provVal, keyVal, baseVal) {
       const k = String(keyVal || "").trim();
       if (!k) return "";
@@ -2032,10 +2032,16 @@ async function renderPanel(name) {
       if (resEl) { resEl.style.color = "#8fd4f0"; resEl.textContent = "Testing connection..."; }
       let prov = $("#prov").value;
       const apiProv = (prov === "ollama" || prov === "gemini") ? "openai" : prov;
+      const cleanKey = $("#key").value.trim().replace(/^['"]|['"]$/g, "").trim();
+      if (cleanKey.includes(" ")) {
+        if (resEl) { resEl.style.color = "#ff4757"; resEl.textContent = "✗ API key cannot contain spaces. — key NOT saved."; }
+        if (btn) btn.disabled = false;
+        return;
+      }
       try {
         const r = await api("/api/config/test", {
           provider: apiProv,
-          api_key: $("#key").value,
+          api_key: cleanKey,
           model: $("#model").value,
           base_url: $("#base").value,
         });
@@ -2077,12 +2083,22 @@ async function renderPanel(name) {
         errEl.classList.add("hidden");
       }
       let prov = $("#prov").value; if (prov === "ollama" || prov === "gemini") prov = "openai";
+      let rawKey = $("#key").value;
+      let cleanKey = rawKey.trim().replace(/^['"]|['"]$/g, "").trim();
+      if (cleanKey.includes(" ")) {
+        if (errEl) {
+          errEl.textContent = "API key cannot contain spaces.";
+          errEl.classList.remove("hidden");
+        }
+        showToast("Settings Error", "API key cannot contain spaces.", "alert");
+        return;
+      }
       const rawBudget = $("#monthlyBudget") ? String($("#monthlyBudget").value).trim() : "0";
       const parsedBudget = rawBudget === "" ? 0 : Number(rawBudget);
       const payload = {
         provider: prov,
-        api_key: $("#key").value,
-        verify_key: Boolean($("#key").value.trim()),
+        api_key: cleanKey,
+        verify_key: Boolean(cleanKey),
         force_save_key: Boolean($("#chkForceSaveKey") && $("#chkForceSaveKey").checked),
         model: $("#model").value,
         base_url: $("#base").value,
