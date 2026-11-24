@@ -3684,6 +3684,8 @@ if audit_logger and hasattr(audit_logger, "register_secret_values_provider"):
 def mask_secrets(text: str, cfg: dict = None) -> str:
     if not isinstance(text, str) or not text:
         return text
+    if audit_logger and hasattr(audit_logger, "mask_secrets"):
+        return audit_logger.mask_secrets(text, cfg=cfg)
 
     # Mask all configured secret values (keys, bot tokens, pairing/remote/session tokens)
     # Values shorter than 8 characters are skipped to avoid corrupting common words/tokens
@@ -7805,8 +7807,8 @@ class Handler(BaseHandler):
                     bak_path = CONFIG_FILE.with_name(CONFIG_FILE.name + ".bak")
                     if full_updated and isinstance(full_updated, dict):
                         atomic_write_json(bak_path, full_updated)
-                except Exception:
-                    pass
+                except Exception as e:
+                    sys.stderr.write(f"[Config Error] Failed to dismiss wake-word banner: {e}\n")
                 cfg = get_config()
                 cfg["wake_word_migrated_banner"] = False
                 return self._send(200, {"ok": True, "wake_word_migrated_banner": False})

@@ -17,12 +17,10 @@ class TestWakeWordMigration(unittest.TestCase):
         self.orig_config_file = server.CONFIG_FILE
         server.DATA = Path(self.tmp_dir)
         server.CONFIG_FILE = server.DATA / "config.json"
-        server._CONFIG_CACHE = None
         server.CONFIG_CONFIRM_TOKENS.clear()
 
     def tearDown(self):
         server.CONFIG_CONFIRM_TOKENS.clear()
-        server._CONFIG_CACHE = None
         server.DATA = self.orig_data
         server.CONFIG_FILE = self.orig_config_file
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
@@ -206,7 +204,6 @@ class TestWakeWordMigration(unittest.TestCase):
         self.assertEqual(disk2["api_key"], encrypted_secret)
 
         # 3. Simulate server restart: re-read config from disk
-        server._CONFIG_CACHE = None
         cfg_restarted = server.get_config()
         self.assertTrue(cfg_restarted["wake_word_enabled"])
         self.assertTrue(cfg_restarted["wake_word_user_choice"])
