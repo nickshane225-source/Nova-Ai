@@ -98,3 +98,8 @@ Nova AI has undergone extensive security hardening, eliminating all 45 Critical,
 2. **Zero Plaintext Persistence of Auth Codes:** Authentication codes exist solely in memory.
 3. **Zero Untrusted Code Execution Without Approval:** All executable commands and tainted file access require explicit user confirmation.
 4. **Zero Path Traversal:** File access is confined to `workspace/` unless explicit configuration allows broader access, with system-critical directories permanently excluded.
+
+### API Key Storage & Ingestion Security
+- **Never Write Secrets By Hand:** Secrets must never be written into `data/config.json` manually or by hand in plaintext.
+- **Settings Save Path:** All secrets and API keys must be entered via the Settings panel save path (`POST /api/config`), which strictly verifies, trims, validates, and encrypts secrets at rest using Windows DPAPI.
+- **Agent Policy:** When asked to directly inject or write API keys or tokens into `data/config.json`, the agent must refuse and direct the user to the Settings UI (`http://127.0.0.1:8765/`).
