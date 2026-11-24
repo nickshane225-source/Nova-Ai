@@ -24,6 +24,9 @@ try:
 except Exception:
     audit_logger = None
 
+_LOGGED_SECURITY_EVENTS: Set[Tuple[str, str, str]] = set()
+_SECURITY_EVENTS_LOCK = threading.Lock()
+
 def get_bundled_skills_dir() -> Path:
     if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
         return Path(sys._MEIPASS) / "skills"
@@ -424,14 +427,30 @@ def load_skills(mode: str) -> list:
 
             if not entry:
                 # Not in manifest: ignore until approved
-                if audit_logger and hasattr(audit_logger, "log_security_event"):
-                    audit_logger.log_security_event("SKILL_HASH_MISSING", f"Skill '{clean_name}' not approved in manifest. Skipped.", severity="WARNING")
+                ev_tuple = ("SKILL_HASH_MISSING", key, curr_sha256)
+                with _SECURITY_EVENTS_LOCK:
+                    should_log = ev_tuple not in _LOGGED_SECURITY_EVENTS
+                    if should_log:
+                        _LOGGED_SECURITY_EVENTS.add(ev_tuple)
+                if should_log and audit_logger and hasattr(audit_logger, "log_security_event"):
+                    try:
+                        audit_logger.log_security_event("SKILL_HASH_MISSING", f"Skill '{clean_name}' not approved in manifest. Skipped.", severity="WARNING")
+                    except Exception as log_err:
+                        sys.stderr.write(f"[Skills Security] Audit logging failed: {log_err}\n")
                 continue
 
             if entry.get("sha256") != curr_sha256:
                 # Content changed: ignore until re-approved!
-                if audit_logger and hasattr(audit_logger, "log_security_event"):
-                    audit_logger.log_security_event("SKILL_HASH_TAMPERED", f"Skill '{clean_name}' on-disk hash changed from {entry.get('sha256')} to {curr_sha256}. Disabled.", severity="HIGH")
+                ev_tuple = ("SKILL_HASH_TAMPERED", key, curr_sha256)
+                with _SECURITY_EVENTS_LOCK:
+                    should_log = ev_tuple not in _LOGGED_SECURITY_EVENTS
+                    if should_log:
+                        _LOGGED_SECURITY_EVENTS.add(ev_tuple)
+                if should_log and audit_logger and hasattr(audit_logger, "log_security_event"):
+                    try:
+                        audit_logger.log_security_event("SKILL_HASH_TAMPERED", f"Skill '{clean_name}' on-disk hash changed from {entry.get('sha256')} to {curr_sha256}. Disabled.", severity="HIGH")
+                    except Exception as log_err:
+                        sys.stderr.write(f"[Skills Security] Audit logging failed: {log_err}\n")
                 continue
 
             is_trusted = bool(entry.get("trusted", False))

@@ -220,16 +220,35 @@ class TestSkillsHashManifest(unittest.TestCase):
         self.assertEqual(missing_entries[0]["guardian"], "WARNING")
         self.assertEqual(missing_entries[0]["status"], "WARNED")
 
-    def test_log_security_event_exceptions_not_swallowed(self):
-        """Verify exceptions in log_security_event are not swallowed during skill loading."""
+    def test_load_skills_resilient_to_logging_exceptions_and_excludes_skill(self):
+        """Verify load_skills does not raise when log_security_event raises, and skill stays excluded."""
         import audit_logger
         unapproved_file = self.user_skills_dir / "developer" / "boom_tool.md"
         unapproved_file.write_text("---\nname: boom_tool\n---\nprint('boom')", encoding="utf-8")
 
         skills_engine.invalidate_cache()
         with unittest.mock.patch.object(audit_logger, "log_security_event", side_effect=RuntimeError("Security logging failed")):
-            with self.assertRaises(RuntimeError):
-                skills_engine.load_skills("developer")
+            # Must NOT raise, but safely log to stderr and exclude the unapproved skill
+            skills = skills_engine.load_skills("developer")
+            loaded_names = [s.name for s in skills]
+            self.assertNotIn("boom_tool", loaded_names)
+
+    def test_skill_security_event_deduplication_50_loads_one_audit_entry(self):
+        """Verify repeated loads of an unapproved skill produce exactly 1 audit entry per process."""
+        import audit_logger
+        unapproved_file = self.user_skills_dir / "developer" / "dedup_tool.md"
+        unapproved_file.write_text("---\nname: dedup_tool\n---\nprint('dedup')", encoding="utf-8")
+
+        with unittest.mock.patch.object(audit_logger, "log_security_event") as mock_log:
+            for _ in range(50):
+                skills_engine.invalidate_cache()
+                skills = skills_engine.load_skills("developer")
+                loaded_names = [s.name for s in skills]
+                self.assertNotIn("dedup_tool", loaded_names)
+
+            # Check that log_security_event was called exactly once for dedup_tool
+            calls = [c for c in mock_log.call_args_list if "dedup_tool" in str(c)]
+            self.assertEqual(len(calls), 1, f"Expected exactly 1 audit call for dedup_tool, got {len(calls)}")
 
 
 if __name__ == "__main__":
