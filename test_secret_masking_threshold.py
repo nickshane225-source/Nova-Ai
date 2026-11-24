@@ -8,10 +8,16 @@ import audit_logger
 
 class TestSecretMaskingAndLockout(unittest.TestCase):
     def setUp(self):
-        server.FAILS.clear()
+        with server.FAILS_LOCK:
+            server.FAILS.clear()
+            if hasattr(server, "FAILS_LOCKOUT"):
+                server.FAILS_LOCKOUT.clear()
 
     def tearDown(self):
-        server.FAILS.clear()
+        with server.FAILS_LOCK:
+            server.FAILS.clear()
+            if hasattr(server, "FAILS_LOCKOUT"):
+                server.FAILS_LOCKOUT.clear()
 
     def test_mask_secrets_skips_shorter_than_8_chars(self):
         cfg = {
@@ -150,6 +156,63 @@ class TestSecretMaskingAndLockout(unittest.TestCase):
             unlocked_req = MockRemoteRequest(headers={"X-Nova-Token": valid_token})
             ok_unlocked = unlocked_req._auth()
             self.assertTrue(ok_unlocked, "After 900s, lockout must expire and correct token must be accepted")
+
+    def test_remote_lockout_rolling_15min_window_and_device_id_rotation_immune(self):
+        """
+        - 7 failures over 14 minutes (e.g. 1 failure every 2 minutes up to minute 14).
+        - 8th failure at minute 14 locks IP for full 15 minutes (until minute 29).
+        - Attacker rotating X-Device-Id is still locked out (keyed on IP only).
+        - Correct token refused at minute 28 (429).
+        - Correct token accepted at minute 30 (unlocked).
+        """
+        valid_token = "valid_real_remote_token_32_chars"
+
+        class MockRemoteRequest(server.RemoteHandler):
+            def __init__(self, ip="192.168.1.100", headers=None):
+                self.client_address = (ip, 12345)
+                self.headers = headers or {"X-Nova-Token": "wrong-token-value"}
+                self.path = "/api/remote/info"
+                self.status = None
+                self.data = None
+
+            def _send(self, status, data, ctype="application/json"):
+                self.status = status
+                self.data = data
+
+        base_time = 1000000.0
+        with patch("server.get_config", return_value={"remote_enabled": True, "remote_token": valid_token}):
+            # 7 failures over 14 minutes: t = base_time + i * 120s (i = 0..6)
+            for i in range(7):
+                curr_t = base_time + (i * 120.0)
+                with patch("time.time", return_value=curr_t):
+                    req = MockRemoteRequest(headers={"X-Nova-Token": "wrong", "X-Device-Id": f"dev_{i}"})
+                    ok = req._auth()
+                    self.assertFalse(ok)
+                    self.assertEqual(req.status, 401)
+
+            # 8th failure at minute 14 (base_time + 840s): triggers lock until base_time + 840 + 900 = base_time + 1740s
+            t_8th = base_time + 840.0
+            with patch("time.time", return_value=t_8th):
+                req8 = MockRemoteRequest(headers={"X-Nova-Token": "wrong", "X-Device-Id": "dev_rotated"})
+                ok = req8._auth()
+                self.assertFalse(ok)
+                self.assertEqual(req8.status, 401)
+
+            # At minute 28 (base_time + 1680s, which is < 1740s): correct token is refused (429)
+            t_locked = base_time + 1680.0
+            with patch("time.time", return_value=t_locked):
+                req_correct = MockRemoteRequest(headers={"X-Nova-Token": valid_token, "X-Device-Id": "brand_new_dev"})
+                ok = req_correct._auth()
+                self.assertFalse(ok)
+                self.assertEqual(req_correct.status, 429)
+                self.assertIn("15 minutes", req_correct.data.get("error", ""))
+
+            # At minute 30 (base_time + 1800s, which is > 1740s): lockout has expired; correct token is accepted
+            t_unlocked = base_time + 1800.0
+            with patch("time.time", return_value=t_unlocked):
+                req_unlocked = MockRemoteRequest(headers={"X-Nova-Token": valid_token})
+                ok = req_unlocked._auth()
+                self.assertTrue(ok)
 
     def test_valid_device_on_different_ip_not_locked_out_by_other_ip_failures(self):
         """

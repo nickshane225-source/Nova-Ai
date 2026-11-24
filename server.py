@@ -6693,9 +6693,16 @@ def _chat_inner(user_text, source, jid, mode="developer", is_automation=False, c
 # (phone page + 2 token-checked endpoints) is ever reachable from your Wi-Fi.
 # ----------------------------------------------------------------------------
 EVENTS = []
+class _FailsDict(dict):
+    def clear(self):
+        super().clear()
+        if "FAILS_LOCKOUT" in globals():
+            FAILS_LOCKOUT.clear()
+
 EVENT_ID = [0]
 REMOTE = {"srv": None, "error": "", "last_seen": 0.0}
-FAILS = {}  # client ip -> [wrong attempts, window start]
+FAILS = _FailsDict()  # client ip -> list of failure timestamps
+FAILS_LOCKOUT = {}  # client ip -> locked_until timestamp
 
 
 def add_event(**kw):
@@ -6937,7 +6944,9 @@ def regenerate_token():
     cfg = get_config()
     cfg["remote_token"] = secrets.token_urlsafe(32)  # old QR codes stop working at once
     save_config(cfg)
-    FAILS.clear()
+    with FAILS_LOCK:
+        FAILS.clear()
+        FAILS_LOCKOUT.clear()
 
 
 # ----------------------------------------------------------------------------
@@ -8415,20 +8424,16 @@ class RemoteHandler(BaseHandler):
             return False
         ip = self.client_address[0]
         now = time.time()
-        dev_id = (self.headers.get("X-Device-Id") or "").strip()
-        lockout_keys = [ip]
-        if dev_id:
-            lockout_keys.append(f"dev:{dev_id}")
 
         with FAILS_LOCK:
-            for lk in lockout_keys:
-                rec = FAILS.get(lk)
-                if rec and now - rec[1] > 900:
-                    FAILS.pop(lk, None)
-                    rec = None
-                if rec and rec[0] >= 8:
-                    self._send(429, {"error": "Too many wrong attempts. Locked out for 15 minutes."})
-                    return False
+            locked_until = FAILS_LOCKOUT.get(ip, 0)
+            if now < locked_until:
+                self._send(429, {"error": "Too many wrong attempts. Locked out for 15 minutes."})
+                return False
+            elif locked_until:
+                FAILS_LOCKOUT.pop(ip, None)
+                FAILS.pop(ip, None)
+
         auth_hdr = self.headers.get("Authorization", "")
         tok_str = ""
         if auth_hdr.lower().startswith("bearer "):
@@ -8450,14 +8455,19 @@ class RemoteHandler(BaseHandler):
 
         if matched:
             with FAILS_LOCK:
-                for lk in lockout_keys:
-                    FAILS.pop(lk, None)
+                FAILS.pop(ip, None)
+                FAILS_LOCKOUT.pop(ip, None)
             REMOTE["last_seen"] = now
             return True
+
         with FAILS_LOCK:
-            for lk in lockout_keys:
-                r = FAILS.setdefault(lk, [0, now])
-                r[0] += 1
+            timestamps = FAILS.setdefault(ip, [])
+            timestamps = [t for t in timestamps if now - t <= 900]
+            timestamps.append(now)
+            FAILS[ip] = timestamps
+            if len(timestamps) >= 8:
+                FAILS_LOCKOUT[ip] = now + 900
+
         self._send(401, {"error": "Not paired. Scan the QR code on your PC again."})
         return False
 
