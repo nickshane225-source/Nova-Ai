@@ -970,6 +970,75 @@ def validate_base_url_scheme(url_str: str) -> tuple[bool, str]:
     return True, ""
 
 
+def map_llm_error_status(status_code: int | None, err_str: str, provider: str = "", model: str = "", key: str = "", mismatch: str | None = None) -> dict:
+    """
+    Maps an LLMError status code and error string to distinct structured error categories:
+    - 400: Bad request or invalid key format
+    - 401: Key rejected / authentication failed
+    - 403: Permission denied / API not enabled / restricted / region block
+    - 404: Model not found
+    - 429: Quota or rate limit exceeded
+    - 5xx: Provider service outage or temporary server error
+    - network/timeout/DNS: Network connectivity error
+    Each gets a distinct short message with the status code.
+    """
+    low = err_str.lower()
+    if status_code is None:
+        m_sc = re.search(r"API error (\d{3})", err_str)
+        if m_sc:
+            status_code = int(m_sc.group(1))
+
+    status_prefix = f"HTTP {status_code}: " if status_code else ""
+
+    # Check 401: Key rejected
+    if status_code == 401 or "api error 401" in low or "unauthorized" in low or "invalid x-api-key" in low or "invalid_api_key" in low or "api_key_invalid" in low:
+        if mismatch and "starts with" in mismatch:
+            msg = f"{status_prefix}Wrong provider: {mismatch}. Key NOT saved."
+            return {"category": "wrong_provider", "status_code": status_code or 401, "message": msg, "chat_reply": "API key rejected by provider (HTTP 401). Check your API key in Settings."}
+        msg = f"{status_prefix}API key rejected: authentication failed (401)."
+        if key and key.startswith("AQ."):
+            msg += " If this key was created for Vertex/Agent Platform express mode, it will not work with the Gemini API endpoint."
+        else:
+            msg += " Check that you copied the full key for the selected provider."
+        msg += " Key NOT saved."
+        return {"category": "invalid_key", "status_code": status_code or 401, "message": msg, "chat_reply": "API key rejected by provider (HTTP 401). Check your API key in Settings."}
+
+    # Check 403: Permission / API not enabled / restricted / region
+    if status_code == 403 or "api error 403" in low or "permission_denied" in low or "access_denied" in low or "forbidden" in low:
+        msg = f"{status_prefix}Access forbidden (403): permission denied, API not enabled, key restricted, or region blocked. Key NOT saved."
+        return {"category": "forbidden", "status_code": status_code or 403, "message": msg, "chat_reply": "Access forbidden by provider (HTTP 403). Ensure the API is enabled and your region/key is permitted."}
+
+    # Check 400: Bad request / invalid key format
+    if status_code == 400 or "api error 400" in low or "bad_request" in low or "invalid_argument" in low:
+        msg = f"{status_prefix}Bad request (400): invalid request format, parameters, or malformed key. Key NOT saved."
+        return {"category": "bad_request", "status_code": status_code or 400, "message": msg, "chat_reply": "Bad request to AI provider (HTTP 400). Check key format and parameters in Settings."}
+
+    # Check 404: Model not found
+    if status_code == 404 or "api error 404" in low or "not_found" in low or "model not found" in low:
+        msg = f"{status_prefix}Model '{model}' was not found on this provider (404). Key NOT saved."
+        return {"category": "invalid_model", "status_code": status_code or 404, "message": msg, "chat_reply": f"Model '{model}' not found on provider (HTTP 404). Update model name in Settings."}
+
+    # Check 429: Quota / rate limit
+    if status_code == 429 or "api error 429" in low or "quota" in low or "rate_limit" in low or "insufficient_quota" in low:
+        msg = f"{status_prefix}Quota or rate limit exceeded (429). Check your provider billing and usage limits. Key NOT saved."
+        return {"category": "quota", "status_code": status_code or 429, "message": msg, "chat_reply": "Provider quota or rate limit exceeded (HTTP 429). Check your billing and plan details."}
+
+    # Check 5xx: Provider outage / server error
+    if (status_code and 500 <= status_code < 600) or any(f"api error {c}" in low for c in (500, 502, 503, 504)) or "internal_error" in low or "server error" in low or "bad gateway" in low or "service unavailable" in low or "gateway timeout" in low:
+        code_disp = status_code or 500
+        msg = f"HTTP {code_disp}: Provider service outage or temporary server error. Try again later. Key NOT saved."
+        return {"category": "provider_outage", "status_code": code_disp, "message": msg, "chat_reply": f"Provider outage or server error (HTTP {code_disp}). Please try again later."}
+
+    # Check network / timeout / DNS
+    if any(term in low for term in ("could not reach", "timed out", "timeout", "urlopen error", "connection refused", "name or service not known", "getaddrinfo", "nodename nor servname provided")):
+        msg = "Network error: could not reach AI provider (connection/DNS/timeout). Check your internet connection, VPN, or Base URL. Key NOT saved."
+        return {"category": "network", "status_code": None, "message": msg, "chat_reply": "Network error: unable to reach the AI provider. Check your internet connection or VPN."}
+
+    # Fallback error
+    msg = f"{status_prefix}Connection test failed: {mask_secrets(err_str[:160])}. Key NOT saved."
+    return {"category": "error", "status_code": status_code, "message": msg, "chat_reply": f"AI error: {mask_secrets(err_str)}"}
+
+
 def test_llm_connection(provider: str, api_key: str, model: str, base_url: str = "", timeout: int = 15) -> dict:
     """Runs a minimal 1-token request to test the provider/key/model configuration."""
     cfg_cur = get_config()
@@ -993,6 +1062,10 @@ def test_llm_connection(provider: str, api_key: str, model: str, base_url: str =
         prov_eff = "openai"
         if not base:
             base = PRESETS["ollama"]["base_url"]
+    elif prov_raw == "openai":
+        prov_eff = "openai"
+        if not base:
+            base = PRESETS["openai"]["base_url"]
     else:
         prov_eff = prov_raw
 
@@ -1074,85 +1147,27 @@ def test_llm_connection(provider: str, api_key: str, model: str, base_url: str =
         }
     except LLMError as e:
         status_code = getattr(e, "status_code", None)
-        if status_code is None:
-            m_code = re.search(r"API error (\d{3})", str(e))
-            if m_code:
-                status_code = int(m_code.group(1))
         err_s = mask_secrets(str(e), cfg_cur)
         if raw_key and raw_key in err_s:
             err_s = err_s.replace(raw_key, "[REDACTED]")
-        low = err_s.lower()
-        status_prefix = f"HTTP {status_code}: " if status_code else ""
-        if status_code in (401, 403) or "api error 401" in low or "api error 403" in low or "authentication_error" in low or "invalid x-api-key" in low or "invalid_api_key" in low or "api_key_invalid" in low or "unauthorized" in low:
-            if mismatch and "starts with" in mismatch:
-                return {
-                    "ok": False,
-                    "status_code": status_code or 401,
-                    "category": "wrong_provider",
-                    "message": f"{status_prefix}Wrong provider: {mismatch}. Key NOT saved.",
-                    "mismatch_warning": mismatch,
-                }
-            msg = f"{status_prefix}Invalid API key: authentication failed (401/403)."
-            if raw_key.startswith("AQ."):
-                msg += " If this key was created for Vertex/Agent Platform express mode, it will not work with the Gemini API endpoint."
-            else:
-                msg += " Check that you copied the full key for the selected provider."
-            msg += " Key NOT saved."
-            return {
-                "ok": False,
-                "status_code": status_code or 401,
-                "category": "invalid_key",
-                "message": msg,
-                "mismatch_warning": mismatch,
-            }
-        if status_code == 429 or "api error 429" in low or "quota" in low or "rate_limit" in low or "insufficient_quota" in low:
-            return {
-                "ok": False,
-                "status_code": status_code or 429,
-                "category": "quota",
-                "message": f"{status_prefix}Quota or rate limit exceeded (429). Check your provider plan and billing details. Key NOT saved.",
-                "mismatch_warning": mismatch,
-            }
-        if status_code == 404 or "api error 404" in low or "not found" in low or "does not exist" in low:
-            return {
-                "ok": False,
-                "status_code": status_code or 404,
-                "category": "invalid_model",
-                "message": f"{status_prefix}Model '{mdl}' was not found (404) on this provider. Key NOT saved.",
-                "mismatch_warning": mismatch,
-            }
-        if "could not reach" in low or "timed out" in low or "timeout" in low or "urlopen error" in low or "connection refused" in low or "name or service not known" in low or "getaddrinfo" in low:
-            return {
-                "ok": False,
-                "status_code": status_code,
-                "category": "network",
-                "message": f"{status_prefix}Network error: could not reach the AI provider. Check your internet connection, VPN/proxy, or Base URL. Key NOT saved.",
-                "mismatch_warning": mismatch,
-            }
+        mapped = map_llm_error_status(status_code, err_s, provider=prov_raw, model=mdl, key=raw_key, mismatch=mismatch)
         return {
             "ok": False,
-            "status_code": status_code,
-            "category": "error",
-            "message": f"{status_prefix}Connection test failed: {err_s[:160]}. Key NOT saved.",
+            "status_code": mapped["status_code"],
+            "category": mapped["category"],
+            "message": mapped["message"],
             "mismatch_warning": mismatch,
         }
     except Exception as e:
         err_s = mask_secrets(str(e), cfg_cur)
         if raw_key and raw_key in err_s:
             err_s = err_s.replace(raw_key, "[REDACTED]")
+        mapped = map_llm_error_status(None, err_s, provider=prov_raw, model=mdl, key=raw_key, mismatch=mismatch)
         return {
             "ok": False,
-            "status_code": None,
-            "category": "error",
-            "message": f"Connection test failed: {err_s[:160]}. Key NOT saved.",
-            "mismatch_warning": mismatch,
-        }
-        if raw_key and raw_key in err_s:
-            err_s = err_s.replace(raw_key, "[REDACTED]")
-        return {
-            "ok": False,
-            "category": "network",
-            "message": f"Network error: {err_s[:200]}",
+            "status_code": mapped["status_code"],
+            "category": mapped["category"],
+            "message": mapped["message"],
             "mismatch_warning": mismatch,
         }
 
@@ -6422,20 +6437,14 @@ def _chat_inner(user_text, source, jid, mode="developer", is_automation=False, c
     except LLMError as e:
         err_str = str(e)
         status_code = getattr(e, "status_code", None)
-        if not status_code:
-            m_sc = re.search(r"API error (\d{3})", err_str)
-            if m_sc:
-                status_code = int(m_sc.group(1))
         with LOCK:
             if hist and hist[-1] == user_msg:
                 hist.pop()
         if "No API key set" in err_str:
             reply = "No API key set. Open Settings and paste your key."
             return {"reply": reply, "actions": [], "error": reply}
-        if status_code == 401 or "401" in err_str or "unauthorized" in err_str.lower() or "authentication_error" in err_str.lower():
-            reply = "API key rejected by provider (HTTP 401). Check your API key in Settings."
-            return {"reply": reply, "actions": [], "error": reply}
-        reply = f"AI error: {mask_secrets(err_str)}"
+        mapped = map_llm_error_status(status_code, err_str, provider=cfg.get("provider", ""), model=cfg.get("model", ""), key=cfg.get("api_key", ""))
+        reply = mapped["chat_reply"]
         return {"reply": reply, "actions": [], "error": reply}
     except Exception:
         with LOCK:
