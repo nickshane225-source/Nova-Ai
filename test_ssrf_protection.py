@@ -419,6 +419,93 @@ class TestSSRFProtection(unittest.TestCase):
 
         self.assertEqual(ssrf_guard._DNS_SEMAPHORE._value, 8)
 
+    def test_safe_http_fetch_slow_headers_drip_server_cut_off_at_15s(self):
+        """A real local server sending response headers 1 byte every 2s is aborted at about 15s deadline."""
+        server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server_sock.bind(("127.0.0.1", 0))
+        drip_port = server_sock.getsockname()[1]
+        server_sock.listen(1)
+
+        stop_server = threading.Event()
+
+        def _headers_drip_worker():
+            try:
+                conn, _ = server_sock.accept()
+                req = conn.recv(1024)
+                header_data = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nX-Slow: "
+                for b_int in header_data:
+                    if stop_server.is_set():
+                        break
+                    conn.sendall(bytes([b_int]))
+                    time.sleep(2.0)
+                while not stop_server.is_set():
+                    time.sleep(1.0)
+                conn.close()
+            except Exception:
+                pass
+            finally:
+                try:
+                    server_sock.close()
+                except Exception:
+                    pass
+
+        t = threading.Thread(target=_headers_drip_worker, daemon=True)
+        t.start()
+
+        t0 = time.time()
+        ok, reason, _ = ssrf_guard.safe_http_fetch(
+            f"http://127.0.0.1:{drip_port}/headers_drip",
+            timeout=15.0,
+            allow_localhost_dev=True,
+            dev_localhost_ports={drip_port},
+        )
+        elapsed = time.time() - t0
+        stop_server.set()
+        print(f"\n[SSRF Slow Headers Drip Test] Aborted at elapsed time: {elapsed:.2f}s")
+        self.assertFalse(ok)
+        self.assertIn("deadline exceeded", reason.lower())
+        self.assertAlmostEqual(elapsed, 15.0, delta=2.5)
+
+    def test_safe_http_fetch_server_accepts_and_never_replies_cut_off_at_15s(self):
+        """A real local server that accepts TCP connection and sends zero bytes is aborted at about 15s deadline."""
+        server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server_sock.bind(("127.0.0.1", 0))
+        hang_port = server_sock.getsockname()[1]
+        server_sock.listen(1)
+
+        stop_server = threading.Event()
+
+        def _hung_worker():
+            try:
+                conn, _ = server_sock.accept()
+                while not stop_server.is_set():
+                    time.sleep(1.0)
+                conn.close()
+            except Exception:
+                pass
+            finally:
+                try:
+                    server_sock.close()
+                except Exception:
+                    pass
+
+        t = threading.Thread(target=_hung_worker, daemon=True)
+        t.start()
+
+        t0 = time.time()
+        ok, reason, _ = ssrf_guard.safe_http_fetch(
+            f"http://127.0.0.1:{hang_port}/hung",
+            timeout=15.0,
+            allow_localhost_dev=True,
+            dev_localhost_ports={hang_port},
+        )
+        elapsed = time.time() - t0
+        stop_server.set()
+        print(f"\n[SSRF Hung Server Test] Aborted at elapsed time: {elapsed:.2f}s")
+        self.assertFalse(ok)
+        self.assertIn("deadline exceeded", reason.lower())
+        self.assertAlmostEqual(elapsed, 15.0, delta=2.5)
+
 
 if __name__ == "__main__":
     unittest.main()

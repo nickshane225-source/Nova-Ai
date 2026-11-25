@@ -368,6 +368,69 @@ class PinnedHTTPSConnection(http.client.HTTPSConnection):
         self.sock = self._context.wrap_socket(self.sock, server_hostname=self._server_hostname)
 
 
+class DeadlineSocket:
+    """Socket wrapper that enforces the total fetch deadline across connect, headers, and body reading."""
+    def __init__(self, sock: socket.socket, deadline: float, per_chunk_timeout: float = 5.0):
+        self._sock = sock
+        self._deadline = deadline
+        self._per_chunk_timeout = per_chunk_timeout
+        self.headers_done = False
+
+    @property
+    def _io_refs(self) -> int:
+        return getattr(self._sock, "_io_refs", 0)
+
+    @_io_refs.setter
+    def _io_refs(self, val: int) -> None:
+        try:
+            self._sock._io_refs = val
+        except Exception:
+            pass
+
+    def _decref_socketios(self) -> Any:
+        if hasattr(self._sock, "_decref_socketios"):
+            return self._sock._decref_socketios()
+        return None
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._sock, name)
+
+    def recv(self, *args, **kwargs) -> bytes:
+        rem = self._deadline - time.time()
+        if rem <= 0:
+            raise TimeoutError("Total fetch deadline exceeded")
+        cur_to = rem if not getattr(self, "headers_done", False) else min(rem, self._per_chunk_timeout)
+        try:
+            self._sock.settimeout(max(0.001, cur_to))
+        except (OSError, ValueError):
+            pass
+        try:
+            return self._sock.recv(*args, **kwargs)
+        except OSError as e:
+            if getattr(e, "winerror", None) == 10038 or "10038" in str(e):
+                return b""
+            raise
+
+    def recv_into(self, *args, **kwargs) -> int:
+        rem = self._deadline - time.time()
+        if rem <= 0:
+            raise TimeoutError("Total fetch deadline exceeded")
+        cur_to = rem if not getattr(self, "headers_done", False) else min(rem, self._per_chunk_timeout)
+        try:
+            self._sock.settimeout(max(0.001, cur_to))
+        except (OSError, ValueError):
+            pass
+        try:
+            return self._sock.recv_into(*args, **kwargs)
+        except OSError as e:
+            if getattr(e, "winerror", None) == 10038 or "10038" in str(e):
+                return 0
+            raise
+
+    def makefile(self, mode: str = "r", buffering: Optional[int] = None, *, encoding: Optional[str] = None, errors: Optional[str] = None, newline: Optional[str] = None):
+        return socket.socket.makefile(self, mode, buffering, encoding=encoding, errors=errors, newline=newline)
+
+
 def safe_http_fetch(
     url: str,
     timeout: float = 15.0,
@@ -446,8 +509,12 @@ def safe_http_fetch(
             else:
                 conn = http.client.HTTPConnection(ip, port, timeout=conn_timeout)
 
+            conn.connect()
+            conn.sock = DeadlineSocket(conn.sock, deadline, per_chunk_timeout)
             conn.request("GET", path, headers=req_headers)
             resp = conn.getresponse()
+            if hasattr(conn, "sock") and hasattr(conn.sock, "headers_done"):
+                conn.sock.headers_done = True
 
             # Handle redirects (301, 302, 303, 307, 308)
             if resp.status in (301, 302, 303, 307, 308):
