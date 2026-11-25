@@ -1065,6 +1065,104 @@ def get_request_summary(provider: str = "", api_key: str = "", model: str = "", 
     }
 
 
+def list_provider_models(provider: str = "", api_key: str = "", base_url: str = "", timeout: float = 10.0) -> dict:
+    """
+    Queries the AI provider's models endpoint with the saved or provided key
+    and returns a clean list of model identifiers.
+    """
+    cfg = get_config()
+    raw_key = str(api_key or "").strip()
+    if not raw_key:
+        raw_key = str(cfg.get("api_key", "") or "").strip()
+    if raw_key.startswith("dpapi:"):
+        raw_key = decrypt_dpapi(raw_key)
+
+    valid_k, clean_key, err_k = sanitize_and_validate_api_key(raw_key)
+    prov_eff = str(provider or cfg.get("provider", "anthropic")).strip().lower()
+    base = str(base_url if base_url is not None and base_url != "" else cfg.get("base_url", "")).strip()
+
+    if not clean_key and prov_eff != "ollama":
+        return {
+            "ok": False,
+            "error": "No API key configured or provided. Please enter an API key in Settings first.",
+            "provider": prov_eff,
+            "models": [],
+        }
+
+    try:
+        if prov_eff in ("gemini-native", "gemini_native", "gemini"):
+            endpoint = f"https://generativelanguage.googleapis.com/v1beta/models?key={clean_key}"
+            req = urllib.request.Request(endpoint, headers={"User-Agent": "NovaAI/1.0"})
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            models = []
+            for item in data.get("models", []):
+                name = item.get("name", "")
+                if name.startswith("models/"):
+                    name = name[len("models/"):]
+                if name:
+                    models.append(name)
+            return {"ok": True, "provider": prov_eff, "models": sorted(models), "count": len(models)}
+
+        elif prov_eff == "anthropic":
+            endpoint = "https://api.anthropic.com/v1/models"
+            headers = {
+                "x-api-key": clean_key,
+                "anthropic-version": "2023-06-01",
+                "User-Agent": "NovaAI/1.0",
+            }
+            req = urllib.request.Request(endpoint, headers=headers)
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            models = [m.get("id") for m in data.get("data", []) if m.get("id")]
+            return {"ok": True, "provider": prov_eff, "models": sorted(models), "count": len(models)}
+
+        elif prov_eff == "ollama":
+            base_eff = base or PRESETS["ollama"]["base_url"]
+            endpoint = f"{base_eff.rstrip('/')}/tags"
+            req = urllib.request.Request(endpoint, headers={"User-Agent": "NovaAI/1.0"})
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            models = [m.get("name") for m in data.get("models", []) if m.get("name")]
+            return {"ok": True, "provider": prov_eff, "models": sorted(models), "count": len(models)}
+
+        else:
+            base_eff = base or PRESETS["openai"]["base_url"]
+            endpoint = f"{base_eff.rstrip('/')}/models"
+            headers = {
+                "Authorization": f"Bearer {clean_key}",
+                "User-Agent": "NovaAI/1.0",
+            }
+            req = urllib.request.Request(endpoint, headers=headers)
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            models = [m.get("id") for m in data.get("data", []) if m.get("id")]
+            return {"ok": True, "provider": prov_eff, "models": sorted(models), "count": len(models)}
+
+    except urllib.error.HTTPError as e:
+        status = e.code
+        err_body = ""
+        try:
+            err_body = e.read().decode("utf-8", errors="ignore")
+        except Exception:
+            pass
+        mapped = map_llm_error_status(status, err_body or str(e), provider=prov_eff, key=clean_key)
+        return {
+            "ok": False,
+            "status_code": status,
+            "error": mapped.get("message", f"HTTP {status}: {e.reason}"),
+            "provider": prov_eff,
+            "models": [],
+        }
+    except Exception as e:
+        return {
+            "ok": False,
+            "error": f"Failed to list models: {e}",
+            "provider": prov_eff,
+            "models": [],
+        }
+
+
 def map_llm_error_status(status_code: int | None, err_str: str, provider: str = "", model: str = "", key: str = "", mismatch: str | None = None) -> dict:
     """
     Maps an LLMError status code and error string to distinct structured error categories:
@@ -1108,10 +1206,10 @@ def map_llm_error_status(status_code: int | None, err_str: str, provider: str = 
         msg = f"{status_prefix}Bad request (400): invalid request format, parameters, or malformed key. Key NOT saved."
         return {"category": "bad_request", "status_code": status_code or 400, "message": msg, "chat_reply": "Bad request to AI provider (HTTP 400). Check key format and parameters in Settings."}
 
-    # Check 404: Model not found
-    if status_code == 404 or "api error 404" in low or "not_found" in low or "model not found" in low:
+    # Check 404: Model not found (strictly requiring HTTP 404)
+    if status_code == 404 or "api error 404" in low:
         msg = f"{status_prefix}Model '{model}' was not found on this provider (404). Key NOT saved."
-        return {"category": "invalid_model", "status_code": status_code or 404, "message": msg, "chat_reply": f"Model '{model}' not found on provider (HTTP 404). Update model name in Settings."}
+        return {"category": "invalid_model", "status_code": 404, "message": msg, "chat_reply": f"Model '{model}' not found on provider (HTTP 404). Update model name in Settings."}
 
     # Check 429: Quota / rate limit
     if status_code == 429 or "api error 429" in low or "quota" in low or "rate_limit" in low or "insufficient_quota" in low:
@@ -7264,6 +7362,16 @@ class Handler(BaseHandler):
             )
             return self._send(200, summary)
 
+        if path == "/api/config/models":
+            cfg = get_config()
+            res = list_provider_models(
+                provider=cfg.get("provider", ""),
+                api_key=cfg.get("api_key", ""),
+                base_url=cfg.get("base_url", ""),
+            )
+            status = 200 if res.get("ok") else (res.get("status_code") or 400)
+            return self._send(status, res)
+
         if path == "/api/remote/devices":
             with PAIRED_DEVICES_LOCK:
                 devs = [
@@ -7862,6 +7970,14 @@ class Handler(BaseHandler):
                     base_url=str(body.get("base_url") or ""),
                 )
                 return self._send(200, summary)
+            if path == "/api/config/models":
+                res = list_provider_models(
+                    provider=str(body.get("provider") or ""),
+                    api_key=str(body.get("api_key") or ""),
+                    base_url=str(body.get("base_url") or ""),
+                )
+                status = 200 if res.get("ok") else (res.get("status_code") or 400)
+                return self._send(status, res)
             if path == "/api/config":
                 VALID_CONFIG_KEYS = {
                     "provider", "model", "base_url", "api_key", "clear_key", "verify_key", "force_save_key",

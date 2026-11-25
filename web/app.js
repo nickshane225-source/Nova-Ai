@@ -1901,7 +1901,13 @@ async function renderPanel(name) {
         <input type="checkbox" id="chkForceSaveKey" style="width:auto">
         <span>Save anyway (override failed connection test)</span>
       </label>
-      <label>Model</label><input id="model" value="${esc(c.model)}">
+      <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:6px;">
+        <label style="margin:0;">Model</label>
+        <button class="btn" id="btnListModels" type="button" style="padding:2px 8px; font-size:11px; margin-bottom:2px;">List models</button>
+      </div>
+      <input id="model" value="${esc(c.model)}" list="modelList">
+      <datalist id="modelList"></datalist>
+      <div id="modelListStatus" style="font-size:11px; color:#70a1ff; margin-top:-2px; margin-bottom:8px;"></div>
       <label>Base URL (OpenAI-compatible only)</label><input id="base" value="${esc(c.base_url)}">
       <div id="baseHostInfo" style="font-size:11px; color:#70a1ff; margin-top:-2px; margin-bottom:8px;"></div>
       <label>Your name</label><input id="uname" value="${esc(c.user_name)}">
@@ -2101,6 +2107,47 @@ async function renderPanel(name) {
         } catch (e) {
           box.textContent = "Failed to load request summary.";
           box.classList.remove("hidden");
+        }
+      };
+    }
+
+    if ($("#btnListModels")) {
+      $("#btnListModels").onclick = async () => {
+        const btn = $("#btnListModels");
+        const statusEl = $("#modelListStatus");
+        const dl = $("#modelList");
+        btn.disabled = true;
+        btn.textContent = "Loading...";
+        if (statusEl) {
+          statusEl.style.color = "#70a1ff";
+          statusEl.textContent = "Fetching models from provider...";
+        }
+        try {
+          const r = await api("/api/config/models", {
+            provider: $("#prov").value,
+            api_key: $("#key").value,
+            base_url: $("#base").value,
+          });
+          if (r && r.ok && Array.isArray(r.models)) {
+            if (dl) dl.innerHTML = r.models.map(m => `<option value="${esc(m)}">`).join("");
+            if (statusEl) {
+              statusEl.style.color = "#2ed573";
+              statusEl.textContent = `✓ Retrieved ${r.models.length} model(s) from ${r.provider || "provider"}. Select or type in Model box.`;
+            }
+          } else {
+            if (statusEl) {
+              statusEl.style.color = "#ff4757";
+              statusEl.textContent = `✗ ${(r && r.error) ? r.error : "Failed to retrieve models from provider."}`;
+            }
+          }
+        } catch (e) {
+          if (statusEl) {
+            statusEl.style.color = "#ff4757";
+            statusEl.textContent = "✗ Network error while querying provider models endpoint.";
+          }
+        } finally {
+          btn.disabled = false;
+          btn.textContent = "List models";
         }
       };
     }
