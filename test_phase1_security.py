@@ -13,6 +13,7 @@ from unittest.mock import patch, MagicMock
 
 import server
 import scheduler_engine
+import guardian_agent
 
 class TestPhase1Security(unittest.TestCase):
     def setUp(self):
@@ -23,6 +24,14 @@ class TestPhase1Security(unittest.TestCase):
             server.PENDING_ACTIONS.clear()
         with server.FAILS_LOCK:
             server.FAILS.clear()
+        server.CONVERSATION_TAINT.clear()
+        with server.WORKSPACE_WRITES_LOCK:
+            server.WORKSPACE_WRITES_HISTORY.clear()
+        server.SESSION_WORKSPACE_WRITES_COUNT = 0
+        with server.WORKSPACE_WRITES_LOCK:
+            server.WORKSPACE_WRITES_HISTORY.clear()
+            server.SESSION_WORKSPACE_WRITES_COUNT = 0
+        server.RUN_CODE_TRUST_STATE.reset()
 
     # --- 1A. GIT HARDENING ---
     def test_git_shell_operators_blocked(self):
@@ -42,9 +51,9 @@ class TestPhase1Security(unittest.TestCase):
 
     def test_git_remote_modification_blocked(self):
         res = server.skill_git("remote add evil https://evil.com", cfg=self.cfg)
-        self.assertIn("git remote modifying command 'add' is disallowed", res)
+        self.assertTrue("is not permitted" in res or "disallowed" in res)
         res = server.skill_git("remote set-url origin https://evil.com", cfg=self.cfg)
-        self.assertIn("git remote modifying command 'set-url' is disallowed", res)
+        self.assertTrue("is not permitted" in res or "disallowed" in res)
 
     def test_git_allowed_subcommands_syntax(self):
         # status, diff, log, add, etc. should pass through git parser
@@ -157,23 +166,24 @@ class TestPhase1Security(unittest.TestCase):
     def test_self_healing_confirmation_gate_and_taint(self):
         # 1. Healing inherits taint and stops on confirmation
         self.cfg["run_code_trusted_minutes"] = 5
-        with server.RUN_CODE_TRUST_LOCK:
-            server.LAST_RUN_CODE_APPROVED_TIME = time.time()
+        server.RUN_CODE_TRUST_STATE.record_approval()
 
         with patch("server.get_config", return_value=self.cfg):
-            with patch("server.call_llm") as mock_llm:
-                mock_llm.side_effect = [
-                    "Running code: [[RUN_CODE: python | 1/0]]",
-                    "Healing: [[CMD: dir]]"
-                ]
-                with patch("server.run_skill") as mock_skill:
-                    mock_skill.side_effect = [
-                        "Exit code: 1\nTraceback (most recent call last):\nZeroDivisionError: division by zero"
+            with patch("guardian_agent.review_command_safety", side_effect=lambda cfg, tool, arg, **kw: (guardian_agent.VERDICT_SAFE, "safe") if tool == "RUN_CODE" else (guardian_agent.VERDICT_DANGEROUS, "danger")):
+                with patch("server.call_llm") as mock_llm:
+                    mock_llm.side_effect = [
+                        "Running code: [[RUN_CODE: python | 1/0]]",
+                        "Healing: [[CMD: dir]]",
+                        "Done."
                     ]
-                    res = server.chat("fix my code", source="pc", mode="developer")
-                    self.assertIn("pending", res)
-                    self.assertEqual(res["pending"]["action"], "CMD")
-                    self.assertTrue(res["pending"]["preview"].startswith("dir"))
+                    with patch("server.run_skill") as mock_skill:
+                        mock_skill.side_effect = [
+                            "Exit code: 1\nTraceback (most recent call last):\nZeroDivisionError: division by zero"
+                        ]
+                        res = server.chat("fix my code", source="pc", mode="developer")
+                        self.assertIn("pending", res)
+                        self.assertEqual(res["pending"]["action"], "CMD")
+                        self.assertTrue(res["pending"]["preview"].startswith("dir"))
 
     def test_sensitive_files_access_denied(self):
         # Refuse data/config.json, data/nova_brain.db, nova_browser_profile, and .env
@@ -313,11 +323,11 @@ class TestPhase1Security(unittest.TestCase):
 
         with patch("server.get_config", return_value={"remote_enabled": True, "remote_token": "correct-secret-token-32-chars-long"}):
             req = MockRemoteRequest("192.168.1.100")
-            for i in range(5):
+            for i in range(8):
                 ok = req._auth()
                 self.assertFalse(ok)
                 self.assertEqual(req.status, 401)
-            # 6th attempt -> 429 lockout
+            # 9th attempt -> 429 lockout
             ok = req._auth()
             self.assertFalse(ok)
             self.assertEqual(req.status, 429)

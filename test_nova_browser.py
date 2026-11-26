@@ -76,10 +76,15 @@ class TestNovaBrowser(unittest.TestCase):
         self.assertIn("Telegram Web", res_tg)
 
     def test_normalize_target_url(self):
-        # Local file
-        file_uri = nova_browser.normalize_target_url("web/index.html")
-        self.assertTrue(file_uri.startswith("file:///"), f"Expected file URI, got: {file_uri}")
-        self.assertTrue("index.html" in file_uri)
+        # Local file inside workspace
+        ws_sample = nova_browser.WORKSPACE / "_test_browser_page.html"
+        ws_sample.write_text("<html><body>ok</body></html>", encoding="utf-8")
+        try:
+            file_uri = nova_browser.normalize_target_url("_test_browser_page.html")
+            self.assertTrue(file_uri.startswith("file:///"), f"Expected file URI, got: {file_uri}")
+            self.assertTrue("_test_browser_page.html" in file_uri)
+        finally:
+            ws_sample.unlink(missing_ok=True)
 
         # Standard website
         site_uri = nova_browser.normalize_target_url("prothomalo.com")

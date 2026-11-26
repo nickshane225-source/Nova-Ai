@@ -64,10 +64,30 @@ class TestDiscordGateway(unittest.TestCase):
                 mock_send.assert_called_once_with("channel_123", "Mocked AI Response")
 
     def test_approval_commands(self):
+        self.mock_confirm.return_value = {"ok": True, "action": "CMD", "command": "echo test_discord_cmd", "result": "Success"}
         with patch.object(self.gateway, "send_message") as mock_send:
             self.gateway.handle_message("channel_123", "user_admin", "/allow token_xyz")
             self.mock_confirm.assert_called_once_with("token_xyz", True)
-            mock_send.assert_called_once_with("channel_123", "✅ Action allowed: None")
+            sent = mock_send.call_args[0][1]
+            self.assertIn("Action allowed: CMD", sent)
+            self.assertIn("echo test_discord_cmd", sent)
+            self.assertIn("Success", sent)
+
+    def test_pending_action_includes_command_in_approval_prompt(self):
+        self.mock_chat.return_value = {
+            "reply": "Need approval",
+            "pending": {
+                "id": "act_dc_99",
+                "prompt": "Run shell script?",
+                "command": "dir /s /b",
+            }
+        }
+        with patch.object(self.gateway, "send_message") as mock_send:
+            self.gateway.handle_message("channel_123", "user_admin", "List files")
+            sent = mock_send.call_args[0][1]
+            self.assertIn("Action Requires Approval", sent)
+            self.assertIn("dir /s /b", sent)
+            self.assertIn("Command:", sent)
 
     def test_approval_command_failure_reporting(self):
         self.mock_confirm.return_value = {"ok": False, "error": "Token expired"}
@@ -88,6 +108,58 @@ class TestDiscordGateway(unittest.TestCase):
             self.assertTrue(res)
             # Should have called _api_request twice because length > 1950
             self.assertEqual(mock_req.call_count, 2)
+
+
+    def test_discord_paused_plan_approval_format_and_pc_only(self):
+        import server
+
+        # 1. Normal paused plan step approval format
+        step2_pending = {
+            "id": "p_disc_step2",
+            "prompt": "Run next discord step",
+            "command": "dir /s",
+        }
+        self.mock_confirm.return_value = {
+            "ok": True,
+            "action": "CMD",
+            "command": "echo disc1",
+            "result": "disc1 ok",
+            "pending": step2_pending,
+        }
+        with patch.object(self.gateway, "send_message") as mock_send:
+            self.gateway.handle_message("channel_123", "user_admin", "/allow p_disc_step1")
+            self.assertEqual(mock_send.call_count, 2)
+            first_msg = mock_send.call_args_list[0][0][1]
+            announcement = mock_send.call_args_list[1][0][1]
+            self.assertIn("✅ Action allowed: CMD", first_msg)
+            self.assertIn("⚠️ Action Requires Approval (ID: `p_disc_step2`):", announcement)
+            self.assertIn("Run next discord step", announcement)
+            self.assertIn("```\ndir /s\n```", announcement)
+            self.assertIn("/allow p_disc_step2", announcement)
+            self.assertIn("/deny p_disc_step2", announcement)
+
+        # 2. Oversized next step triggers pc_only fallback
+        oversized_pending = {
+            "id": "p_disc_step3_oversized",
+            "prompt": "Huge payload discord step",
+            "command": "B" * 2500,
+        }
+        with server.PENDING_LOCK:
+            server.PENDING_ACTIONS["p_disc_step3_oversized"] = {"id": "p_disc_step3_oversized", "pc_only": False}
+        self.mock_confirm.return_value = {
+            "ok": True,
+            "action": "CMD",
+            "command": "echo disc2",
+            "result": "disc2 ok",
+            "pending": oversized_pending,
+        }
+        with patch.object(self.gateway, "send_message") as mock_send:
+            self.gateway.handle_message("channel_123", "user_admin", "/allow p_disc_step2")
+            self.assertEqual(mock_send.call_count, 2)
+            announcement = mock_send.call_args_list[1][0][1]
+            self.assertIn("Approval for this action must be done on the PC (payload exceeds Discord limits)", announcement)
+            with server.PENDING_LOCK:
+                self.assertTrue(server.PENDING_ACTIONS["p_disc_step3_oversized"]["pc_only"])
 
 
 if __name__ == "__main__":

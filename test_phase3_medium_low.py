@@ -65,21 +65,37 @@ class TestPhase3MediumLow(unittest.TestCase):
             self.assertIn("--remote-debugging-address=127.0.0.1", args)
             self.assertIn(f"--remote-allow-origins=http://127.0.0.1:{nova_browser.CDP_PORT}", args)
 
-    # --- 3C: CONFIRMATION PREVIEW TRUNCATION ---
+    # --- 3C: CONFIRMATION PREVIEW TRUNCATION & LENGTH LIMITS ---
     def test_confirmation_preview_truncation(self):
+        # 1. RUN_CODE > 2000 chars is rejected immediately with error
         huge_cmd = "echo " + ("A" * 25000)
-        # Tag requiring confirmation
         tags = [("RUN_CODE", f"python | {huge_cmd}", 0, 100)]
         cfg = dict(server.DEFAULT_CONFIG)
         cfg["confirm_destructive"] = True
 
         tag_result = server.execute_model_tags(tags, cfg, mode="developer", source="pc", is_tainted=False)
-        pending = tag_result.get("pending_info")
+        self.assertIsNone(tag_result.get("pending_info"))
+        self.assertIn("exceeds maximum allowed length of 2,000 characters", tag_result["actions"][0]["result"])
+
+        # 2. Confirmation preview: 20,000-char truncation removed for untainted actions requiring confirmation
+        huge_file_content = "bigfile.txt|" + ("A" * 25000)
+        file_tags = [("WRITE_FILE", huge_file_content, 0, 100)]
+        file_result = server.execute_model_tags(file_tags, cfg, mode="developer", source="pc", is_tainted=False)
+        pending = file_result.get("pending_info")
         self.assertIsNotNone(pending)
         preview = pending.get("preview", "")
-        self.assertIn("truncated", preview)
-        self.assertIn("more characters", preview)
-        self.assertTrue(len(preview) <= 21000)
+        self.assertNotIn("truncated", preview)
+        self.assertEqual(len(preview), len(huge_file_content))
+
+        # 3. 1d: Tainted WRITE_FILE over 20,000 chars shows first 500, last 500, size, and SHA-256
+        tainted_result = server.execute_model_tags(file_tags, cfg, mode="developer", source="pc", is_tainted=True)
+        pending_t = tainted_result.get("pending_info")
+        self.assertIsNotNone(pending_t)
+        preview_t = pending_t.get("preview", "")
+        self.assertIn("Tainted WRITE_FILE Content Summary", preview_t)
+        self.assertIn("Total Size: 25012 characters", preview_t)
+        self.assertIn("SHA-256:", preview_t)
+        self.assertLess(len(preview_t), 2500)
 
     # --- 3D: TELEMETRY MASKING ---
     def test_telemetry_masking(self):
@@ -87,7 +103,7 @@ class TestPhase3MediumLow(unittest.TestCase):
         sample1 = "Authorization: Bearer sk-1234567890abcdef"
         masked1 = server.mask_secrets(sample1)
         self.assertNotIn("1234567890abcdef", masked1)
-        self.assertIn("Authorization: Bearer sk-1****", masked1)
+        self.assertIn("Authorization: Bearer [REDACTED:token]", masked1)
 
         sample2 = "Connection string: api_key=sk-1234567890&token=sec9876543210"
         masked2 = server.mask_secrets(sample2)
@@ -146,7 +162,7 @@ class TestPhase3MediumLow(unittest.TestCase):
         class StateTestHandler(server.Handler):
             def __init__(self, path="/api/state"):
                 self.path = path
-                self.headers = {"Host": "127.0.0.1:8765", "Origin": "http://127.0.0.1:8765"}
+                self.headers = {"Host": "127.0.0.1:8765", "Origin": "http://127.0.0.1:8765", "Cookie": f"nova_session={server.SESSION_TOKEN}", "X-Nova-Token": server.API_SESSION_TOKEN}
                 self.command = "GET"
                 self.requestline = f"GET {path} HTTP/1.1"
                 self.sent_status = None
@@ -232,7 +248,7 @@ class TestPhase3MediumLow(unittest.TestCase):
             class ConfirmTestHandler(server.Handler):
                 def __init__(self, body_dict):
                     self.path = "/api/confirm"
-                    self.headers = {"Host": "127.0.0.1:8765", "Origin": "http://127.0.0.1:8765"}
+                    self.headers = {"Host": "127.0.0.1:8765", "Origin": "http://127.0.0.1:8765", "Cookie": f"nova_session={server.SESSION_TOKEN}", "X-Nova-Token": server.API_SESSION_TOKEN}
                     self.command = "POST"
                     self.requestline = "POST /api/confirm HTTP/1.1"
                     self._body_override = body_dict
@@ -305,7 +321,8 @@ class TestPhase3MediumLow(unittest.TestCase):
         t.start()
 
         try:
-            res = server.skill_smart_home(f"http://127.0.0.1:{port}/control")
+            with patch("server.is_allowed_smart_home_host", return_value=(True, "OK")):
+                res = server.skill_smart_home(f"http://127.0.0.1:{port}/control")
             self.assertEqual(res, "Refused: smart home redirects are blocked for security.")
             self.assertFalse(target_called[0])
         finally:
@@ -344,7 +361,7 @@ class TestPhase3MediumLow(unittest.TestCase):
         self.assertEqual(reason, "OK")
 
         # 5. LAN private IP addresses allowed without special configuration
-        for lan_ip in ("127.0.0.1", "192.168.1.100", "10.0.0.1", "172.16.0.5"):
+        for lan_ip in ("192.168.1.100", "10.0.0.1", "172.16.0.5"):
             ok_lan, _ = server.is_allowed_smart_home_host(lan_ip, {})
             self.assertTrue(ok_lan, f"Expected {lan_ip} to be allowed")
 
@@ -369,7 +386,8 @@ class TestPhase3MediumLow(unittest.TestCase):
         t.start()
 
         try:
-            res_live = server.skill_smart_home(f"http://127.0.0.1:{port}/api/toggle | POST | {{\"entity_id\": \"light.living_room\"}}")
+            with patch("server.is_allowed_smart_home_host", return_value=(True, "OK")):
+                res_live = server.skill_smart_home(f"http://127.0.0.1:{port}/api/toggle | POST | {{\"entity_id\": \"light.living_room\"}}")
             self.assertIn("succeeded (200)", res_live)
             self.assertIn("light_turned_on", res_live)
         finally:
@@ -463,7 +481,7 @@ class TestPhase3MediumLow(unittest.TestCase):
         # 4. Turn with invalid token rejected by /api/chat
         class MockChatReq:
             def __init__(self, body):
-                self.headers = {"Host": "127.0.0.1:8765", "Origin": "http://127.0.0.1:8765"}
+                self.headers = {"Host": "127.0.0.1:8765", "Origin": "http://127.0.0.1:8765", "Cookie": f"nova_session={server.SESSION_TOKEN}", "X-Nova-Token": server.API_SESSION_TOKEN}
                 self.command = "POST"
                 self.path = "/api/chat"
                 self._test_body = body

@@ -1,3 +1,4 @@
+import server
 import unittest
 from unittest.mock import patch
 from server import (
@@ -63,7 +64,7 @@ class Test2In1ModeSwitch(unittest.TestCase):
         class MockResetHandler(Handler):
             def __init__(self, mode):
                 self.path = "/api/reset"
-                self.headers = {"Host": "127.0.0.1:8765", "Origin": "http://127.0.0.1:8765"}
+                self.headers = {"Host": "127.0.0.1:8765", "Origin": "http://127.0.0.1:8765", "Cookie": f"nova_session={server.SESSION_TOKEN}", "X-Nova-Token": server.API_SESSION_TOKEN}
                 self.command = "POST"
                 self.requestline = "POST /api/reset HTTP/1.1"
                 self._test_body = {"mode": mode}

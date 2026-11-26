@@ -20,7 +20,7 @@ class TestConfigMaxTokens(unittest.TestCase):
         class MockConfigHandler(server.Handler):
             def __init__(self, body):
                 self.path = "/api/config"
-                self.headers = {"Host": "127.0.0.1:8765", "Origin": "http://127.0.0.1:8765"}
+                self.headers = {"Host": "127.0.0.1:8765", "Origin": "http://127.0.0.1:8765", "Cookie": f"nova_session={server.SESSION_TOKEN}", "X-Nova-Token": server.API_SESSION_TOKEN}
                 self.command = "POST"
                 self.requestline = "POST /api/config HTTP/1.1"
                 self._test_body = body
@@ -105,7 +105,7 @@ class TestConfigMaxTokens(unittest.TestCase):
         """Real endpoint test for /api/config via Handler.do_POST."""
         class MockConfigReq:
             def __init__(self, body):
-                self.headers = {"Host": "127.0.0.1:8765", "Origin": "http://127.0.0.1:8765"}
+                self.headers = {"Host": "127.0.0.1:8765", "Origin": "http://127.0.0.1:8765", "Cookie": f"nova_session={server.SESSION_TOKEN}", "X-Nova-Token": server.API_SESSION_TOKEN}
                 self.command = "POST"
                 self.path = "/api/config"
                 self._test_body = body

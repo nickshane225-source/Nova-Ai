@@ -15,10 +15,20 @@ if %errorlevel% neq 0 (
 echo [1/2] Building Core Application (NovaAI.exe) without terminal window...
 pyinstaller --noconfirm --clean --onefile --windowed --name "NovaAI" ^
   --add-data "web;web" ^
+  --add-data "skills;skills" ^
   --add-data "data/characters.json;data" ^
   --hidden-import "nova_browser" ^
   --hidden-import "memory_engine" ^
   --hidden-import "scheduler_engine" ^
+  --hidden-import "skills_engine" ^
+  --hidden-import "audit_logger" ^
+  --hidden-import "guardian_agent" ^
+  --hidden-import "plan_mode" ^
+  --hidden-import "telegram_gateway" ^
+  --hidden-import "discord_gateway" ^
+  --hidden-import "usage_tracker" ^
+  --hidden-import "diagnostics" ^
+  --hidden-import "integrations.github_connector" ^
   server.py
 
 if %errorlevel% neq 0 (

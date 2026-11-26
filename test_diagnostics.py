@@ -42,6 +42,31 @@ class TestDiagnostics(unittest.TestCase):
         res_gemini = diagnostics.check_llm_providers(cfg={"gemini_api_key": "test_key"})
         self.assertTrue(any(r["name"] == "Google Gemini" and r["status"] == "ok" for r in res_gemini))
 
+    def test_check_llm_providers_real_provider_labels_never_gemini_by_default(self):
+        # 1. OpenAI configured API key must be labeled OpenAI, not Google Gemini
+        cfg_openai = {"provider": "openai", "api_key": "sk-openai-test-key", "model": "gpt-4o"}
+        res_openai = diagnostics.check_llm_providers(cfg=cfg_openai)
+        names_openai = [r["name"] for r in res_openai if r.get("status") == "ok"]
+        self.assertIn("OpenAI", names_openai)
+        self.assertNotIn("Google Gemini", names_openai)
+
+        # 2. Anthropic configured API key must be labeled Anthropic Claude, not Google Gemini
+        cfg_anthropic = {"provider": "anthropic", "api_key": "sk-ant-test-key", "model": "claude-3-5-sonnet"}
+        res_anthropic = diagnostics.check_llm_providers(cfg=cfg_anthropic)
+        names_anthropic = [r["name"] for r in res_anthropic if r.get("status") == "ok"]
+        self.assertIn("Anthropic Claude", names_anthropic)
+        self.assertNotIn("Google Gemini", names_anthropic)
+
+        # 3. Google Gemini configured API key
+        cfg_gemini = {"provider": "gemini", "api_key": "AIzaSy-test-key", "model": "gemini-2.5-flash"}
+        res_gem = diagnostics.check_llm_providers(cfg=cfg_gemini)
+        names_gem = [r["name"] for r in res_gem if r.get("status") == "ok"]
+        self.assertIn("Google Gemini", names_gem)
+
+        # 4. Alias _check_llm_providers works identically
+        res_alias = diagnostics._check_llm_providers(cfg=cfg_openai)
+        self.assertEqual([r["name"] for r in res_alias], [r["name"] for r in res_openai])
+
     def test_run_diagnostics(self):
         diag = diagnostics.run_diagnostics(cfg={"gemini_api_key": "dummy"})
         self.assertIn("overall_status", diag)

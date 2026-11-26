@@ -5,15 +5,102 @@ let mode = "idle"; // idle | listening | thinking | speaking
 let active = false, micMuted = false, rec = null, level = 0;
 
 /* ---------- API ---------- */
+function getSessionToken() {
+  try {
+    if (typeof sessionStorage !== "undefined" && sessionStorage.getItem) {
+      return sessionStorage.getItem("nova_token") || "";
+    }
+  } catch (e) {}
+  return "";
+}
+
 async function api(path, body) {
-  const r = await fetch(path, body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {});
-  return r.json();
+  const token = getSessionToken();
+  const headers = { "X-Nova-Token": token };
+  if (body) {
+    headers["Content-Type"] = "application/json";
+  }
+  const r = await fetch(path, body ? { method: "POST", headers: headers, body: JSON.stringify(body) } : { headers: headers });
+  let data = null;
+  try {
+    data = await r.json();
+  } catch (e) {
+    data = { ok: false, error: `Server returned HTTP ${r.status}` };
+  }
+  if (!r.ok && data && typeof data === "object" && !Array.isArray(data)) {
+    if (data.ok === undefined) data.ok = false;
+    if (!data.error) data.error = `HTTP ${r.status}`;
+    data._status = r.status;
+  }
+  return data;
+}
+
+async function streamChat(path, body, onChunk) {
+  const token = getSessionToken();
+  const response = await fetch(path, {
+    method: body ? "POST" : "GET",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Nova-Token": token
+    },
+    body: body ? JSON.stringify(body) : undefined
+  });
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (onChunk) onChunk(decoder.decode(value, { stream: true }));
+  }
 }
 async function loadState() {
   state = await api("/api/state");
-  if ($("#quickLang") && state.config && state.config.language) {
+  if ($("#quickLang") && state && state.config && state.config.language) {
     $("#quickLang").value = state.config.language;
   }
+  const untrustedBadge = $("#untrustedBadge");
+  if (untrustedBadge) {
+    if (state && state.is_tainted) {
+      untrustedBadge.classList.remove("hidden");
+    } else {
+      untrustedBadge.classList.add("hidden");
+    }
+  }
+  if (state && state.config && state.config.wake_word_migrated_banner) {
+    showWakeWordBanner(true);
+  }
+}
+function showWakeWordBanner(show) {
+  let el = document.getElementById("wakeWordOptInBanner");
+  if (!el && show && document.body) {
+    el = document.createElement("div");
+    el.id = "wakeWordOptInBanner";
+    el.style.cssText = "position:fixed;top:60px;left:50%;transform:translateX(-50%);z-index:9999;max-width:560px;background:rgba(0,180,255,0.18);border:1px solid #00b4ff;color:#cceeff;padding:10px 16px;border-radius:8px;font-size:13px;font-weight:600;display:flex;align-items:center;justify-content:space-between;gap:12px;backdrop-filter:blur(8px);box-shadow:0 4px 20px rgba(0,180,255,0.2);";
+    el.innerHTML = `<span>Wake word is now opt-in; enable it in Settings</span><button id="dismissWakeWordBannerBtn" style="background:none;border:none;color:#fff;font-size:16px;cursor:pointer;padding:0 4px;" onclick="dismissWakeWordBanner()">&times;</button>`;
+    document.body.appendChild(el);
+  } else if (el && !show) {
+    el.remove();
+  }
+}
+
+async function dismissWakeWordBanner() {
+  const el = document.getElementById("wakeWordOptInBanner");
+  if (el) el.remove();
+  try {
+    await api("/api/config/dismiss_wake_word_banner", {});
+  } catch (e) {
+    try {
+      await api("/api/config", { wake_word_migrated_banner: false });
+    } catch(err) {}
+  }
+}
+if ($("#clearUntrustedBtn")) {
+  $("#clearUntrustedBtn").onclick = async (e) => {
+    e.stopPropagation();
+    await api("/api/clear_untrusted_context", { mode: ModeManager.current });
+    await loadState();
+    showToast("Context Cleared", "Untrusted tool outputs removed from conversation context.", "info");
+  };
 }
 if ($("#quickLang")) {
   $("#quickLang").onchange = async () => {
@@ -38,7 +125,7 @@ function setMode(m) {
     speaking: "text-[#37d6ff] drop-shadow-[0_0_8px_rgba(55,214,255,0.6)]"
   };
   el.className = `text-xs tracking-[0.25em] flex-1 font-semibold uppercase transition-colors duration-200 ${colors[m] || colors.idle}`;
-  const isWake = active && state && state.config && state.config.wake_word_enabled !== false;
+  const isWake = active && state && state.config && state.config.wake_word_enabled === true;
   let label = { idle: active ? "STANDBY" : "OFFLINE", listening: "LISTENING", thinking: "THINKING", speaking: "SPEAKING" }[m];
   if (m === "listening" && isWake) {
     label = typeof wakeWordAwake !== "undefined" && wakeWordAwake ? "AWAKE (COMMAND)" : "STANDBY (WAKE WORD)";
@@ -400,6 +487,7 @@ async function ensureMic() {
   return { ok: true };
 }
 let micErrors = 0;
+let consecutiveNetworkErrors = 0;
 let keepReply = false;
 let silenceTimer = null;
 let abortStreak = [];
@@ -419,7 +507,47 @@ function scheduleListen(delay = 300) {
   }, delay);
 }
 
+function showVoiceNetworkNotice(show, msg) {
+  let el = document.getElementById("voiceNetworkBanner");
+  if (!el && show && document.body) {
+    el = document.createElement("div");
+    el.id = "voiceNetworkBanner";
+    el.style.cssText = "position:fixed;bottom:78px;left:50%;transform:translateX(-50%);z-index:9999;max-width:560px;background:rgba(255,170,0,0.16);border:1px solid #ffaa00;color:#ffe299;padding:10px 14px;border-radius:8px;font-size:12px;line-height:1.45;backdrop-filter:blur(8px);";
+    document.body.appendChild(el);
+  }
+  if (!el) return;
+  if (show) {
+    const text = msg || "Browser speech service is unreachable. Try Chrome/Edge, turn off VPN/proxy, or type your message below.";
+    el.innerHTML = `<div><b>Voice unavailable:</b> ${esc(text)}</div><details style="margin-top:4px;font-size:11px;color:#cfe9f5;cursor:pointer;"><summary>Voice troubleshooting</summary><div style="margin-top:4px;">Voice uses your browser's cloud speech service (audio leaves this PC while listening). Use Google Chrome or Microsoft Edge, disable VPN/proxy blocking Google speech servers (in Brave, enable Google speech in brave://settings/extensions), or type in the chat box below.</div></details>`;
+    el.style.display = "block";
+    if (el.classList && el.classList.remove) el.classList.remove("hidden");
+  } else {
+    el.style.display = "none";
+    if (el.classList && el.classList.add) el.classList.add("hidden");
+  }
+}
+
+function updateMicIndicator(isListening, isWake) {
+  let el = document.getElementById("micLiveIndicator");
+  if (!el && isListening && document.body) {
+    el = document.createElement("div");
+    el.id = "micLiveIndicator";
+    el.style.cssText = "position:fixed;top:14px;right:18px;z-index:9998;background:rgba(255,59,48,0.92);color:#fff;padding:5px 12px;border-radius:999px;font-size:11px;font-weight:700;letter-spacing:0.04em;display:flex;align-items:center;gap:6px;box-shadow:0 0 14px rgba(255,59,48,0.45);";
+    document.body.appendChild(el);
+  }
+  if (!el) return;
+  if (isListening) {
+    el.textContent = isWake ? "● MIC LIVE — WAKE WORD (Cloud Speech)" : "● MIC LIVE — PUSH-TO-TALK (Cloud Speech)";
+    el.style.display = "flex";
+    if (el.classList && el.classList.remove) el.classList.remove("hidden");
+  } else {
+    el.style.display = "none";
+    if (el.classList && el.classList.add) el.classList.add("hidden");
+  }
+}
+
 function micBlocked(msg) {
+  updateMicIndicator(false, false);
   active = false;
   $("#start").textContent = "Start AI";
   setMode("idle");
@@ -477,14 +605,16 @@ function startListening() {
   const mine = () => rec === me;
   me.lang = state.config.language || "en-US";
   me.interimResults = true;
-  me.continuous = true;
+  const isWakeStart = Boolean(state.config && state.config.wake_word_enabled === true);
+  me.continuous = isWakeStart;
   let finalText = "";
   let interimText = "";
 
   me.onstart = () => {
     if (!mine()) return;
     setMode("listening");
-    const isWake = state.config && state.config.wake_word_enabled !== false;
+    const isWake = state.config && state.config.wake_word_enabled === true;
+    updateMicIndicator(true, isWake);
     if (!keepReply) {
       subtitle("", isWake ? (wakeWordAwake ? "Listening for command…" : "Listening… say 'Hey Nova' or 'Jarvis'.") : "Listening… speak now.");
     }
@@ -521,6 +651,8 @@ function startListening() {
     }
     abortStreak = [];
     micErrors = 0;
+    consecutiveNetworkErrors = 0;
+    showVoiceNetworkNotice(false);
     keepReply = false;
     let interim = "";
     for (let i = e.resultIndex; i < e.results.length; ++i) {
@@ -534,7 +666,7 @@ function startListening() {
     if (!current) return;
 
     clearTimeout(silenceTimer);
-    const isWakeWordMode = state.config && state.config.wake_word_enabled !== false;
+    const isWakeWordMode = state.config && state.config.wake_word_enabled === true;
 
     if (isWakeWordMode) {
       if (!wakeWordAwake) {
@@ -639,7 +771,15 @@ function startListening() {
       }
     } else if (e.error === "network") {
       micErrors++;
-      subtitle("", "Voice recognition can't reach the browser speech service. Check your internet connection.");
+      consecutiveNetworkErrors++;
+      const netMsg = "Browser speech service is unreachable. Try Chrome/Edge, turn off VPN/proxy, or type below.";
+      showVoiceNetworkNotice(true, netMsg);
+      if (consecutiveNetworkErrors >= 3) {
+        console.warn("[Nova AI] 3 consecutive network speech errors, stopping auto-restart.");
+        micBlocked("Browser speech service is unreachable after 3 attempts. Try Chrome/Edge, turn off VPN/proxy, or type below.");
+        return;
+      }
+      subtitle("", netMsg);
     } else if (e.error === "aborted") {
       const now = Date.now();
       abortStreak.push(now);
@@ -658,7 +798,8 @@ function startListening() {
     clearTimeout(silenceTimer);
     if (!mine()) return;
     rec = null;
-    const isWakeWordMode = state.config && state.config.wake_word_enabled !== false;
+    updateMicIndicator(false, false);
+    const isWakeWordMode = state.config && state.config.wake_word_enabled === true;
     const textToSend = (finalText || interimText).trim();
     finalText = "";
     interimText = "";
@@ -684,7 +825,12 @@ function startListening() {
       }
     } else if (active && !micMuted && mode !== "thinking" && mode !== "speaking") {
       setMode("idle");
-      scheduleListen(300);
+      if (isWakeWordMode) {
+        scheduleListen(300);
+      } else {
+        active = false;
+        if ($("#start")) $("#start").textContent = "Start AI";
+      }
     } else if (mode === "listening") {
       setMode("idle");
     }
@@ -694,6 +840,7 @@ function startListening() {
   } catch (err) {
     console.error("[Nova AI] Failed to start speech recognition:", err);
     rec = null;
+    updateMicIndicator(false, false);
     setMode("idle");
     if (active && !micMuted) {
       scheduleListen(1000);
@@ -794,6 +941,8 @@ $("#start").onclick = async () => {
     wakeWordAwake = false;
     clearTimeout(wakeWordAwakeTimer);
     micErrors = 0;
+    consecutiveNetworkErrors = 0;
+    showVoiceNetworkNotice(false);
     keepReply = false;
     abortStreak = [];
     if (bc) { try { bc.postMessage({ type: "mic-claim", id: tabId }); } catch {} }
@@ -1036,7 +1185,7 @@ async function renderPanel(name) {
         ${notes.length ? notes.map(n => `
           <div class="note-card">
             <div class="note-header">
-              <span class="note-title">${esc(n.title)}</span>
+              <span class="note-title">${esc(n.title)}${n.tainted ? ' <span style="color:#ff6b6b;font-size:10px;margin-left:6px;">[untrusted source]</span>' : ''}</span>
               <span class="note-cat">${esc(n.category || 'general')}</span>
             </div>
             <div class="note-body">${esc(n.content)}</div>
@@ -1066,7 +1215,7 @@ async function renderPanel(name) {
       list.innerHTML = found.length ? found.map(n => `
         <div class="note-card">
           <div class="note-header">
-            <span class="note-title">${esc(n.title)} ${n.score ? `(Score: ${n.score})` : ''}</span>
+            <span class="note-title">${esc(n.title)} ${n.score ? `(Score: ${n.score})` : ''}${n.tainted ? ' <span style="color:#ff6b6b;font-size:10px;margin-left:6px;">[untrusted source]</span>' : ''}</span>
             <span class="note-cat">${esc(n.category || 'general')}</span>
           </div>
           <div class="note-body">${esc(n.content)}</div>
@@ -1206,6 +1355,11 @@ async function renderPanel(name) {
     const st = await api("/api/remote");
     const on = st.enabled && st.active;
     let html = `<h2>Mobile remote</h2><p class="hint">Control Nova from your phone: scan the QR code, then type (or dictate) commands on the phone and Nova runs them on this PC. Your phone and this PC must be on the same Wi-Fi.</p>`;
+    if (on) {
+      html += `<div style="background:rgba(255,170,0,0.12);border:1px solid #ffaa00;color:#ffaa00;padding:10px 14px;border-radius:6px;margin:12px 0;font-size:12px;line-height:1.4;">
+        ⚠️ <b>Security Notice:</b> Connection is unencrypted HTTP on your local area network (LAN). Do not use on public Wi-Fi networks. Remote will auto-disable after ${st.idle_timeout_minutes || 30} minutes of inactivity.
+      </div>`;
+    }
     if (st.error) html += `<p class="hint" style="color:#ff6b81">${esc(st.error)}</p>`;
     if (on && !st.urls.length) {
       html += `<p class="hint" style="color:#ffd24d">Couldn't find this PC's Wi-Fi/network address. Connect to Wi-Fi and reopen this panel.</p><button class="btn" id="mobOff">Turn off</button>`;
@@ -1220,7 +1374,29 @@ async function renderPanel(name) {
       html += `<button class="btn" id="mobOn">Turn on mobile remote</button>
         <p class="hint">The first time on Windows you may see a firewall prompt: allow Python on <b>Private networks</b>. Nothing is reachable from outside your Wi-Fi.</p>`;
     }
+    html += `<div style="margin:10px 0;padding:8px 10px;border:1px solid rgba(55,214,255,0.22);border-radius:6px;font-size:12px;">
+      <div><b>Chosen LAN Bind IP:</b> <code id="mobBindIpDisplay">${esc(st.bind_ip || "Auto (active Wi-Fi/Ethernet RFC1918)")}</code></div>
+      <div style="display:flex;gap:6px;margin-top:6px;align-items:center;">
+        <input id="mobBindIpInput" placeholder="Auto-detect (or enter RFC1918 IP e.g. 192.168.1.10)" value="${esc((state.config && state.config.remote_bind_ip) || "")}" style="flex:1;font-size:12px;">
+        <button class="btn" id="mobBindIpSave" type="button" style="padding:4px 10px;font-size:11px;">Set Bind IP</button>
+      </div>
+      <div id="mobBindIpMsg" class="hint" style="margin-top:4px;"></div>
+    </div>`;
     body.innerHTML = html;
+    if ($("#mobBindIpSave")) {
+      $("#mobBindIpSave").onclick = async () => {
+        const val = ($("#mobBindIpInput")?.value || "").trim();
+        const r = await api("/api/config", { remote_bind_ip: val });
+        const msgEl = $("#mobBindIpMsg");
+        if (!r || r.ok === false || r.error) {
+          if (msgEl) { msgEl.style.color = "#ff6b81"; msgEl.textContent = (r && r.error) || "Invalid bind IP"; }
+          return;
+        }
+        await loadState();
+        if (on) { await api("/api/remote/enable", { enabled: true }); }
+        renderPanel("mobile");
+      };
+    }
     if ($("#mobOn")) $("#mobOn").onclick = async () => { await api("/api/remote/enable", { enabled: true }); renderPanel("mobile"); };
     if ($("#mobOff")) $("#mobOff").onclick = async () => { await api("/api/remote/enable", { enabled: false }); renderPanel("mobile"); };
     if ($("#regen")) $("#regen").onclick = async () => { await api("/api/remote/regenerate", {}); renderPanel("mobile"); };
@@ -1242,6 +1418,28 @@ async function renderPanel(name) {
       upd();
       window._mobileTimer = setInterval(upd, 3000);
     }
+    try {
+      const devRes = await api("/api/remote/devices");
+      if (devRes && devRes.devices && devRes.devices.length) {
+        let devHtml = `<div style="margin-top:20px;border-top:1px solid rgba(55,214,255,0.2);padding-top:15px;">
+          <h3 style="font-size:14px;color:#37d6ff;margin-bottom:8px;">Paired Devices</h3>
+          <ul style="list-style:none;padding:0;margin:0;">`;
+        devRes.devices.forEach(d => {
+          devHtml += `<li style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.05);font-size:12px;">
+            <span>${esc(d.name)} (${esc(d.client_ip || "IP")})</span>
+            <button class="btn btn-sm revoke-btn" data-dev-id="${esc(d.id)}" style="padding:2px 8px;font-size:11px;">Revoke</button>
+          </li>`;
+        });
+        devHtml += `</ul></div>`;
+        body.insertAdjacentHTML("beforeend", devHtml);
+        body.querySelectorAll(".revoke-btn").forEach(btn => {
+          btn.onclick = async () => {
+            await api("/api/remote/devices/revoke", { id: btn.dataset.devId });
+            renderPanel("mobile");
+          };
+        });
+      }
+    } catch (e) {}
     return;
   }
   if (name === "doctor") {
@@ -1379,21 +1577,24 @@ async function renderPanel(name) {
           return;
         }
         let h = `<div style="display:flex; flex-direction:column; gap:8px; max-height:55vh; overflow-y:auto;">`;
-        for (const ev of events) {
-          const isAllowed = ev.status === "ALLOWED" || ev.status === "APPROVED" || ev.status === "AUTO_APPROVED";
-          const stCol = isAllowed ? "#2ed573" : (ev.status === "AWAITING_CONFIRMATION" ? "#ffa502" : "#ff4757");
+        for (const ev of events.slice().reverse()) {
+          const stUpper = (ev.status || "UNKNOWN").toUpperCase();
+          const isAllowed = stUpper === "EXECUTED" || stUpper === "ALLOWED" || stUpper === "APPROVED" || stUpper === "AUTO_APPROVED" || stUpper === "APPROVED_USER";
+          const stCol = isAllowed ? "#2ed573" : (stUpper === "AWAITING_CONFIRMATION" ? "#ffa502" : "#ff4757");
           const toolName = ev.tool || "SYSTEM";
           const chan = ev.channel || "pc";
-          const verdict = ev.guardian_verdict || "NONE";
+          const rawVerdict = ev.guardian || ev.guardian_verdict || "NONE";
+          const verdictNorm = String(rawVerdict).replace(/^\[|\]$/g, "").toUpperCase();
+          const verdictCol = verdictNorm === "SAFE" ? "#2ed573" : (verdictNorm === "DANGEROUS" ? "#ff4757" : "#7fa6b8");
           const timeStr = ev.timestamp ? ev.timestamp.replace("T", " ").slice(0, 19) : "";
           h += `<div style="background:rgba(0,0,0,0.3); padding:8px 12px; border-radius:4px; border-left:3px solid ${stCol}; font-size:11px;">
             <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
               <span style="color:#37d6ff; font-weight:bold;">${esc(toolName)} <small style="color:#7fa6b8; font-weight:normal;">via [${esc(chan)}]</small></span>
-              <span style="color:${stCol}; font-weight:bold;">${esc(ev.status)}</span>
+              <span style="color:${stCol}; font-weight:bold;">${esc(stUpper)}</span>
             </div>
             <div style="color:#cfe9f5; font-family:monospace; margin-bottom:4px; word-break:break-all;">${esc(ev.preview || "")}</div>
             <div style="display:flex; justify-content:space-between; color:#7fa6b8; font-size:10px;">
-              <span>Guardian: <b style="color:${verdict === '[SAFE]' ? '#2ed573' : (verdict === '[DANGEROUS]' ? '#ff4757' : '#7fa6b8')}">${esc(verdict)}</b></span>
+              <span>Guardian: <b style="color:${verdictCol}">${esc(verdictNorm)}</b></span>
               <span>${esc(timeStr)}</span>
             </div>
           </div>`;
@@ -1411,7 +1612,12 @@ async function renderPanel(name) {
 
   if (name === "memory") {
     body.innerHTML = `<h2>Memory</h2><p class="hint">Nova saves lasting facts about you here (say "remember that I…"). Stored only on this PC in data/memory.json.</p>
-      ${state.memory.map((m, i) => `<div class="row"><span>${esc(m)}</span><button data-del="${i}">delete</button></div>`).join("") || "<p class='hint'>Nothing yet.</p>"}
+      ${state.memory.map((m, i) => {
+        const text = (typeof m === 'object' && m !== null) ? (m.text || '') : m;
+        const isTainted = (typeof m === 'object' && m !== null && m.tainted);
+        const badge = isTainted ? ' <span style="color:#ff6b6b;font-size:10px;">[untrusted source]</span>' : '';
+        return `<div class="row"><span>${esc(text)}${badge}</span><button data-del="${i}">delete</button></div>`;
+      }).join("") || "<p class='hint'>Nothing yet.</p>"}
       <label>Add a memory</label><input id="newmem" placeholder="e.g. My sister's name is Ayesha"><br><br><button class="btn" id="addmem">Add</button>`;
     const addMem = async () => {
       const val = $("#newmem").value.trim();
@@ -1438,12 +1644,30 @@ async function renderPanel(name) {
     };
   }
   if (name === "workspace") {
+    let taintedList = [];
+    try {
+      const tRes = await api("/api/workspace/tainted");
+      taintedList = (tRes && tRes.files) ? tRes.files : [];
+    } catch (e) {}
     body.innerHTML = `<h2>Coding Workspace</h2>
       <p class="hint">This is the dedicated folder where Nova creates code files, scripts, and projects for you.</p>
       <div class="workspace-bar">
         <span>📁 Path:</span>
         <span class="workspace-path">${esc(state.workspace || "workspace")}</span>
         <button class="btn" id="btnOpenWs">Open in Explorer</button>
+      </div>
+      <div id="taintedFilesSection" style="margin:14px 0; padding:10px 12px; border:1px solid rgba(255,107,129,0.35); border-radius:4px; background:rgba(255,71,87,0.06);">
+        <h3 style="margin:0 0 6px 0; font-size:12px; color:#ff6b81; letter-spacing:0.1em; text-transform:uppercase;">🛡️ Untrusted / Tainted Files (${taintedList.length})</h3>
+        <p class="hint" style="margin:0 0 8px 0;">Files written during untrusted/tainted turns require confirmation before execution or opening until you explicitly trust their current SHA-256 content.</p>
+        ${taintedList.length ? taintedList.map(f => `
+          <div class="row" style="display:flex; justify-content:space-between; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid rgba(255,255,255,0.06);">
+            <div style="overflow:hidden; text-overflow:ellipsis;">
+              <b style="color:#ff6b81">${esc(f.name)}</b>
+              <small style="display:block; color:#7fa6b8; font-family:monospace; font-size:10px;">SHA-256: ${esc((f.sha256 || '').slice(0, 16))}…</small>
+            </div>
+            <button class="btn trust-file-btn" data-trust-path="${esc(f.path || f.name)}" style="padding:3px 10px; font-size:11px; color:#4dffb0;">Trust File</button>
+          </div>
+        `).join("") : "<p class='hint' style='margin:0;'>No tainted files in workspace.</p>"}
       </div>
       <label>Voice coding examples you can try:</label>
       <div class="row"><span>“Write a Python script calculator.py with functions for math operations”</span></div>
@@ -1456,6 +1680,18 @@ async function renderPanel(name) {
         await api("/api/workspace/open");
       };
     }
+    body.querySelectorAll(".trust-file-btn").forEach(btn => {
+      btn.onclick = async () => {
+        const p = btn.dataset.trustPath;
+        const r = await api("/api/workspace/trust", { path: p });
+        if (r && r.ok) {
+          showToast("File Trusted", `Cleared taint mark for ${p}`, "normal");
+          renderPanel("workspace");
+        } else {
+          showToast("Error", (r && r.error) || "Could not trust file", "alert");
+        }
+      };
+    });
   }
   if (name === "skills") {
     body.innerHTML = `<h2>Nova AI Skills & Powers</h2>
@@ -1652,10 +1888,28 @@ async function renderPanel(name) {
   if (name === "settings") {
     const c = state.config;
     body.innerHTML = `<h2>Settings</h2>
-      <label>AI provider</label><select id="prov"><option value="anthropic">Anthropic (Claude)</option><option value="gemini">Google Gemini</option><option value="openai">OpenAI-compatible (OpenAI, OpenRouter, Groq…)</option><option value="ollama">Ollama / LM Studio (local, free)</option></select>
+      <label>AI provider</label><select id="prov"><option value="anthropic">Anthropic (Claude)</option><option value="gemini">Google Gemini (OpenAI-compatible)</option><option value="gemini-native">Google Gemini (Native endpoint)</option><option value="openai">OpenAI-compatible (OpenAI, OpenRouter, Groq…)</option><option value="ollama">Ollama / LM Studio (local, free)</option></select>
       <label>API key ${c.has_key ? "(saved — leave blank to keep)" : ""}</label><input id="key" type="password" placeholder="${c.has_key ? "••••••••" : "paste your key"}">
-      <label>Model</label><input id="model" value="${esc(c.model)}">
+      <div id="keyMismatchWarn" class="hidden" style="color:#ffaa00; background:rgba(255,170,0,0.12); border:1px solid #ffaa00; padding:7px 10px; border-radius:4px; margin:6px 0; font-size:12px;"></div>
+      <div style="display:flex; align-items:center; gap:8px; margin:6px 0 10px 0; flex-wrap:wrap;">
+        <button class="btn" id="btnTestConn" type="button" style="padding:4px 12px; font-size:12px;">Test connection</button>
+        <button class="btn" id="btnReqSummary" type="button" style="padding:4px 12px; font-size:12px; background:rgba(0,180,255,0.15); border-color:#00b4ff;">Show request summary</button>
+        <span id="connTestResult" style="font-size:12px;"></span>
+      </div>
+      <div id="reqSummaryBox" class="hidden" style="color:#cfe9f5; background:rgba(0,180,255,0.08); border:1px solid rgba(0,180,255,0.3); padding:8px 12px; border-radius:4px; margin:6px 0 10px 0; font-size:12px; font-family:monospace; line-height:1.6;"></div>
+      <label id="forceSaveWrap" class="hidden" style="display:none; align-items:center; gap:8px; text-transform:none; font-size:12px; color:#ffaa00; cursor:pointer; margin:6px 0;">
+        <input type="checkbox" id="chkForceSaveKey" style="width:auto">
+        <span>Save anyway (override failed connection test)</span>
+      </label>
+      <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:6px;">
+        <label style="margin:0;">Model</label>
+        <button class="btn" id="btnListModels" type="button" style="padding:2px 8px; font-size:11px; margin-bottom:2px;">List models</button>
+      </div>
+      <input id="model" value="${esc(c.model)}" list="modelList">
+      <datalist id="modelList"></datalist>
+      <div id="modelListStatus" style="font-size:11px; color:#70a1ff; margin-top:-2px; margin-bottom:8px;"></div>
       <label>Base URL (OpenAI-compatible only)</label><input id="base" value="${esc(c.base_url)}">
+      <div id="baseHostInfo" style="font-size:11px; color:#70a1ff; margin-top:-2px; margin-bottom:8px;"></div>
       <label>Your name</label><input id="uname" value="${esc(c.user_name)}">
       <label>Speech language (e.g. en-US, en-GB, ur-PK, hi-IN)</label><input id="lang" value="${esc(c.language)}">
       <label>LLM Read Timeout (seconds, max 90s; total wait with retry is kept under 100s)</label><input id="llmTimeout" type="number" min="5" max="90" value="${c.llm_timeout || 60}">
@@ -1680,8 +1934,8 @@ async function renderPanel(name) {
       <h3>Voice Interaction Modes</h3>
       <div style="display:flex; flex-direction:column; gap:8px; margin-bottom:16px;">
         <label style="display:flex; align-items:center; gap:8px; text-transform:none; font-size:12px; color:#cfe9f5; cursor:pointer">
-          <input type="checkbox" id="chkWake" ${c.wake_word_enabled !== false ? 'checked' : ''} style="width:auto">
-          <span>Enable <b>'Hey Nova'</b> & <b>'Jarvis'</b> Voice Wake-Word</span>
+          <input type="checkbox" id="chkWake" ${c.wake_word_enabled === true ? 'checked' : ''} style="width:auto">
+          <span>Enable <b>'Hey Nova'</b> & <b>'Jarvis'</b> Wake-Word (opt-in: continuous listening via browser cloud speech)</span>
         </label>
         <label style="display:flex; align-items:center; gap:8px; text-transform:none; font-size:12px; color:#cfe9f5; cursor:pointer">
           <input type="checkbox" id="chkBarge" ${c.barge_in_enabled === true ? 'checked' : ''} style="width:auto">
@@ -1696,24 +1950,207 @@ async function renderPanel(name) {
             <h3>Budget & Multi-Channel Gateways</h3>
       <div style="display:flex; flex-direction:column; gap:8px; margin-bottom:16px;">
         <label>Monthly Budget Cap (USD, 0 for unlimited)</label>
-        <input id="monthlyBudget" type="number" step="0.5" min="0" value="${c.monthly_budget_usd || 0}">
+        <input id="monthlyBudget" type="number" step="0.5" min="0" value="${c.monthly_budget_usd != null ? c.monthly_budget_usd : 0}">
         <label style="display:flex; align-items:center; gap:8px; text-transform:none; font-size:12px; color:#cfe9f5; cursor:pointer">
           <input type="checkbox" id="chkDiscord" ${c.discord_enabled === true ? 'checked' : ''} style="width:auto">
           <span>Enable <b>Discord Remote Gateway</b></span>
         </label>
-        <label>Discord Bot Token</label>
-        <input id="discordToken" type="password" placeholder="Bot token" value="${esc(c.discord_bot_token || '')}">
+        <label>Discord Bot Token ${c.discord_bot_token_set ? "(saved — leave blank to keep)" : ""}</label>
+        <input id="discordToken" type="password" placeholder="${c.discord_bot_token_set ? "••••••••" : "Bot token"}" value="">
         <label>Discord Channel IDs (comma-separated)</label>
         <input id="discordChannels" placeholder="e.g. 123456789012345678" value="${esc((c.discord_channel_ids || []).join(', '))}">
+        <label>Discord Allowed User IDs (comma-separated; empty = nobody allowed)</label>
+        <input id="discordUsers" placeholder="e.g. 987654321098765432" value="${esc((c.discord_allowed_user_ids || []).join(', '))}">
       </div>
 
+      <div id="settingsError" class="hidden" style="color:#ff4757; background:rgba(255,71,87,0.12); border:1px solid #ff4757; padding:8px 10px; border-radius:4px; margin:8px 0; font-size:12px; font-weight:600;"></div>
       <br><button class="btn" id="save">Save Settings</button>
       ${c.has_key ? ' <button class="btn" id="clearkey" style="color:#ff6b81">Remove saved key</button>' : ""}
       <button class="btn" id="reset">Clear chat history</button>
       <button class="btn" id="exitApp" style="color:#ff6b81">Exit Nova AI</button>
       <p class="hint">Your key is saved only in data/config.json on this PC and sent only to your chosen provider.</p>`;
-    $("#prov").value = c.provider === "openai" ? (/generativelanguage/.test(c.base_url) ? "gemini" : /11434|1234/.test(c.base_url) ? "ollama" : "openai") : c.provider;
-    $("#prov").onchange = () => { const p = state.presets[$("#prov").value]; if (p) { $("#model").value = p.model; $("#base").value = p.base_url; } };
+    $("#prov").value = c.provider === "gemini-native" ? "gemini-native" : (c.provider === "openai" ? (/generativelanguage/.test(c.base_url) ? (c.base_url.includes("/openai") ? "gemini" : "gemini-native") : /11434|1234/.test(c.base_url) ? "ollama" : "openai") : c.provider);
+    function detectKeyProviderMismatch(provVal, keyVal, baseVal) {
+      const k = String(keyVal || "").trim();
+      if (!k) return "";
+      const b = String(baseVal || "").toLowerCase();
+      let eff = provVal;
+      if (eff === "gemini-native" || eff === "gemini" || (eff === "openai" && b.includes("generativelanguage.googleapis.com"))) eff = "gemini";
+      else if (eff === "openai" && (b.includes("localhost") || b.includes("127.0.0.1"))) eff = "ollama";
+      if (k.startsWith("sk-ant-") && eff !== "anthropic") {
+        return `Warning: Key starts with "sk-ant-" (Anthropic Claude), but AI provider is set to "${eff}".`;
+      }
+      if ((k.startsWith("AIza") || k.startsWith("AQ.")) && eff !== "gemini") {
+        const pref = k.startsWith("AIza") ? "AIza" : "AQ.";
+        return `Warning: Key starts with "${pref}" (Google Gemini), but AI provider is set to "${eff}".`;
+      }
+      if (k.startsWith("AQ.") && eff === "gemini") {
+        return "If this key was created for Vertex/Agent Platform express mode, it will not work with the Gemini API endpoint.";
+      }
+      if (k.startsWith("sk-") && !k.startsWith("sk-ant-") && !k.startsWith("sk-or-") && (eff === "anthropic" || eff === "gemini")) {
+        return `Warning: Key starts with "sk-" (OpenAI), but AI provider is set to "${eff}".`;
+      }
+      return "";
+    }
+    function updateMismatchWarning() {
+      const warnEl = $("#keyMismatchWarn");
+      if (!warnEl) return;
+      const msg = detectKeyProviderMismatch($("#prov").value, $("#key").value, $("#base").value);
+      if (msg) {
+        warnEl.textContent = msg;
+        warnEl.classList.remove("hidden");
+      } else {
+        warnEl.textContent = "";
+        warnEl.classList.add("hidden");
+      }
+    }
+    function updateBaseHost() {
+      const hostEl = $("#baseHostInfo");
+      if (!hostEl) return;
+      const val = ($("#base")?.value || "").trim();
+      if (!val) {
+        hostEl.textContent = "";
+        return;
+      }
+      try {
+        const u = new URL(val);
+        hostEl.textContent = `Destination host: ${u.host} (${u.protocol.replace(':', '')})`;
+      } catch (e) {
+        hostEl.textContent = `Destination host: (invalid URL format)`;
+      }
+    }
+    updateMismatchWarning();
+    updateBaseHost();
+    $("#prov").onchange = () => {
+      const p = state.presets[$("#prov").value];
+      if (p) { $("#model").value = p.model; $("#base").value = p.base_url; }
+      updateMismatchWarning();
+      updateBaseHost();
+    };
+    $("#key").oninput = () => {
+      updateMismatchWarning();
+      const fw = $("#forceSaveWrap");
+      if (fw) { fw.classList.add("hidden"); fw.style.display = "none"; }
+      if ($("#chkForceSaveKey")) $("#chkForceSaveKey").checked = false;
+    };
+    $("#base").oninput = () => {
+      updateMismatchWarning();
+      updateBaseHost();
+    };
+    $("#btnTestConn").onclick = async () => {
+      const resEl = $("#connTestResult");
+      const btn = $("#btnTestConn");
+      if (btn) btn.disabled = true;
+      if (resEl) { resEl.style.color = "#8fd4f0"; resEl.textContent = "Testing connection..."; }
+      let prov = $("#prov").value;
+      const apiProv = (prov === "ollama" || prov === "gemini") ? "openai" : prov;
+      const cleanKey = $("#key").value.trim().replace(/^['"]|['"]$/g, "").trim();
+      if (cleanKey.includes(" ")) {
+        if (resEl) { resEl.style.color = "#ff4757"; resEl.textContent = "✗ API key cannot contain spaces. — key NOT saved."; }
+        if (btn) btn.disabled = false;
+        return;
+      }
+      try {
+        const r = await api("/api/config/test", {
+          provider: apiProv,
+          api_key: cleanKey,
+          model: $("#model").value,
+          base_url: $("#base").value,
+        });
+        if (r && r.ok) {
+          if (resEl) { resEl.style.color = "#2ed573"; resEl.textContent = "✓ " + (r.message || "Connection successful"); }
+          const fw = $("#forceSaveWrap");
+          if (fw) { fw.classList.add("hidden"); fw.style.display = "none"; }
+        } else {
+          const statusText = r && r.status_code ? ` (HTTP ${r.status_code})` : "";
+          const msg = (r && r.message) ? r.message : "Connection test failed";
+          const fullMsg = msg.includes("NOT saved") ? msg : `${msg}${statusText} — key NOT saved.`;
+          if (resEl) { resEl.style.color = "#ff4757"; resEl.textContent = "✗ " + fullMsg; }
+          if ($("#key").value.trim()) {
+            const fw = $("#forceSaveWrap");
+            if (fw) { fw.classList.remove("hidden"); fw.style.display = "flex"; }
+          }
+        }
+      } catch (e) {
+        if (resEl) { resEl.style.color = "#ff4757"; resEl.textContent = "✗ Network error: " + (e.message || "request failed") + " — key NOT saved."; }
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    };
+
+    if ($("#btnReqSummary")) {
+      $("#btnReqSummary").onclick = async () => {
+        const box = $("#reqSummaryBox");
+        if (!box) return;
+        if (!box.classList.contains("hidden") && box.innerHTML) {
+          box.classList.add("hidden");
+          return;
+        }
+        try {
+          const r = await api("/api/config/request_summary", {
+            provider: $("#prov").value,
+            api_key: $("#key").value,
+            model: $("#model").value,
+            base_url: $("#base").value,
+          });
+          if (r && r.ok) {
+            box.innerHTML = `<b>Request Summary:</b><br>` +
+              `• Provider: ${esc(r.provider)}<br>` +
+              `• Destination Host: ${esc(r.endpoint_host)}<br>` +
+              `• Auth Method: ${esc(r.auth_method)}<br>` +
+              `• Key Length: ${r.key_length} characters<br>` +
+              `• Key Format: ${esc(r.key_format_label)}<br>` +
+              `• Model: ${esc(r.model)}<br>` +
+              `• Base URL: ${esc(r.base_url || "(default)")}`;
+            box.classList.remove("hidden");
+          }
+        } catch (e) {
+          box.textContent = "Failed to load request summary.";
+          box.classList.remove("hidden");
+        }
+      };
+    }
+
+    if ($("#btnListModels")) {
+      $("#btnListModels").onclick = async () => {
+        const btn = $("#btnListModels");
+        const statusEl = $("#modelListStatus");
+        const dl = $("#modelList");
+        btn.disabled = true;
+        btn.textContent = "Loading...";
+        if (statusEl) {
+          statusEl.style.color = "#70a1ff";
+          statusEl.textContent = "Fetching models from provider...";
+        }
+        try {
+          const r = await api("/api/config/models", {
+            provider: $("#prov").value,
+            api_key: $("#key").value,
+            base_url: $("#base").value,
+          });
+          if (r && r.ok && Array.isArray(r.models)) {
+            if (dl) dl.innerHTML = r.models.map(m => `<option value="${esc(m)}">`).join("");
+            if (statusEl) {
+              statusEl.style.color = "#2ed573";
+              statusEl.textContent = `✓ Retrieved ${r.models.length} model(s) from ${r.provider || "provider"}. Select or type in Model box.`;
+            }
+          } else {
+            if (statusEl) {
+              statusEl.style.color = "#ff4757";
+              statusEl.textContent = `✗ ${(r && r.error) ? r.error : "Failed to retrieve models from provider."}`;
+            }
+          }
+        } catch (e) {
+          if (statusEl) {
+            statusEl.style.color = "#ff4757";
+            statusEl.textContent = "✗ Network error while querying provider models endpoint.";
+          }
+        } finally {
+          btn.disabled = false;
+          btn.textContent = "List models";
+        }
+      };
+    }
 
     $("#vrate").oninput = () => { $("#lblRate").textContent = $("#vrate").value + "x"; };
     $("#vpitch").oninput = () => { $("#lblPitch").textContent = $("#vpitch").value; };
@@ -1726,17 +2163,37 @@ async function renderPanel(name) {
     };
 
     $("#save").onclick = async () => {
+      const errEl = $("#settingsError");
+      if (errEl) {
+        errEl.textContent = "";
+        errEl.classList.add("hidden");
+      }
       let prov = $("#prov").value; if (prov === "ollama" || prov === "gemini") prov = "openai";
+      let rawKey = $("#key").value;
+      let cleanKey = rawKey.trim().replace(/^['"]|['"]$/g, "").trim();
+      if (cleanKey.includes(" ")) {
+        if (errEl) {
+          errEl.textContent = "API key cannot contain spaces.";
+          errEl.classList.remove("hidden");
+        }
+        showToast("Settings Error", "API key cannot contain spaces.", "alert");
+        return;
+      }
+      const rawBudget = $("#monthlyBudget") ? String($("#monthlyBudget").value).trim() : "0";
+      const parsedBudget = rawBudget === "" ? 0 : Number(rawBudget);
       const payload = {
         provider: prov,
-        api_key: $("#key").value,
+        api_key: cleanKey,
+        verify_key: Boolean(cleanKey),
+        force_save_key: Boolean($("#chkForceSaveKey") && $("#chkForceSaveKey").checked),
         model: $("#model").value,
         base_url: $("#base").value,
         user_name: $("#uname").value,
-        monthly_budget_usd: parseFloat($("#monthlyBudget")?.value || 0),
+        monthly_budget_usd: Number.isNaN(parsedBudget) ? rawBudget : parsedBudget,
         discord_enabled: $("#chkDiscord")?.checked || false,
         discord_bot_token: $("#discordToken")?.value || "",
         discord_channel_ids: ($("#discordChannels")?.value || "").split(",").map(s => s.trim()).filter(Boolean),
+        discord_allowed_user_ids: ($("#discordUsers")?.value || "").split(",").map(s => s.trim()).filter(Boolean),
         language: $("#lang").value,
         voice_rate: Number($("#vrate").value),
         voice_pitch: Number($("#vpitch").value),
@@ -1746,7 +2203,28 @@ async function renderPanel(name) {
         allow_outside_workspace: $("#chkOutsideWs") ? $("#chkOutsideWs").checked : false,
         llm_timeout: Math.max(5, Math.min(90, Number($("#llmTimeout") ? $("#llmTimeout").value : 60) || 60))
       };
-      const res = await api("/api/config", payload);
+      let res;
+      try {
+        res = await api("/api/config", payload);
+      } catch (e) {
+        res = { ok: false, error: e.message || "Network error while saving settings." };
+      }
+      if (!res || res.ok === false || res.error) {
+        if (res && res.test_failed) {
+          const fw = $("#forceSaveWrap");
+          if (fw) { fw.classList.remove("hidden"); fw.style.display = "flex"; }
+        }
+        let msg = (res && res.error) ? res.error : "Failed to save settings.";
+        if (res && res.test_failed && !msg.includes("NOT saved")) {
+          msg += " — key NOT saved.";
+        }
+        if (errEl) {
+          errEl.textContent = msg;
+          errEl.classList.remove("hidden");
+        }
+        showToast("Settings Error", msg, "alert");
+        return;
+      }
       if (res && res.need_confirm) {
         showConfirmModal({
           action: "SECURITY_SETTINGS",
@@ -1754,12 +2232,21 @@ async function renderPanel(name) {
           preview: `Modifying: ${res.keys ? res.keys.join(", ") : "protected configuration keys"}`,
           callback: async (approve) => {
             if (approve) {
-              await api("/api/config", { ...payload, confirm_token: res.token });
+              const res2 = await api("/api/config", { ...payload, confirm_token: res.token });
+              if (!res2 || res2.ok === false || res2.error) {
+                const msg2 = (res2 && res2.error) ? res2.error : "Failed to save security settings.";
+                if (errEl) {
+                  errEl.textContent = msg2;
+                  errEl.classList.remove("hidden");
+                }
+                showToast("Settings Error", msg2, "alert");
+                return;
+              }
               await loadState();
               $("#panel").classList.add("hidden");
-              showToast("Settings Saved", "Security configuration updated.", "success");
+              showToast("Settings Saved", "Security configuration updated.", "normal");
             } else {
-              showToast("Cancelled", "Settings change was cancelled.", "info");
+              showToast("Cancelled", "Settings change was cancelled.", "warning");
             }
           }
         });
@@ -1877,17 +2364,99 @@ async function handlePhone(ev) {
   setMode("idle");
   scheduleListen(100);
 }
+let _visionBannerShownAt = 0;
+let _visionBannerHideTimer = null;
+function showVisionBanner(show, msg) {
+  let el = document.getElementById("visionBanner");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "visionBanner";
+    el.style.cssText = "position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:99999;background:rgba(255,59,48,0.95);color:#fff;padding:10px 20px;border-radius:8px;box-shadow:0 4px 20px rgba(255,59,48,0.4);font-size:13px;font-weight:600;display:flex;align-items:center;gap:10px;transition:opacity 0.2s;";
+    document.body.appendChild(el);
+  }
+  if (show) {
+    if (_visionBannerHideTimer) {
+      clearTimeout(_visionBannerHideTimer);
+      _visionBannerHideTimer = null;
+    }
+    _visionBannerShownAt = Date.now();
+    el.innerHTML = `<span style="display:inline-block;width:10px;height:10px;background:#fff;border-radius:50%;"></span> <span>📸 ${esc(msg || "Transmitting desktop screenshot to AI cloud provider...")}</span>`;
+    el.style.display = "flex";
+  } else {
+    const elapsed = Date.now() - _visionBannerShownAt;
+    const remaining = Math.max(0, 3000 - elapsed);
+    if (remaining > 0) {
+      if (_visionBannerHideTimer) clearTimeout(_visionBannerHideTimer);
+      _visionBannerHideTimer = setTimeout(() => {
+        _visionBannerHideTimer = null;
+        el.style.display = "none";
+      }, remaining);
+    } else {
+      el.style.display = "none";
+    }
+  }
+}
+
 async function pollEvents() {
   try {
     const r = await api("/api/events?after=" + (lastEvent == null ? 0 : lastEvent));
-    if (lastEvent == null) lastEvent = r.last; // first poll: skip history
-    else for (const ev of r.events) { lastEvent = ev.id; await handlePhone(ev); }
+    if (lastEvent == null) {
+      lastEvent = r.last; // first poll: skip history
+    } else {
+      for (const ev of r.events) {
+        lastEvent = ev.id;
+        if (ev.type === "vision_start") {
+          showVisionBanner(true, ev.message);
+        } else if (ev.type === "vision_end") {
+          showVisionBanner(false);
+        }
+        if (ev.type === "plan_paused") {
+          try {
+            const pRes = await api("/api/pending");
+            const match = (pRes && pRes.pending) ? pRes.pending.find(p => p.id === ev.pending_id) : null;
+            if (match) {
+              showConfirmModal(match);
+            } else {
+              showConfirmModal({
+                id: ev.pending_id,
+                action: ev.action || ev.paused_step || "PLAN_STEP",
+                prompt: `Step requires confirmation:`,
+                preview: ev.preview || ev.title || "Plan step awaiting approval",
+                pc_only: ev.pc_only,
+                guardian: ev.guardian
+              });
+            }
+          } catch {
+            showConfirmModal({
+              id: ev.pending_id,
+              action: ev.action || ev.paused_step || "PLAN_STEP",
+              prompt: `Step requires confirmation:`,
+              preview: ev.preview || ev.title || "Plan step awaiting approval",
+              pc_only: ev.pc_only,
+              guardian: ev.guardian
+            });
+          }
+        }
+        await handlePhone(ev);
+      }
+    }
   } catch {}
   setTimeout(pollEvents, 1500);
 }
 pollEvents();
 
-loadState().then(() => { if (!state.config.has_key) subtitle("", "Open Settings and add your AI key to begin."); });
+async function checkPendingActionsOnLoad() {
+  try {
+    const pRes = await api("/api/pending");
+    if (pRes && pRes.pending && pRes.pending.length > 0) {
+      showConfirmModal(pRes.pending[0]);
+    }
+  } catch {}
+}
+loadState().then(() => {
+  if (!state.config.has_key) subtitle("", "Open Settings and add your AI key to begin.");
+  checkPendingActionsOnLoad();
+});
 setMode("idle");
 
 
@@ -1970,7 +2539,7 @@ setMode("idle");
 
   async function poll() {
     try {
-      const r = await fetch("/api/activity", { cache: "no-store" });
+      const r = await fetch("/api/activity", { cache: "no-store", headers: { "X-Nova-Token": getSessionToken() } });
       snap = await r.json(); snapAt = Date.now(); offline = false;
     } catch { offline = true; }
     render();
@@ -2071,46 +2640,119 @@ document.querySelectorAll(".spot-item").forEach(item => {
 
 /* ---------- Confirmation Gate Modal ---------- */
 let currentPendingAction = null;
+let pendingConfirmId = null;
+let isConfirming = false;
+
+function closeModal() {
+  const modal = $("#confirmModal");
+  if (modal) modal.classList.add("hidden");
+  const allowBtn = $("#confirmAllowBtn");
+  const denyBtn = $("#confirmDenyBtn");
+  if (allowBtn) allowBtn.disabled = false;
+  if (denyBtn) denyBtn.disabled = false;
+  const imgEl = $("#confirmImagePreview");
+  if (imgEl) {
+    imgEl.style.display = "none";
+    imgEl.src = "";
+  }
+}
+
 function showConfirmModal(pending) {
   currentPendingAction = pending;
+  pendingConfirmId = pending ? (pending.id || null) : null;
+  isConfirming = false;
   const modal = $("#confirmModal");
   if (!modal) return;
+  const allowBtn = $("#confirmAllowBtn");
+  const denyBtn = $("#confirmDenyBtn");
+  if (allowBtn) allowBtn.disabled = false;
+  if (denyBtn) denyBtn.disabled = false;
   const promptEl = $("#confirmPrompt");
   const previewEl = $("#confirmPreview");
   if (promptEl) promptEl.textContent = pending.prompt || "A high-impact action requires confirmation:";
   if (previewEl) previewEl.textContent = `${pending.action}: ${pending.preview || ""}`;
+
+  let imgEl = $("#confirmImagePreview");
+  if (pending && pending.image_preview) {
+    if (!imgEl) {
+      imgEl = document.createElement("img");
+      imgEl.id = "confirmImagePreview";
+      imgEl.style.cssText = "max-width:100%; max-height:220px; border-radius:6px; margin:10px 0; border:1px solid #37d6ff; display:block;";
+      if (previewEl && previewEl.parentNode) {
+        previewEl.parentNode.insertBefore(imgEl, previewEl.nextSibling);
+      }
+    }
+    imgEl.src = pending.image_preview;
+    imgEl.style.display = "block";
+  } else if (imgEl) {
+    imgEl.style.display = "none";
+    imgEl.src = "";
+  }
+
   modal.classList.remove("hidden");
 }
 
 async function resolveConfirmation(approve) {
-  const modal = $("#confirmModal");
-  if (modal) modal.classList.add("hidden");
-  if (!currentPendingAction) return;
+  if (isConfirming || (!currentPendingAction && !pendingConfirmId)) return;
+  isConfirming = true;
+  const allowBtn = $("#confirmAllowBtn");
+  const denyBtn = $("#confirmDenyBtn");
+  if (allowBtn) allowBtn.disabled = true;
+  if (denyBtn) denyBtn.disabled = true;
+
   const action = currentPendingAction;
+  const confirmId = pendingConfirmId || (action ? action.id : null);
   currentPendingAction = null;
-  if (action.callback) {
-    await action.callback(approve);
+  pendingConfirmId = null;
+  closeModal();
+
+  if (!action && !confirmId) {
+    isConfirming = false;
+    return;
+  }
+
+  if (action && action.callback) {
+    try {
+      await action.callback(approve);
+    } finally {
+      isConfirming = false;
+    }
     return;
   }
   try {
-    const res = await api("/api/confirm", { id: action.id, approve: approve });
+    const res = await api("/api/confirm", { id: confirmId || (action && action.id), approve: approve });
+    const actionName = (action && action.action) ? action.action : "Action";
     if (approve) {
-      showToast("Action Approved", `${action.action} completed.`, "success");
+      showToast("Action Approved", `${actionName} completed.`, "success");
       if (res.result) {
-        subtitle("", `Executed ${action.action}: ${res.result.slice(0, 100)}`);
-        if (active && !micMuted) speak(`Executed ${action.action}`);
+        subtitle("", `Executed ${actionName}: ${res.result.slice(0, 100)}`);
+        if (active && !micMuted) speak(`Executed ${actionName}`);
       }
     } else {
-      showToast("Action Denied", `${action.action} cancelled.`, "info");
-      subtitle("", `Cancelled ${action.action}.`);
+      showToast("Action Denied", `${actionName} cancelled.`, "info");
+      subtitle("", `Cancelled ${actionName}.`);
     }
   } catch (err) {
     showToast("Confirmation Error", err.message || "Failed to confirm", "error");
+  } finally {
+    isConfirming = false;
   }
 }
 
 if ($("#confirmAllowBtn")) $("#confirmAllowBtn").onclick = () => resolveConfirmation(true);
 if ($("#confirmDenyBtn")) $("#confirmDenyBtn").onclick = () => resolveConfirmation(false);
+if ($("#confirmCancelPlanBtn")) {
+  $("#confirmCancelPlanBtn").onclick = async () => {
+    try {
+      const res = await api("/api/plan/cancel", {});
+      closeModal();
+      showToast("Plan Cancelled", res.message || "Plan cancelled.", "info");
+      subtitle("", "Plan cancelled.");
+    } catch (err) {
+      showToast("Error", err.message || "Failed to cancel plan", "error");
+    }
+  };
+}
 
 // Initialize Mode Manager
 ModeManager.init();

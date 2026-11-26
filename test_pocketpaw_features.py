@@ -23,7 +23,7 @@ class TestPocketPawFeatures(unittest.TestCase):
         # Mock request to /api/metrics/usage
         handler = server.Handler.__new__(server.Handler)
         handler.path = "/api/metrics/usage"
-        handler.headers = {"Host": "127.0.0.1:8765"}
+        handler.headers = {"Host": "127.0.0.1:8765", "Cookie": f"nova_session={server.SESSION_TOKEN}", "X-Nova-Token": server.API_SESSION_TOKEN}
         handler.server = MagicMock()
         handler.server.server_address = ("127.0.0.1", 8765)
         
@@ -45,7 +45,7 @@ class TestPocketPawFeatures(unittest.TestCase):
     def test_health_and_diagnostics_endpoint(self):
         handler = server.Handler.__new__(server.Handler)
         handler.path = "/api/health"
-        handler.headers = {"Host": "127.0.0.1:8765"}
+        handler.headers = {"Host": "127.0.0.1:8765", "Cookie": f"nova_session={server.SESSION_TOKEN}", "X-Nova-Token": server.API_SESSION_TOKEN}
         handler.server = MagicMock()
         handler.server.server_address = ("127.0.0.1", 8765)
 

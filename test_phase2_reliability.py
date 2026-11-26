@@ -27,7 +27,7 @@ class TestPhase2Reliability(unittest.TestCase):
 
         class MockReq:
             def __init__(self, body):
-                self.headers = {"Host": "127.0.0.1:8765", "Origin": "http://127.0.0.1:8765"}
+                self.headers = {"Host": "127.0.0.1:8765", "Origin": "http://127.0.0.1:8765", "Cookie": f"nova_session={server.SESSION_TOKEN}", "X-Nova-Token": server.API_SESSION_TOKEN}
                 self.command = "POST"
                 self.path = "/api/reset"
                 self._test_body = body
@@ -79,7 +79,7 @@ class TestPhase2Reliability(unittest.TestCase):
     def test_browser_routes_catch_crashes(self):
         class MockReq:
             def __init__(self, path, body):
-                self.headers = {"Host": "127.0.0.1:8765", "Origin": "http://127.0.0.1:8765"}
+                self.headers = {"Host": "127.0.0.1:8765", "Origin": "http://127.0.0.1:8765", "Cookie": f"nova_session={server.SESSION_TOKEN}", "X-Nova-Token": server.API_SESSION_TOKEN}
                 self.command = "POST"
                 self.path = path
                 self._test_body = body
@@ -130,7 +130,7 @@ class TestPhase2Reliability(unittest.TestCase):
     def test_config_unknown_key_rejected(self):
         class MockReq:
             def __init__(self, body):
-                self.headers = {"Host": "127.0.0.1:8765", "Origin": "http://127.0.0.1:8765"}
+                self.headers = {"Host": "127.0.0.1:8765", "Origin": "http://127.0.0.1:8765", "Cookie": f"nova_session={server.SESSION_TOKEN}", "X-Nova-Token": server.API_SESSION_TOKEN}
                 self.command = "POST"
                 self.path = "/api/config"
                 self._test_body = body
@@ -152,7 +152,7 @@ class TestPhase2Reliability(unittest.TestCase):
     def test_config_voice_bounds_clamped(self):
         class MockReq:
             def __init__(self, body):
-                self.headers = {"Host": "127.0.0.1:8765", "Origin": "http://127.0.0.1:8765"}
+                self.headers = {"Host": "127.0.0.1:8765", "Origin": "http://127.0.0.1:8765", "Cookie": f"nova_session={server.SESSION_TOKEN}", "X-Nova-Token": server.API_SESSION_TOKEN}
                 self.command = "POST"
                 self.path = "/api/config"
                 self._test_body = body
@@ -179,7 +179,7 @@ class TestPhase2Reliability(unittest.TestCase):
     def test_config_max_tokens_validation(self):
         class MockReq:
             def __init__(self, body):
-                self.headers = {"Host": "127.0.0.1:8765", "Origin": "http://127.0.0.1:8765"}
+                self.headers = {"Host": "127.0.0.1:8765", "Origin": "http://127.0.0.1:8765", "Cookie": f"nova_session={server.SESSION_TOKEN}", "X-Nova-Token": server.API_SESSION_TOKEN}
                 self.command = "POST"
                 self.path = "/api/config"
                 self._test_body = body
@@ -214,7 +214,7 @@ class TestPhase2Reliability(unittest.TestCase):
     def test_state_masks_secrets(self):
         class MockReq:
             def __init__(self):
-                self.headers = {"Host": "127.0.0.1:8765"}
+                self.headers = {"Host": "127.0.0.1:8765", "Cookie": f"nova_session={server.SESSION_TOKEN}", "X-Nova-Token": server.API_SESSION_TOKEN}
                 self.path = "/api/state"
                 self.status = None
                 self.data = None
@@ -248,10 +248,7 @@ class TestPhase2Reliability(unittest.TestCase):
                 "status", "status -s", "status -b", "status -u",
                 "diff --stat", "diff -p",
                 "log -n 5", "log --oneline", "log --oneline -n 5",
-                "add -A", "commit -m 'Initial commit'", "commit -m msg",
-                "branch -a", "checkout -b new-feat", "switch -c new-feat",
-                "init -b main", "restore --staged",
-                "pull -u", "push --force"
+                "show HEAD", "clone https://github.com/example/repo"
             ]:
                 res = server.skill_git(valid_cmd)
                 self.assertNotIn("is not permitted", res)
@@ -280,7 +277,7 @@ class TestPhase2Reliability(unittest.TestCase):
 
         # 3. Path outside workspace rejected
         outside_p = r"C:\Windows\System32" if platform.system() == "Windows" else "/etc"
-        res_path = server.skill_git(f"add {outside_p}")
+        res_path = server.skill_git(f"diff {outside_p}")
         self.assertEqual(res_path, "Path is outside the Nova workspace.")
 
         # 4. Dangerous URLs rejected
@@ -451,7 +448,7 @@ class TestPhase2Reliability(unittest.TestCase):
     def test_protect_api_config_sensitive_keys(self):
         class MockReq:
             def __init__(self, body):
-                self.headers = {"Host": "127.0.0.1:8765", "Origin": "http://127.0.0.1:8765"}
+                self.headers = {"Host": "127.0.0.1:8765", "Origin": "http://127.0.0.1:8765", "Cookie": f"nova_session={server.SESSION_TOKEN}", "X-Nova-Token": server.API_SESSION_TOKEN}
                 self.command = "POST"
                 self.path = "/api/config"
                 self._test_body = body

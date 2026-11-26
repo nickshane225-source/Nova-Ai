@@ -3,13 +3,36 @@
   const $ = (s) => document.querySelector(s);
   const log = $("#log");
 
-  /* ---- pairing token (comes from the QR code link) ---- */
+  /* ---- pairing token (one-time 5-minute code exchanged for device token) ---- */
   const params = new URLSearchParams(location.search);
-  let token = params.get("t") || "";
+  const pairCode = params.get("pair") || params.get("t") || "";
+  let token = "";
   try {
-    if (token) { localStorage.setItem("nova_t", token); history.replaceState(null, "", location.pathname); }
-    else token = localStorage.getItem("nova_t") || "";
+    if (pairCode) {
+      history.replaceState(null, "", location.pathname);
+    }
+    token = localStorage.getItem("nova_device_token") || localStorage.getItem("nova_t") || "";
   } catch {}
+
+  async function exchangePairCode(code) {
+    try {
+      const res = await fetch("/api/remote/pair", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: code })
+      });
+      const data = await res.json();
+      if (data.ok && data.token) {
+        token = data.token;
+        try {
+          localStorage.setItem("nova_device_token", token);
+          localStorage.removeItem("nova_t");
+        } catch {}
+        return true;
+      }
+    } catch (e) {}
+    return false;
+  }
 
   let info = { name: "Nova", apps: [], language: "en-US" };
   let paired = false;
@@ -54,7 +77,12 @@
   }
 
   async function api(path, body) {
-    const opt = { headers: { "X-Nova-Token": token } };
+    const opt = {
+      headers: {
+        "Authorization": "Bearer " + token,
+        "X-Nova-Token": token
+      }
+    };
     if (body) { opt.method = "POST"; opt.headers["Content-Type"] = "application/json"; opt.body = JSON.stringify(body); }
     let r;
     try { r = await fetch(path, opt); } catch { return { _net: true, error: "Can't reach your PC. Is Nova running and are you on the same Wi-Fi?" }; }
@@ -67,6 +95,9 @@
 
   /* ---- connection / info ---- */
   async function ping(first) {
+    if (pairCode && !token) {
+      await exchangePairCode(pairCode);
+    }
     if (!token) {
       conn("bad", "Not paired");
       if (first) add("err", "Not paired yet. On your PC open Nova → Mobile and scan the QR code with this phone.");

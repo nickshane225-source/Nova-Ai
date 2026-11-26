@@ -80,7 +80,7 @@ flowchart TD
 - **DNS Rebinding & CSRF Protection**: Binds strictly to `127.0.0.1`, enforces exact port/host validation, and blocks cross-site fetch headers.
 
 ### 🌐 Multi-Channel Gateways (Work from Anywhere)
-- **Mobile QR Remote (`:8766`)**: Scan a one-time QR code with your phone to control Nova over Wi-Fi without cloud relay servers.
+- **Mobile QR Remote (`:8766`)**: Scan a one-time QR code with your phone to control Nova over Wi-Fi without cloud relay servers. Uses a 5-minute single-use pairing code exchanged for a per-device authorization token (`Authorization: Bearer <token>`, never in URL query strings). Paired devices can be inspected and revoked at any time from Nova's Mobile panel.
 - **Telegram Bot Gateway**: Remote control Nova securely from Telegram with chat ID whitelist verification and silent desktop execution.
 - **Discord Bot Gateway**: Full bot gateway supporting `!nova <prompt>` and interactive `!confirm <token>` workflows.
 
@@ -107,7 +107,7 @@ flowchart TD
 ## 🚀 Quick Start
 
 ### 1. Prerequisites
-- **Python 3.8+** (Windows, macOS, or Linux). Ensure *"Add Python to PATH"* is checked during installation.
+- **Python 3.10+** (Windows, macOS, or Linux). Ensure *"Add Python to PATH"* is checked during installation.
 - Recommended browser: **Google Chrome** or **Microsoft Edge** (for HTML5 Speech Recognition and CDP automation).
 
 ### 2. Launch Nova AI
@@ -183,7 +183,7 @@ Detailed reproduction steps, root causes, and verification notes are documented 
 ## 🔒 Security & Privacy Model
 
 - **Local-First Architecture:** The HTTP server binds exclusively to `127.0.0.1` and blocks requests with invalid `Host` or cross-site `Sec-Fetch-Site` headers.
-- **Zero Telemetry:** Nova AI collects zero analytics, telemetry, or user logs. All chat histories, notes, and metrics remain on your local drive.
+- **Privacy & Cloud Disclosure:** Nova AI collects no product analytics or crash telemetry, and chat histories, notes, and metrics stay on your local drive. However, **voice input uses your browser's cloud speech recognition service** (microphone audio leaves your PC while listening), and LLM/vision prompts are sent to your configured AI provider (unless using local Ollama). **Push-to-talk is the default** with a visible live microphone indicator; continuous **wake-word listening is opt-in (default OFF)** because it keeps the microphone streaming while active.
 - **Credential Storage:** API keys and sensitive tokens are encrypted using Windows DPAPI (`CryptProtectData`) before being written to disk.
 - **Isolated Workspace:** File read/write and script execution are jailed inside the `./workspace/` directory by default, preventing unintended modifications to host operating system files.
 

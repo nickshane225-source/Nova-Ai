@@ -176,7 +176,8 @@ function createMockEnvironment() {
       cancelSpeech,
       scheduleListen,
       startListening,
-      speak
+      speak,
+      showVisionBanner
     })`,
     context
   );
@@ -295,6 +296,68 @@ function runEchoGuardTest() {
   rec.onspeechstart();
   assert.strictEqual(scope.mode, "listening", "Barge-in should trigger after 600ms when enabled");
   console.log("[PASS] TEST 6 passed: Echo guard properly shields initial audio playback.\n");
+  runNetworkErrorLimitTest();
+}
+
+// --- TEST 7: Speech network error shows visible UI message + stops auto-restart after 3 consecutive errors ---
+function runNetworkErrorLimitTest() {
+  console.log("--- TEST 7: Network speech error shows UI banner and stops after 3 consecutive errors ---");
+  const { scope, context } = createMockEnvironment();
+  scope.active = true;
+  scope.micMuted = false;
+  scope.startListening();
+
+  // Error 1: visible UI message shown, still active
+  scope.rec.onerror({ error: "network" });
+  const banner = context.document.getElementById("voiceNetworkBanner");
+  assert.strictEqual(banner.style.display, "block", "Voice network banner must be visible on network error");
+  assert.ok(banner.innerHTML.includes("Chrome/Edge"), "Banner must suggest Chrome/Edge");
+  assert.ok(banner.innerHTML.includes("VPN/proxy"), "Banner must mention VPN/proxy");
+  assert.ok(banner.innerHTML.includes("Voice troubleshooting"), "Banner must include Voice troubleshooting hint");
+  assert.strictEqual(scope.active, true, "Should remain active after 1st network error");
+
+  // Error 2: still active
+  scope.rec.onerror({ error: "network" });
+  assert.strictEqual(scope.active, true, "Should remain active after 2nd network error");
+
+  // Error 3: stops auto-restarting (active becomes false)
+  scope.rec.onerror({ error: "network" });
+  assert.strictEqual(scope.active, false, "Must stop auto-restarting after 3 consecutive network errors");
+  console.log("[PASS] TEST 7 passed: Visible UI banner shown and auto-restart halted after 3 consecutive network errors.\n");
+  runPushToTalkDefaultTest();
+}
+
+// --- TEST 8: Push-to-talk default (wake word opt-in OFF) + visible mic indicator ---
+function runPushToTalkDefaultTest() {
+  console.log("--- TEST 8: Push-to-talk default (wake word OFF) and visible mic indicator ---");
+  const { scope, context } = createMockEnvironment();
+  scope.active = true;
+  scope.micMuted = false;
+  delete scope.state.config.wake_word_enabled; // default unset => OFF
+  scope.startListening();
+
+  assert.strictEqual(scope.rec.continuous, false, "Push-to-talk default must set continuous=false");
+  const ind = context.document.getElementById("micLiveIndicator");
+  assert.strictEqual(ind.style.display, "flex", "Visible mic indicator must be shown while listening");
+  assert.ok(ind.textContent.includes("PUSH-TO-TALK"), "Mic indicator must indicate push-to-talk mode");
+
+  // When recognition ends in push-to-talk mode, active becomes false and indicator hides
+  scope.rec.onend();
+  assert.strictEqual(scope.active, false, "Push-to-talk mode must not auto-restart listening on end");
+  assert.strictEqual(ind.style.display, "none", "Mic indicator must hide when recognition ends");
+  console.log("[PASS] TEST 8 passed: Push-to-talk default & live mic indicator verified.\n");
+  runVisionBannerMinDurationTest();
+}
+
+// --- TEST 9: Vision banner stays visible >= 3s even if vision_start and vision_end arrive together ---
+function runVisionBannerMinDurationTest() {
+  console.log("--- TEST 9: Vision banner stays visible >= 3s on same-poll start+end ---");
+  const { scope, context } = createMockEnvironment();
+  scope.showVisionBanner(true, "Transmitting screenshot...");
+  scope.showVisionBanner(false);
+  const el = context.document.getElementById("visionBanner");
+  assert.strictEqual(el.style.display, "flex", "Vision banner must stay visible immediately after same-poll end");
+  console.log("[PASS] TEST 9 passed: Vision banner enforces minimum 3s display duration.\n");
 
   console.log("=================================================");
   console.log("ALL REAL APP.JS VOICE REGRESSION TESTS PASSED!");

@@ -367,14 +367,17 @@ class SchedulerEngine:
         now = datetime.datetime.now()
         parts.append(f"Good morning! Today is {now.strftime('%A, %B %d')}.")
         
-        # Weather via wttr.in
+        # Weather via wttr.in with unified SSRF protection
         try:
-            req = urllib.request.Request("https://wttr.in/?format=3", headers={"User-Agent": "curl/7.68.0"})
-            with urllib.request.urlopen(req, timeout=4) as resp:
-                weather_raw = resp.read().decode("utf-8", errors="replace").strip()
-                if weather_raw:
-                    # Clean any problematic terminal control chars while keeping readable text
-                    weather = re.sub(r"[\x00-\x1f\x7f-\x9f]", "", weather_raw)
+            import ssrf_guard
+            ok, text, _ = ssrf_guard.safe_http_fetch(
+                "https://wttr.in/?format=3",
+                timeout=4.0,
+                wrap_output=False,
+            )
+            if ok and text:
+                weather = re.sub(r"[\x00-\x1f\x7f-\x9f]", "", text).strip()
+                if weather:
                     parts.append(f"Current weather: {weather}.")
         except Exception:
             pass

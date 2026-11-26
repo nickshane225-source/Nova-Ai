@@ -203,11 +203,14 @@ class TestServerRegression(unittest.TestCase):
         server.FAILS.clear()
         cfg = server.get_config()
         cfg["remote_enabled"] = True
+        server.save_config(cfg)
         server.regenerate_token()
         token = server.get_config().get("remote_token")
 
         remote_srv = server.SilentThreadingHTTPServer(("127.0.0.1", 0), server.RemoteHandler)
         rport = remote_srv.server_address[1]
+        orig_rport = server.RemoteHandler.DEFAULT_PORT
+        server.RemoteHandler.DEFAULT_PORT = rport
         rthread = threading.Thread(target=remote_srv.serve_forever, daemon=True)
         rthread.start()
 
@@ -219,8 +222,8 @@ class TestServerRegression(unittest.TestCase):
                 urllib.request.urlopen(bad_req)
             self.assertEqual(ctx.exception.code, 401)
 
-            # 2. Lockout after 5 fails -> 429
-            for _ in range(4):
+            # 2. Lockout after 8 fails -> 9th attempt 429
+            for _ in range(7):
                 with self.assertRaises(urllib.error.HTTPError):
                     urllib.request.urlopen(bad_req)
             with self.assertRaises(urllib.error.HTTPError) as ctx:
@@ -247,6 +250,10 @@ class TestServerRegression(unittest.TestCase):
             with urllib.request.urlopen(rotated_req) as resp:
                 self.assertEqual(resp.status, 200)
         finally:
+            cfg = server.get_config()
+            cfg["remote_enabled"] = False
+            server.save_config(cfg)
+            server.RemoteHandler.DEFAULT_PORT = orig_rport
             remote_srv.shutdown()
             remote_srv.server_close()
 
@@ -254,10 +261,13 @@ class TestServerRegression(unittest.TestCase):
         """Verifies that main UI endpoints (/index.html, /api/state, /api/chat) are 404 on RemoteHandler port."""
         cfg = server.get_config()
         cfg["remote_enabled"] = True
+        server.save_config(cfg)
         server.regenerate_token()
         token = server.get_config().get("remote_token")
         remote_srv = server.SilentThreadingHTTPServer(("127.0.0.1", 0), server.RemoteHandler)
         rport = remote_srv.server_address[1]
+        orig_rport = server.RemoteHandler.DEFAULT_PORT
+        server.RemoteHandler.DEFAULT_PORT = rport
         rthread = threading.Thread(target=remote_srv.serve_forever, daemon=True)
         rthread.start()
 
@@ -270,6 +280,10 @@ class TestServerRegression(unittest.TestCase):
                     urllib.request.urlopen(req)
                 self.assertEqual(ctx.exception.code, 404, f"Endpoint {ep} should return 404 on remote port")
         finally:
+            cfg = server.get_config()
+            cfg["remote_enabled"] = False
+            server.save_config(cfg)
+            server.RemoteHandler.DEFAULT_PORT = orig_rport
             remote_srv.shutdown()
             remote_srv.server_close()
 

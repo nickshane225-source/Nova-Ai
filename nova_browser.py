@@ -48,8 +48,17 @@ PROFILE_DIR.mkdir(parents=True, exist_ok=True)
 WORKSPACE = ROOT / "workspace"
 WORKSPACE.mkdir(parents=True, exist_ok=True)
 
-CDP_PORT = 9222
 CDP_HOST = "127.0.0.1"
+
+
+def _pick_free_local_port() -> int:
+    """Chooses a random free TCP port bound strictly to 127.0.0.1."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return int(s.getsockname()[1])
+
+
+CDP_PORT = _pick_free_local_port()
 
 _browser_process = None
 _browser_lock = threading.Lock()
@@ -124,9 +133,10 @@ class BrowserLaunchResult(dict):
         return bool(self.get("ok", False))
 
 
-def launch_browser(initial_url: str = "about:blank"):
+def launch_browser(initial_url: str = "about:blank", headless: bool = False):
     """Launches Nova Browser with dedicated profile and remote debugging enabled."""
     global _browser_process
+    initial_url = normalize_target_url(initial_url or "about:blank")
     with _browser_lock:
         if is_cdp_available(timeout=1.0):
             return BrowserLaunchResult({"ok": True, "running": True})
@@ -152,8 +162,10 @@ def launch_browser(initial_url: str = "about:blank"):
             "--disable-sync",
             "--disable-background-networking",
             "--window-size=1280,850",
-            initial_url or "about:blank"
+            initial_url or "about:blank",
         ]
+        if headless:
+            args.append("--headless=new")
 
         try:
             creationflags = 0
@@ -166,6 +178,11 @@ def launch_browser(initial_url: str = "about:blank"):
                 stderr=subprocess.DEVNULL,
                 creationflags=creationflags
             )
+            _browser_process.spawn_args = list(args)
+            try:
+                (ROOT / ".cdp_port").write_text(str(CDP_PORT), encoding="utf-8")
+            except Exception:
+                pass
         except Exception as e:
             print(f"[Nova Browser] Error launching browser: {e}")
             return BrowserLaunchResult({"ok": False, "error": str(e)})
@@ -180,6 +197,28 @@ def launch_browser(initial_url: str = "about:blank"):
 
 
 # ----------------------------------------------------------------------------
+def close_browser():
+    """Terminates Nova Browser process and cleans up .cdp_port."""
+    global _browser_process
+    with _browser_lock:
+        if _browser_process:
+            try:
+                _browser_process.terminate()
+                _browser_process.wait(timeout=2.0)
+            except Exception:
+                try:
+                    _browser_process.kill()
+                except Exception:
+                    pass
+            _browser_process = None
+        cdp_file = ROOT / ".cdp_port"
+        try:
+            if cdp_file.exists():
+                cdp_file.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
 # URL & Tab Utilities
 # ----------------------------------------------------------------------------
 
@@ -267,8 +306,9 @@ def activate_tab(tab_id: str) -> bool:
         return False
 
 
-def open_new_tab(target_url: str) -> dict or None:
+def open_new_tab(target_url: str, allow_localhost_dev: bool = False) -> dict or None:
     """Opens a new tab with target_url via CDP."""
+    target_url = normalize_target_url(target_url, allow_localhost_dev=allow_localhost_dev)
     if not is_cdp_available(timeout=0.5):
         if not launch_browser(target_url):
             return None
@@ -276,7 +316,7 @@ def open_new_tab(target_url: str) -> dict or None:
         tabs = list_tabs()
         return tabs[0] if tabs else None
 
-    if not re.match(r"^https?://", target_url, re.I) and not target_url.startswith("about:"):
+    if not re.match(r"^(https?|file)://", target_url, re.I) and not target_url.startswith("about:"):
         target_url = "https://" + target_url
 
     encoded_url = urllib.parse.quote(target_url, safe=":/?#[]@!$&'()*+,;=")
@@ -308,29 +348,99 @@ def close_tab(tab_id: str) -> bool:
         return False
 
 
-def normalize_target_url(target: str) -> str:
+def is_local_target(target: str) -> bool:
+    """Returns True if target is a file: scheme, drive letter, UNC path, leading / ./ ../, traversal .., or an existing path inside the workspace."""
+    target = (target or "").strip().strip('"').strip("'")
+    if not target or target.lower() in ("blank", "about:blank"):
+        return False
+    if re.match(r"^(https?|about|chrome|edge):", target, re.I):
+        return False
+    if target.lower().startswith("file:"):
+        return True
+    if (
+        re.match(r"^[a-zA-Z]:[/\\]", target)
+        or target.startswith("\\\\")
+        or target.startswith("/")
+        or target.startswith("./")
+        or target.startswith(".\\")
+        or target.startswith("../")
+        or target.startswith("..\\")
+        or ".." in re.split(r"[/\\]", target)
+    ):
+        return True
+    try:
+        clean_rel = target.lstrip("/\\")
+        if clean_rel:
+            ws_cand = WORKSPACE / clean_rel
+            root_cand = ROOT / clean_rel
+            if ws_cand.exists() or ws_cand.is_symlink() or root_cand.exists() or root_cand.is_symlink():
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _resolve_local_target_in_workspace(target: str) -> Path:
+    """Resolves a local file target or file:// URI strictly within WORKSPACE and verifies it is not sensitive."""
+    raw = (target or "").strip().strip('"').strip("'")
+    if raw.startswith("\\\\"):
+        raise PermissionError("Access denied: UNC network paths are outside the Nova workspace.")
+    if raw.lower().startswith("file:"):
+        parsed = urllib.parse.urlparse(raw)
+        if parsed.netloc and parsed.netloc.lower() not in ("", "localhost"):
+            raise PermissionError("Access denied: remote UNC file:// host is outside the Nova workspace.")
+        local_path_str = urllib.request.url2pathname(parsed.path)
+        if local_path_str.startswith("\\\\") and not re.match(r"^\\\\\?\\[a-zA-Z]:", local_path_str):
+            raise PermissionError("Access denied: UNC network paths are outside the Nova workspace.")
+    else:
+        local_path_str = raw
+
+    srv = sys.modules.get("server") or sys.modules.get("__main__")
+    if srv is None or not hasattr(srv, "resolve_workspace_path"):
+        import server as srv
+
+    p = Path(local_path_str)
+    if not p.is_absolute():
+        ws_candidate = WORKSPACE / local_path_str.lstrip("/\\")
+        root_candidate = ROOT / local_path_str.lstrip("/\\")
+        # If the relative path does not exist in WORKSPACE, or if it refers to an existing file in ROOT outside WORKSPACE, block it
+        if not ws_candidate.exists():
+            if root_candidate.exists() or srv.is_sensitive_nova_file(root_candidate):
+                raise PermissionError("Access denied: local path outside workspace or sensitive Nova file is blocked.")
+            raise PermissionError("Local file does not exist inside the Nova workspace.")
+
+    # Browser local file access is strictly restricted to the workspace (never outside workspace)
+    resolved = srv.resolve_workspace_path(local_path_str, cfg={"allow_outside_workspace": False})
+    if srv.is_sensitive_nova_file(resolved):
+        raise PermissionError("Access denied: access to sensitive Nova configuration or data files is blocked.")
+    if not resolved.exists():
+        raise PermissionError("Local file does not exist inside the Nova workspace.")
+    return resolved
+
+
+def normalize_target_url(target: str, allow_localhost_dev: bool = False) -> str:
     target = (target or "").strip().strip('"').strip("'")
     if not target or target.lower() in ("blank", "about:blank"):
         return "about:blank"
-    # Local file path
-    if os.path.exists(target):
-        return Path(target).resolve().as_uri()
-    if (ROOT / target).exists():
-        return (ROOT / target).resolve().as_uri()
-    if (WORKSPACE / target).exists():
-        return (WORKSPACE / target).resolve().as_uri()
-    if target.startswith("file:///"):
-        return target
+    # Local file path or file:// URI -> enforce workspace boundary and sensitive file check
+    if is_local_target(target):
+        resolved = _resolve_local_target_in_workspace(target)
+        return resolved.as_uri()
     # Web URL
     if not re.match(r"^(https?|about|chrome|edge):", target, re.I):
         if "." in target and " " not in target and not target.startswith("/"):
-            return "https://" + target
+            target = "https://" + target
         else:
             return f"https://www.google.com/search?q={urllib.parse.quote_plus(target)}"
+    if target.lower().startswith(("http://", "https://")):
+        import ssrf_guard
+        ok, reason, _ = ssrf_guard.validate_url_target(target, allow_localhost_dev=allow_localhost_dev)
+        if not ok:
+            raise PermissionError(f"Access denied by SSRF Protection: {reason}")
     return target
 
 
-def open_or_activate(target_url: str) -> dict:
+def open_or_activate(target_url: str, allow_localhost_dev: bool = False) -> dict:
     """
     Intelligently opens a URL or local file in Nova Browser (Edge)
     or activates the existing tab if already open.
@@ -407,7 +517,7 @@ def _ws_connect_and_eval(ws_url: str, js_code: str, timeout: float = 5.0) -> dic
     """
     parsed = urllib.parse.urlparse(ws_url)
     host = parsed.hostname or "127.0.0.1"
-    port = parsed.port or 9222
+    port = parsed.port or CDP_PORT
     path = parsed.path
 
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -528,15 +638,25 @@ def execute_cdp_eval(tab: dict, js_code: str) -> dict:
 # High-Level Automation Skills (Research, YouTube, WhatsApp, Telegram)
 # ----------------------------------------------------------------------------
 
-def read_page_content(query_or_url: str = None) -> dict:
+def read_page_content(query_or_url: str = None, allow_localhost_dev: bool = False) -> dict:
     """
     Extracts page title, URL, and readable body text from an open tab in Nova Browser.
     If query_or_url is a URL, newspaper site, or file not yet open, opens it first.
     Used for web research and newspaper reading by Nova AI.
     """
-    if query_or_url and (re.match(r"^https?://", query_or_url, re.I) or os.path.exists(query_or_url) or (ROOT / query_or_url).exists() or (WORKSPACE / query_or_url).exists()):
-        open_or_activate(query_or_url)
-        time.sleep(1.0)
+    if query_or_url and is_local_target(query_or_url):
+        try:
+            normalized_local = normalize_target_url(query_or_url, allow_localhost_dev=allow_localhost_dev)
+            open_or_activate(normalized_local, allow_localhost_dev=allow_localhost_dev)
+            time.sleep(1.0)
+        except (PermissionError, ValueError) as e:
+            return {"error": str(e)}
+    elif query_or_url and re.match(r"^https?://", query_or_url, re.I):
+        try:
+            open_or_activate(query_or_url, allow_localhost_dev=allow_localhost_dev)
+            time.sleep(1.0)
+        except (PermissionError, ValueError) as e:
+            return {"error": str(e)}
 
     tabs = list_tabs()
     if not tabs:
@@ -588,6 +708,9 @@ def get_first_youtube_video(query: str) -> str:
     clean = (query or "").strip().lstrip("|").strip()
     if not clean:
         return "https://www.youtube.com"
+    if is_local_target(clean):
+        _resolve_local_target_in_workspace(clean)
+        raise PermissionError("Refused: YouTube action cannot open local files.")
     if clean.startswith("http://") or clean.startswith("https://"):
         return clean
     try:
@@ -615,9 +738,16 @@ def youtube_action(action: str, query_or_url: str = "") -> str:
         action = (action or "play").lower().strip()
         query_or_url = (query_or_url or "").strip().lstrip("|").strip()
 
+        if query_or_url and is_local_target(query_or_url):
+            _resolve_local_target_in_workspace(query_or_url)
+            return "Refused: YouTube action cannot open local files."
+
         # If user passed "play" but the query was in action or vice versa
         if action not in ["play", "pause", "resume", "stop", "search", "open"]:
             query_or_url = f"{action} {query_or_url}".strip()
+            if is_local_target(query_or_url):
+                _resolve_local_target_in_workspace(query_or_url)
+                return "Refused: YouTube action cannot open local files."
             action = "play"
 
         tabs = list_tabs()
@@ -689,6 +819,8 @@ def youtube_action(action: str, query_or_url: str = "") -> str:
 
         return f"Active YouTube tab in Nova Browser: {yt_tab.get('title')} ({yt_tab.get('url')})"
 
+    except (PermissionError, ValueError) as e:
+        return f"Refused: {e}"
     except Exception as e:
         # Fallback to default system browser so it NEVER fails!
         try:

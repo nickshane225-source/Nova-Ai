@@ -29,7 +29,10 @@ def load_integrations() -> Dict[str, BaseIntegration]:
     Scans the integrations/ directory and dynamically registers all BaseIntegration subclasses.
     """
     global REGISTRY
-    pkg_dir = Path(__file__).resolve().parent
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        pkg_dir = Path(sys._MEIPASS) / "integrations"
+    else:
+        pkg_dir = Path(__file__).resolve().parent
 
     for item in pkg_dir.glob("*.py"):
         if item.stem in ("__init__", "base"):

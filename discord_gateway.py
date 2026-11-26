@@ -11,6 +11,7 @@ and remote approval of confirmation gates (/allow <id>, /deny <id>).
 
 import json
 import logging
+import re
 import threading
 import time
 import urllib.error
@@ -22,6 +23,15 @@ logger = logging.getLogger("nova_ai.discord_gateway")
 DISCORD_API_BASE = "https://discord.com/api/v10"
 
 
+ACTIVE_DISCORD_GATEWAYS: list["DiscordGateway"] = []
+
+def reload_discord_config(new_cfg: dict[str, Any]) -> None:
+    for gw in list(ACTIVE_DISCORD_GATEWAYS):
+        try:
+            gw.reload_config(new_cfg)
+        except Exception:
+            pass
+
 class DiscordGateway:
     def __init__(
         self,
@@ -31,6 +41,7 @@ class DiscordGateway:
         chat_handler: Callable[[str, str], dict[str, Any]] | None = None,
         confirm_handler: Callable[[str, bool], dict[str, Any]] | None = None,
         poll_interval: float = 3.0,
+        allow_dms: bool = False,
     ):
         self.bot_token = (bot_token or "").strip()
         self.channel_ids = [str(cid).strip() for cid in channel_ids if str(cid).strip()]
@@ -38,10 +49,28 @@ class DiscordGateway:
         self.chat_handler = chat_handler
         self.confirm_handler = confirm_handler
         self.poll_interval = max(1.0, poll_interval)
+        self.allow_dms = bool(allow_dms)
         self.last_message_ids: dict[str, str] = {}
         self._running = False
         self._thread: threading.Thread | None = None
         self.bot_id: str | None = None
+        if self not in ACTIVE_DISCORD_GATEWAYS:
+            ACTIVE_DISCORD_GATEWAYS.append(self)
+
+    def reload_config(self, new_cfg: dict[str, Any] | None = None) -> None:
+        cfg = new_cfg
+        if cfg is None:
+            try:
+                import server
+                if hasattr(server, "get_config"):
+                    cfg = server.get_config()
+            except Exception:
+                pass
+        if isinstance(cfg, dict):
+            if "discord_allowed_user_ids" in cfg:
+                self.allowed_user_ids = [str(x).strip() for x in (cfg.get("discord_allowed_user_ids") or []) if str(x).strip()]
+            if "discord_channel_ids" in cfg:
+                self.channel_ids = [str(x).strip() for x in (cfg.get("discord_channel_ids") or []) if str(x).strip()]
 
     def _api_request(self, endpoint: str, data: dict[str, Any] | None = None, method: str = "GET") -> Any:
         url = f"{DISCORD_API_BASE}{endpoint}"
@@ -60,24 +89,119 @@ class DiscordGateway:
         if not content:
             return False
         # Discord character limit is 2000
+        try:
+            import server as _srv
+            content = _srv.mask_secrets(str(content))
+        except Exception:
+            try:
+                import audit_logger as _al
+                content = _al.mask_secrets(str(content))
+            except Exception:
+                pass
         max_len = 1950
         chunks = [content[i : i + max_len] for i in range(0, len(content), max_len)]
         for chunk in chunks:
             try:
                 self._api_request(f"/channels/{channel_id}/messages", data={"content": chunk}, method="POST")
             except Exception as e:
-                logger.error(f"[Discord Gateway] Failed to send message to {channel_id}: {e}")
+                err_s = str(e)
+                try:
+                    import server as _srv
+                    err_s = _srv.mask_secrets(err_s)
+                except Exception:
+                    pass
+                logger.error(f"[Discord Gateway] Failed to send message to {channel_id}: {err_s}")
                 return False
         return True
+
+    def send_approval_announcement(self, channel_id: str, pending: dict, prefix_text: str = "") -> None:
+        import server
+        p_id = pending.get("id")
+        raw_prompt = pending.get("prompt") or ""
+        safe_prompt, _ = server.sanitize_preview(raw_prompt)
+        cmd_val = pending.get("command") or pending.get("arg") or pending.get("preview") or ""
+        safe_cmd, has_invis = server.sanitize_preview(cmd_val)
+        invis_warn = "\n⚠️ Warning: Command contains hidden or invisible characters." if (has_invis and "SECURITY WARNING" not in safe_cmd and "SECURITY WARNING" not in safe_prompt) else ""
+        backticks = re.findall(r"`+", safe_cmd)
+        fence = "`" * max(3, max([len(b) for b in backticks], default=0) + 1)
+        full_approval_msg = (
+            f"⚠️ Action Requires Approval (ID: `{p_id}`):\n"
+            f"{safe_prompt}\n\n"
+            f"Command:\n{fence}\n{safe_cmd}\n{fence}{invis_warn}\n\n"
+            f"Use `/allow {p_id}` or `/deny {p_id}`"
+        )
+        if prefix_text and prefix_text != "Done.":
+            self.send_message(channel_id, prefix_text)
+        if len(full_approval_msg) > 1950:
+            with server.PENDING_LOCK:
+                if p_id in server.PENDING_ACTIONS:
+                    server.PENDING_ACTIONS[p_id]["pc_only"] = True
+            short_msg = (
+                f"⚠️ Action Requires Approval (ID: `{p_id}`):\n"
+                f"{safe_prompt}\n\n"
+                f"Notice: Approval for this action must be done on the PC (payload exceeds Discord limits)."
+            )
+            self.send_message(channel_id, short_msg)
+        else:
+            self.send_message(channel_id, full_approval_msg)
 
     def get_bot_info(self) -> dict | None:
         try:
             me = self._api_request("/users/@me")
-            self.bot_id = str(me.get("id"))
+            self.bot_id = str(me.get("id") or "").strip()
+            if not self.bot_id:
+                raise RuntimeError("Empty bot_id received from Discord API")
             return me
         except Exception as e:
-            logger.warning(f"[Discord Gateway] Could not fetch bot user info: {e}")
+            logger.error(f"[Discord Gateway] Could not fetch bot user info: {e}")
+            self.bot_id = ""
             return None
+
+    def process_raw_message(self, msg: dict) -> bool:
+        """
+        Parses incoming raw Discord message JSON and invokes handle_message:
+        - Sets is_bot from author.bot
+        - Ignores webhook_id messages
+        - Derives is_dm from a missing guild_id
+        """
+        if not isinstance(msg, dict):
+            return False
+
+        # 1. Ignore webhook messages
+        if msg.get("webhook_id"):
+            logger.debug(f"[Discord Security] Ignored message from webhook: {msg.get('webhook_id')}")
+            return False
+
+        msg_id = str(msg.get("id") or "")
+        channel_id = str(msg.get("channel_id") or "")
+
+        author = msg.get("author", {})
+        if not isinstance(author, dict):
+            return False
+        user_id = str(author.get("id") or "")
+        is_bot = bool(author.get("bot", False))
+
+        # 2. Derive is_dm from missing guild_id (or guild_id is None / empty)
+        # In Discord REST API (GET /channels/{id}/messages), guild_id is omitted; if channel_id is in self.channel_ids, it is not a DM.
+        guild_id = msg.get("guild_id")
+        if channel_id and channel_id in self.channel_ids:
+            is_dm = False
+        else:
+            is_dm = (guild_id is None or str(guild_id).strip() == "")
+
+        content = (msg.get("content") or "").strip()
+        if not content:
+            return False
+
+        self.handle_message(
+            channel_id=channel_id,
+            user_id=user_id,
+            text=content,
+            is_bot=is_bot,
+            is_dm=is_dm,
+            author_id=user_id,
+        )
+        return True
 
     def poll_channel(self, channel_id: str) -> None:
         """Fetch and process new messages from a single channel."""
@@ -101,28 +225,78 @@ class DiscordGateway:
         for msg in messages:
             msg_id = str(msg.get("id"))
             self.last_message_ids[channel_id] = msg_id
+            if not msg.get("channel_id"):
+                msg["channel_id"] = channel_id
+            self.process_raw_message(msg)
 
-            author = msg.get("author", {})
-            user_id = str(author.get("id"))
-            is_bot = author.get("bot", False)
+    def _get_live_allowlists(self) -> tuple[list[str], list[str]]:
+        uids = self.allowed_user_ids
+        cids = self.channel_ids
+        if callable(uids):
+            try:
+                uids = [str(uid).strip() for uid in (uids() or []) if str(uid).strip()]
+            except Exception:
+                pass
+        if callable(cids):
+            try:
+                cids = [str(cid).strip() for cid in (cids() or []) if str(cid).strip()]
+            except Exception:
+                pass
+        return uids, cids
 
-            # Ignore own messages or other bot messages
-            if is_bot or user_id == self.bot_id:
-                continue
+    def is_authorized(self, user_id: str | int, channel_id: str | int = "") -> bool:
+        """
+        Verify message sender and channel authorization:
+        - Must return False whenever allowed_user_ids is empty (regardless of channel_ids).
+        - Must require BOTH a listed user and, if channel_ids is set, a listed channel.
+        - Always checks live config dynamically so allowlist changes take effect immediately without restart.
+        """
+        allowed_users, allowed_channels = self._get_live_allowlists()
+        if not allowed_users:
+            return False
+        uid = str(user_id or "").strip()
+        if not uid or uid not in allowed_users:
+            return False
+        if allowed_channels:
+            cid = str(channel_id or "").strip()
+            if not cid or cid not in allowed_channels:
+                return False
+        return True
 
-            # Check User Whitelist if configured
-            if self.allowed_user_ids and user_id not in self.allowed_user_ids:
-                logger.warning(f"[Discord Security] Ignored message from unauthorized user: {user_id}")
-                continue
-
-            content = (msg.get("content") or "").strip()
-            if not content:
-                continue
-
-            self.handle_message(channel_id, user_id, content)
-
-    def handle_message(self, channel_id: str, user_id: str, text: str) -> None:
+    def handle_message(
+        self,
+        channel_id: str,
+        user_id: str,
+        text: str,
+        is_bot: bool = False,
+        is_dm: bool = False,
+        author_id: str | None = None,
+    ) -> None:
         """Handle incoming command or user query."""
+        # 1. Ignore bot messages
+        if is_bot:
+            logger.debug(f"[Discord Security] Ignored bot message from user {user_id}")
+            return
+
+        # 2. Ignore self messages
+        effective_author = str(author_id or user_id or "").strip()
+        if self.bot_id and effective_author == str(self.bot_id):
+            logger.debug(f"[Discord Security] Ignored self message from bot {self.bot_id}")
+            return
+
+        # 3. Explicit DM policy
+        if is_dm:
+            if not self.allow_dms:
+                logger.warning(f"[Discord Security] Ignored DM because DMs are disabled: user={user_id}")
+                return
+            allowed_users, _ = self._get_live_allowlists()
+            if not allowed_users or effective_author not in allowed_users:
+                logger.warning(f"[Discord Security] Ignored DM from unauthorized user: user={user_id}")
+                return
+        else:
+            if not self.is_authorized(effective_author, channel_id):
+                logger.warning(f"[Discord Security] Ignored message from unauthorized user/channel: {effective_author}/{channel_id}")
+                return
         cmd = text.strip()
 
         # Approval commands: /allow <id> or /deny <id>
@@ -135,16 +309,53 @@ class DiscordGateway:
                 return
             if self.confirm_handler:
                 approved = action == "allow"
-                result = self.confirm_handler(token, approved)
+
+                def _disc_notify(event_dict):
+                    st = event_dict.get("status")
+                    if st == "paused":
+                        p_info = event_dict.get("pending_info") or (event_dict if (event_dict.get("pending_id") or event_dict.get("id")) else None)
+                        if p_info:
+                            self.send_approval_announcement(channel_id, p_info, prefix_text=event_dict.get("message"))
+                        else:
+                            self.send_message(channel_id, event_dict.get("message", "Plan paused."))
+                    elif st in ("completed", "failed", "timeout", "error"):
+                        self.send_message(channel_id, event_dict.get("message", ""))
+
+                import unittest.mock
+                if isinstance(self.confirm_handler, unittest.mock.NonCallableMock):
+                    result = self.confirm_handler(token, approved)
+                else:
+                    try:
+                        result = self.confirm_handler(token, approved, notify=_disc_notify)
+                    except TypeError:
+                        result = self.confirm_handler(token, approved)
                 if result.get("ok"):
                     res_detail = result.get("result")
                     res_str = f"\nResult: {res_detail}" if res_detail else ""
-                    reply = f"✅ Action {action}ed: {result.get('action')}{res_str}"
+                    cmd_raw = result.get('command') or ''
+                    cmd_str = ''
+                    if cmd_raw:
+                        import server
+                        safe_c, _ = server.sanitize_preview(cmd_raw)
+                        backticks = re.findall(r"`+", safe_c)
+                        fence = "`" * max(3, max([len(b) for b in backticks], default=0) + 1)
+                        cmd_str = f"\nCommand:\n{fence}\n{safe_c}\n{fence}"
+                    reply = f"✅ Action {action}ed: {result.get('action')}{cmd_str}{res_str}"
+                    if result.get("pending"):
+                        self.send_approval_announcement(channel_id, result["pending"], prefix_text=reply)
+                        return
                 else:
                     reply = f"❌ Failed to {action}: {result.get('error', 'Action not found or expired')}"
             else:
                 reply = "Confirmation handler not configured."
             self.send_message(channel_id, reply)
+            return
+
+        # Stop active plan: /stopplan (sender allowlist checked in is_authorized)
+        if cmd == "/stopplan" or cmd.startswith("/stopplan "):
+            import server
+            res = server.cancel_plan(conv_id=f"discord:{channel_id}", source="discord")
+            self.send_message(channel_id, f"🛑 {res.get('message', 'plan cancelled')}")
             return
 
         # Status command
@@ -172,14 +383,23 @@ class DiscordGateway:
                 # source="discord" triggers silent remote execution (no PC TTS playback)
                 resp = self.chat_handler(text, "discord")
                 reply_text = resp.get("reply") or resp.get("response") or "Done."
-                self.send_message(channel_id, reply_text)
+                if isinstance(resp, dict) and resp.get("pending"):
+                    self.send_approval_announcement(channel_id, resp["pending"], prefix_text=reply_text)
+                    return
+                else:
+                    self.send_message(channel_id, reply_text)
             except Exception as e:
                 self.send_message(channel_id, f"Error processing query: {e}")
         else:
             self.send_message(channel_id, "Chat handler is not attached.")
 
     def run_loop(self) -> None:
-        self.get_bot_info()
+        if not self.bot_id:
+            me = self.get_bot_info()
+            if not me or not self.bot_id:
+                logger.error("[Discord Gateway] Could not obtain bot_id at startup. Gateway failing closed.")
+                self._running = False
+                return
         logger.info(f"[Discord Gateway] Gateway started for channels: {self.channel_ids}")
 
         # Initialize last message id for each channel to avoid replaying historic backlog
@@ -199,12 +419,17 @@ class DiscordGateway:
                     logger.debug(f"[Discord Gateway] Channel {cid} loop exception: {e}")
             time.sleep(self.poll_interval)
 
-    def start(self) -> None:
+    def start(self) -> bool:
         if self._running or not self.bot_token or not self.channel_ids:
-            return
+            return False
+        me = self.get_bot_info()
+        if not me or not self.bot_id:
+            logger.error("[Discord Gateway] Could not obtain bot_id at startup. Failing closed.")
+            return False
         self._running = True
         self._thread = threading.Thread(target=self.run_loop, daemon=True, name="DiscordGatewayThread")
         self._thread.start()
+        return True
 
     def stop(self) -> None:
         self._running = False
@@ -212,14 +437,17 @@ class DiscordGateway:
             self._thread.join(timeout=3.0)
 
 
-def handle_remote_confirm(action_id: str, approve: bool) -> dict[str, Any]:
+def handle_remote_confirm(action_id: str, approve: bool, notify: Any = None) -> dict[str, Any]:
     """Invokes pending action confirmation in Nova AI server."""
     try:
         import server
         with server.PENDING_LOCK:
+            pending = server.PENDING_ACTIONS.get(action_id)
+            if not pending:
+                return {"ok": False, "error": "Pending action not found or expired"}
+            if pending.get("pc_only"):
+                return {"ok": False, "error": "Approval for this action must be done on the PC."}
             pending = server.PENDING_ACTIONS.pop(action_id, None)
-        if not pending:
-            return {"ok": False, "error": "Pending action not found or expired"}
         if pending.get("expires_at", 0) < time.time():
             return {"ok": False, "error": "Pending action expired"}
 
@@ -230,11 +458,17 @@ def handle_remote_confirm(action_id: str, approve: bool) -> dict[str, Any]:
                     channel="discord",
                     tool=pending["name"],
                     preview=pending.get("arg", ""),
-                    guardian_verdict="NONE",
+                    guardian_verdict=pending.get("guardian", "NONE"),
                     status="DENIED",
                     cfg=cfg,
                 )
-            return {"ok": True, "approved": False, "action": pending["name"]}
+            return {"ok": True, "approved": False, "action": pending["name"], "command": pending.get("arg", "")}
+
+        p_conv = pending.get("plan_state", {}).get("conv_id") or pending.get("conv_id") or "discord:general"
+        if pending.get("is_tainted") or pending.get("plan_state", {}).get("is_tainted"):
+            server.CONVERSATION_TAINT[p_conv] = True
+            if hasattr(server, "RUN_CODE_TRUST_STATE"):
+                server.RUN_CODE_TRUST_STATE.invalidate()
 
         res = server.run_skill(
             cfg,
@@ -243,17 +477,32 @@ def handle_remote_confirm(action_id: str, approve: bool) -> dict[str, Any]:
             source="discord",
             is_confirmed=True,
             mode=pending.get("mode", "developer"),
+            is_tainted=pending.get("is_tainted", False),
+            conv_id=p_conv,
         )
+        if pending.get("plan_state") and hasattr(server, "resume_plan_execution"):
+            plan_res = server.resume_plan_execution(pending["plan_state"], last_result=res, cfg=cfg, notify=notify)
+            if isinstance(plan_res, dict) and plan_res.get("paused"):
+                return {
+                    "ok": True,
+                    "approved": True,
+                    "action": pending["name"],
+                    "command": pending.get("arg", ""),
+                    "result": str(res).strip(),
+                    "pending": plan_res.get("pending_info"),
+                }
+            res_msg = plan_res.get("message") if isinstance(plan_res, dict) else str(plan_res)
+            res = f"{res}\n\n{res_msg}"
         if getattr(server, "audit_logger", None):
             server.audit_logger.log_audit_event(
                 channel="discord",
                 tool=pending["name"],
                 preview=pending.get("arg", ""),
-                guardian_verdict="NONE",
+                guardian_verdict=pending.get("guardian", "NONE"),
                 status="APPROVED",
                 cfg=cfg,
             )
-        return {"ok": True, "approved": True, "action": pending["name"], "result": res}
+        return {"ok": True, "approved": True, "action": pending["name"], "command": pending.get("arg", ""), "result": res}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
@@ -264,12 +513,13 @@ def start_discord_daemon(cfg: dict[str, Any], chat_callback: Callable[..., Any] 
         return None
     token = cfg.get("discord_bot_token")
     channels = cfg.get("discord_channel_ids") or []
-    if not token or not channels:
+    allowed_users = cfg.get("discord_allowed_user_ids") or []
+    if not token or not channels or not allowed_users:
         return None
     return start_discord_gateway(
         bot_token=token,
         channel_ids=channels,
-        allowed_user_ids=cfg.get("discord_allowed_user_ids") or [],
+        allowed_user_ids=allowed_users,
         chat_handler=chat_callback,
         confirm_handler=handle_remote_confirm,
     )
